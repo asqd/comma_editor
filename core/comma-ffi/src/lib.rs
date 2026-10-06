@@ -248,6 +248,85 @@ impl From<core::CellRange> for CellRange {
 }
 
 #[derive(uniffi::Enum)]
+pub enum ValueKind {
+    Empty,
+    Integer,
+    Decimal,
+    Date,
+    Boolean,
+    Text,
+}
+
+impl From<core::ValueKind> for ValueKind {
+    fn from(kind: core::ValueKind) -> Self {
+        match kind {
+            core::ValueKind::Empty => Self::Empty,
+            core::ValueKind::Integer => Self::Integer,
+            core::ValueKind::Decimal => Self::Decimal,
+            core::ValueKind::Date => Self::Date,
+            core::ValueKind::Boolean => Self::Boolean,
+            core::ValueKind::Text => Self::Text,
+        }
+    }
+}
+
+impl From<ValueKind> for core::ValueKind {
+    fn from(kind: ValueKind) -> Self {
+        match kind {
+            ValueKind::Empty => Self::Empty,
+            ValueKind::Integer => Self::Integer,
+            ValueKind::Decimal => Self::Decimal,
+            ValueKind::Date => Self::Date,
+            ValueKind::Boolean => Self::Boolean,
+            ValueKind::Text => Self::Text,
+        }
+    }
+}
+
+#[derive(uniffi::Enum)]
+pub enum Issue {
+    Mismatch,
+    Padding,
+}
+
+#[derive(uniffi::Record)]
+pub struct ValueCount {
+    pub value: String,
+    pub count: u64,
+}
+
+/// Statistics of one column over the visible rows.
+#[derive(uniffi::Record)]
+pub struct ColumnProfile {
+    pub kind: ValueKind,
+    pub total: u64,
+    pub empty: u64,
+    pub unique: u64,
+    pub mismatched: u64,
+    pub padded: u64,
+    pub min: Option<String>,
+    pub max: Option<String>,
+    pub mean: Option<f64>,
+    pub median: Option<f64>,
+    pub min_length: u64,
+    pub max_length: u64,
+    pub top_values: Vec<ValueCount>,
+    pub histogram: Vec<u64>,
+}
+
+/// The kind of one value, as column profiles classify it.
+#[uniffi::export]
+pub fn classify_value(value: String) -> ValueKind {
+    core::classify(&value).into()
+}
+
+/// Whether a value of `value` kind belongs in a column of `column` kind.
+#[uniffi::export]
+pub fn kind_fits(value: ValueKind, column: ValueKind) -> bool {
+    core::ValueKind::from(value).fits(column.into())
+}
+
+#[derive(uniffi::Enum)]
 pub enum ExportFormat {
     Json,
     Markdown,
@@ -604,6 +683,41 @@ impl CoreDocument {
             ExportFormat::Xlsx => core::ExportFormat::Xlsx,
         };
         Ok(self.lock().export(format, range.map(Into::into), &name, fragment)?)
+    }
+
+    pub fn profile_column(&self, column: u64) -> Result<ColumnProfile, CoreError> {
+        let profile = self.lock().profile_column(column as usize)?;
+        Ok(ColumnProfile {
+            kind: profile.kind.into(),
+            total: profile.total as u64,
+            empty: profile.empty as u64,
+            unique: profile.unique as u64,
+            mismatched: profile.mismatched as u64,
+            padded: profile.padded as u64,
+            min: profile.min,
+            max: profile.max,
+            mean: profile.mean,
+            median: profile.median,
+            min_length: profile.min_length as u64,
+            max_length: profile.max_length as u64,
+            top_values: profile
+                .top_values
+                .into_iter()
+                .map(|(value, count)| ValueCount { value, count: count as u64 })
+                .collect(),
+            histogram: profile.histogram.into_iter().map(|count| count as u64).collect(),
+        })
+    }
+
+    /// The next visible row after `after` whose value in `column` has `issue`, wrapping around.
+    pub fn find_issue(&self, column: u64, issue: Issue, kind: ValueKind, after: Option<u64>) -> Option<u64> {
+        let issue = match issue {
+            Issue::Mismatch => core::Issue::Mismatch,
+            Issue::Padding => core::Issue::Padding,
+        };
+        self.lock()
+            .find_issue(column as usize, issue, kind.into(), after.map(|row| row as usize))
+            .map(|row| row as u64)
     }
 
     // Column operations.

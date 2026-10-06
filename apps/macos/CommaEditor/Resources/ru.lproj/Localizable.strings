@@ -226,3 +226,36 @@
 "Find in the table (⌘F)" = "Найти в таблице (⌘F)";
 "Show Toolbar" = "Показать панель инструментов";
 "Customize Toolbar…" = "Настроить панель инструментов…";
+
+/* Column profile */
+"Profile" = "Профиль";
+"Column profile: type, statistics, problems (⌥⌘P)" = "Профиль колонки: тип, статистика, проблемы (⌥⌘P)";
+"Show Column Profile" = "Показать профиль колонки";
+"Hide Column Profile" = "Скрыть профиль колонки";
+"Values" = "Значений";
+"Empty" = "Пустых";
+"Unique" = "Уникальных";
+"Minimum" = "Минимум";
+"Maximum" = "Максимум";
+"Median" = "Медиана";
+"Earliest" = "Самая ранняя";
+"Latest" = "Самая поздняя";
+"Length" = "Длина";
+"Distribution" = "Распределение";
+"Problems" = "Проблемы";
+"No problems found" = "Проблем не найдено";
+"Not %@: %@" = "Не %@: %@";
+"Not %@" = "Не %@";
+"Spaces around the value: %@" = "Пробелы по краям: %@";
+"Spaces around the value" = "Пробелы по краям";
+"Show" = "Показать";
+"Remove" = "Убрать";
+"Frequent values" = "Частые значения";
+"(empty)" = "(пусто)";
+"Show only rows with this value" = "Показать только строки с этим значением";
+"Empty column" = "Пустая колонка";
+"Whole numbers" = "Целые числа";
+"Numbers" = "Числа";
+"Dates" = "Даты";
+"Yes or no" = "Да или нет";
+"Average" = "Среднее";

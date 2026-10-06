@@ -35,6 +35,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
         shouldCascadeWindows = true
         windowFrameAutosaveName = "DocumentWindow"
+        // A frame saved smaller than the minimum (after a layout glitch) would hide the table.
+        if window.frame.width < window.minSize.width || window.frame.height < window.minSize.height {
+            window.setContentSize(NSSize(width: 1100, height: 700))
+            window.center()
+        }
     }
 
     @available(*, unavailable)

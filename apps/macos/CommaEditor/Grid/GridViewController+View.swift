@@ -366,6 +366,9 @@ extension GridViewController: NSMenuItemValidation {
             return selection != nil
         case #selector(mergeColumns(_:)):
             return (selection?.columns.count ?? 0) > 1
+        case #selector(toggleProfilePanel(_:)):
+            menuItem.title = isProfileVisible ? L("Hide Column Profile") : L("Show Column Profile")
+            return columnCount > 0
         case #selector(copyAs(_:)):
             return selection != nil
         case #selector(exportAs(_:)):

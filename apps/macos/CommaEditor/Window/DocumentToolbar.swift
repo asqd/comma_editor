@@ -9,6 +9,7 @@ extension NSToolbarItem.Identifier {
     static let data = Self("data")
     static let export = Self("export")
     static let search = Self("search")
+    static let profile = Self("profile")
 }
 
 /// The window toolbar: row and column commands, sort, filter, data operations, export and
@@ -58,11 +59,11 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate, NSSearchFieldDelegate 
     // MARK: NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.insertRow, .insertColumn, .deleteRows, .space, .sort, .filter, .data, .export, .flexibleSpace, .search]
+        [.insertRow, .insertColumn, .deleteRows, .space, .sort, .filter, .data, .export, .profile, .flexibleSpace, .search]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.insertRow, .insertColumn, .deleteRows, .sort, .filter, .data, .export, .search, .space, .flexibleSpace]
+        [.insertRow, .insertColumn, .deleteRows, .sort, .filter, .data, .export, .profile, .search, .space, .flexibleSpace]
     }
 
     func toolbar(
@@ -97,6 +98,9 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate, NSSearchFieldDelegate 
         case .export:
             return menuButton(identifier, L("Export"), "square.and.arrow.up", MainMenu.makeToolbarExportMenu(),
                               tip: L("Export for Excel, JSON, Markdown, HTML, SQL"))
+        case .profile:
+            return button(identifier, L("Profile"), "chart.bar.xaxis",
+                          #selector(GridViewController.toggleProfilePanel(_:)), tip: L("Column profile: type, statistics, problems (⌥⌘P)"))
         case .search:
             let item = NSSearchToolbarItem(itemIdentifier: identifier)
             item.label = L("Find")

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 private extension NSUserInterfaceItemIdentifier {
     static let rowNumberColumn = NSUserInterfaceItemIdentifier("rowNumber")
@@ -32,6 +33,14 @@ final class GridViewController: NSViewController {
     weak var documentToolbar: DocumentToolbar?
     /// Result of the last search, shown in the status bar.
     var searchSummary: String?
+    /// The column profile panel at the right of the table.
+    let profileModel = ColumnProfileModel()
+    let profileContainer = NSView()
+    /// Column whose profile the panel shows, and a counter that drops stale results.
+    var profiledColumn: Int?
+    var profileGeneration = 0
+    /// 0 while the panel is hidden.
+    lazy var profileWidth = profileContainer.widthAnchor.constraint(equalToConstant: 0)
     private var changeObserver: NSObjectProtocol?
 
     private struct CachedRow {
@@ -108,9 +117,44 @@ final class GridViewController: NSViewController {
         let separator = NSBox()
         separator.boxType = .separator
 
-        let stack = NSStackView(views: [findContainer, filterContainer, scrollView, separator, statusBar])
+        let profileHost = NSHostingView(rootView: ColumnProfileView(model: profileModel))
+        let profileSeparator = NSBox()
+        profileSeparator.boxType = .separator
+        for subview in [profileSeparator, profileHost] as [NSView] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            profileContainer.addSubview(subview)
+        }
+        NSLayoutConstraint.activate([
+            profileSeparator.topAnchor.constraint(equalTo: profileContainer.topAnchor),
+            profileSeparator.bottomAnchor.constraint(equalTo: profileContainer.bottomAnchor),
+            profileSeparator.leadingAnchor.constraint(equalTo: profileContainer.leadingAnchor),
+            profileSeparator.widthAnchor.constraint(equalToConstant: 1),
+            profileHost.topAnchor.constraint(equalTo: profileContainer.topAnchor),
+            profileHost.bottomAnchor.constraint(equalTo: profileContainer.bottomAnchor),
+            profileHost.leadingAnchor.constraint(equalTo: profileSeparator.trailingAnchor),
+            profileHost.trailingAnchor.constraint(equalTo: profileContainer.trailingAnchor),
+        ])
+        profileContainer.isHidden = true
+        let content = NSView()
+        for subview in [scrollView, profileContainer] as [NSView] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(subview)
+        }
+        NSLayoutConstraint.activate([
+            scrollView.topAnchor.constraint(equalTo: content.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: profileContainer.leadingAnchor),
+            profileContainer.topAnchor.constraint(equalTo: content.topAnchor),
+            profileContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            profileContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            profileWidth,
+        ])
+
+        let stack = NSStackView(views: [findContainer, filterContainer, content, separator, statusBar])
         stack.orientation = .vertical
         stack.spacing = 0
+        stack.distribution = .fill
         stack.translatesAutoresizingMaskIntoConstraints = false
         root.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -124,7 +168,9 @@ final class GridViewController: NSViewController {
             view.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
             view.setContentHuggingPriority(.required, for: .vertical)
         }
-        scrollView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        // The table area takes the height left over; the window keeps its size.
+        stack.setHuggingPriority(.defaultLow, for: .vertical)
+        content.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
         findContainer.isHidden = true
         filterContainer.isHidden = true
         view = root
@@ -348,6 +394,7 @@ final class GridViewController: NSViewController {
             syncFilterBar()
         }
         updateStatus()
+        refreshProfile()
     }
 
     // MARK: Status bar
@@ -410,10 +457,14 @@ final class GridViewController: NSViewController {
     func select(_ newSelection: GridSelection?, scroll: Bool = true) {
         let clamped = newSelection?.clamped(rowCount: dataRowCount, columnCount: columnCount)
         if clamped != selection {
+            let previousColumn = selection?.cursor.column
             selection = clamped
             syncTableSelection()
             redrawVisibleRows()
             updateStatus()
+            if clamped?.cursor.column != previousColumn {
+                refreshProfile()
+            }
         }
         if scroll, let cursor = clamped?.cursor {
             tableView.scrollRowToVisible(cursor.row)
@@ -711,7 +762,15 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         let isSelected = selection.map { !$0.isSingleCell && $0.contains(row: row, column: column) } ?? false
         cell.layer?.borderWidth = isCursor ? 2 : 0
         cell.layer?.borderColor = NSColor.controlAccentColor.cgColor
-        cell.layer?.backgroundColor = isSelected ? NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor : nil
+        let issue = profileIssue(of: value, column: column)
+        cell.toolTip = issue
+        if isSelected {
+            cell.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
+        } else if issue != nil {
+            cell.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.22).cgColor
+        } else {
+            cell.layer?.backgroundColor = nil
+        }
         return cell
     }
 
