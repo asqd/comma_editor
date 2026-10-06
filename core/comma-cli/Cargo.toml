@@ -1,0 +1,13 @@
+[package]
+name = "comma-cli"
+description = "Command-line tools for CommaEditor: inspect CSV files and check byte-exact round-trips."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "comma"
+path = "src/main.rs"
+
+[dependencies]
+comma-core.workspace = true

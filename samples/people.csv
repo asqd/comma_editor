@@ -1,0 +1,8 @@
+id,name,email,city,signup_date,balance
+1,Alice Johnson,alice@example.com,London,2024-01-15,1250.50
+2,"Smith, Bob",bob@example.com,"New York",2024-02-03,980.00
+3,Clara Diaz,clara@example.com,Madrid,2024-02-28,0
+4,Dmitry Petrov,dmitry@example.com,Moscow,2024-03-11,15000.75
+5,Emma Brown,emma@example.com,"Line one
+line two",2024-04-01,42
+6,"Quote ""Q"" Lee",q@example.com,Seoul,2024-04-19,7.25

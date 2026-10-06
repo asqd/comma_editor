@@ -1,0 +1,10 @@
+[package]
+name = "uniffi-bindgen-swift"
+description = "Generates the Swift bindings, C header and module map for comma-ffi."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+uniffi = { workspace = true, features = ["cli"] }

@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = [
+    "core/comma-core",
+    "core/comma-ffi",
+    "core/comma-cli",
+    "core/uniffi-bindgen-swift",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[workspace.dependencies]
+comma-core = { path = "core/comma-core" }
+encoding_rs = "0.8.42"
+memchr = "2.8"
+thiserror = "2"
+uniffi = "0.32"
+
+[profile.release]
+debug = false
+lto = "thin"

@@ -1,0 +1,76 @@
+/* Main menu */
+"About %@" = "О программе %@";
+"Services" = "Службы";
+"Hide %@" = "Скрыть %@";
+"Hide Others" = "Скрыть остальные";
+"Show All" = "Показать все";
+"Quit %@" = "Завершить %@";
+"File" = "Файл";
+"New" = "Новый";
+"Open…" = "Открыть…";
+"Open Recent" = "Открыть недавние";
+"Clear Menu" = "Очистить меню";
+"Close" = "Закрыть";
+"Save…" = "Сохранить…";
+"Duplicate" = "Дублировать";
+"Save As…" = "Сохранить как…";
+"Rename…" = "Переименовать…";
+"Move To…" = "Переместить в…";
+"Revert To Saved" = "Вернуться к сохраненному";
+"Edit" = "Правка";
+"Undo" = "Отменить";
+"Redo" = "Повторить";
+"Cut" = "Вырезать";
+"Copy" = "Скопировать";
+"Paste" = "Вставить";
+"Delete" = "Удалить";
+"Select All" = "Выбрать все";
+"Table" = "Таблица";
+"Edit Cell" = "Изменить ячейку";
+"Edit Cell in Window…" = "Изменить ячейку в окне…";
+"Insert Row Above" = "Вставить строку выше";
+"Insert Row Below" = "Вставить строку ниже";
+"Delete Rows" = "Удалить строки";
+"Insert Column Left" = "Вставить колонку слева";
+"Insert Column Right" = "Вставить колонку справа";
+"Delete Column" = "Удалить колонку";
+"Rename Column…" = "Переименовать колонку…";
+"First Row Is Header" = "Первая строка — заголовок";
+"View" = "Вид";
+"Enter Full Screen" = "Перейти в полноэкранный режим";
+"Window" = "Окно";
+"Minimize" = "Свернуть";
+"Zoom" = "Изменить масштаб";
+"Bring All to Front" = "Все окна — на передний план";
+"Help" = "Справка";
+
+/* Undo action names, shown as "Undo <name>" */
+"Cell Edit" = "изменение ячейки";
+"Column Rename" = "переименование колонки";
+"Row Insertion" = "вставку строки";
+"Row Deletion" = "удаление строк";
+"Column Insertion" = "вставку колонки";
+"Column Deletion" = "удаление колонки";
+
+/* Errors */
+"The value in row %lld, column %lld cannot be saved in %@." = "Значение в строке %lld, колонке %lld нельзя сохранить в кодировке %@.";
+"Replace the characters that this encoding cannot represent." = "Замените символы, которых нет в этой кодировке.";
+"The last column cannot be deleted." = "Нельзя удалить последнюю колонку.";
+
+/* Status bar */
+"Rows: %@" = "Строк: %@";
+"Columns: %@" = "Колонок: %@";
+"%@ with BOM" = "%@ с BOM";
+"Delimiter: %@" = "Разделитель: %@";
+"Tab" = "табуляция";
+"Space" = "пробел";
+"Header row" = "Первая строка — заголовок";
+"Unclosed quote" = "Незакрытая кавычка";
+
+/* Grid */
+"Rename Column" = "Переименовать колонку";
+"Rename" = "Переименовать";
+"Cancel" = "Отменить";
+"Row %ld, column %@" = "Строка %ld, колонка %@";
+"Save" = "Сохранить";
+"Line breaks are kept. Press ⌘↩ to save." = "Переносы строк сохраняются. ⌘↩ — сохранить.";
