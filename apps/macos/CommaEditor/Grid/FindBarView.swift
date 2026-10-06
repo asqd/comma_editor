@@ -95,6 +95,8 @@ final class FindBarView: NSView, NSSearchFieldDelegate {
         rows.alignment = .leading
         rows.spacing = 6
         rows.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        // The bar is exactly as tall as its rows; the table takes the rest of the window.
+        rows.setHuggingPriority(.required, for: .vertical)
         rows.translatesAutoresizingMaskIntoConstraints = false
         addSubview(rows)
         NSLayoutConstraint.activate([

@@ -37,6 +37,8 @@ final class FilterBarView: NSView {
         content.orientation = .horizontal
         content.alignment = .top
         content.edgeInsets = NSEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+        // The bar is exactly as tall as its rows; the table takes the rest of the window.
+        content.setHuggingPriority(.required, for: .vertical)
         content.translatesAutoresizingMaskIntoConstraints = false
         addSubview(content)
         NSLayoutConstraint.activate([

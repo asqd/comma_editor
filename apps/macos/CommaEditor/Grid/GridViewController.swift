@@ -105,6 +105,7 @@ final class GridViewController: NSViewController {
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        statusLabel.setContentHuggingPriority(.required, for: .vertical)
         let statusBar = NSView()
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusBar.addSubview(statusLabel)
@@ -171,6 +172,10 @@ final class GridViewController: NSViewController {
         // The table area takes the height left over; the window keeps its size.
         stack.setHuggingPriority(.defaultLow, for: .vertical)
         content.heightAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+        // The table claims all spare height, so bars and the status bar keep their natural size.
+        let fillHeight = content.heightAnchor.constraint(equalTo: stack.heightAnchor)
+        fillHeight.priority = NSLayoutConstraint.Priority(260)
+        fillHeight.isActive = true
         findContainer.isHidden = true
         filterContainer.isHidden = true
         view = root
