@@ -96,6 +96,7 @@ enum MainMenu {
         menu([
             item(L("Edit Cell"), #selector(GridViewController.editCell(_:))),
             item(L("Edit Cell in Window…"), #selector(GridViewController.editCellInWindow(_:)), "e", [.command, .option]),
+            item(L("Fill Down"), #selector(GridViewController.fillDown(_:)), "d"),
             .separator(),
             item(L("Insert Row Above"), #selector(GridViewController.insertRowAbove(_:)), key(NSUpArrowFunctionKey), [.command, .option]),
             item(L("Insert Row Below"), #selector(GridViewController.insertRowBelow(_:)), key(NSDownArrowFunctionKey), [.command, .option]),

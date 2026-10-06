@@ -9,8 +9,8 @@ private extension NSUserInterfaceItemIdentifier {
 /// The table of a document, with the find and filter bars above it and a status bar below.
 ///
 /// Rows here are *visible rows*: data rows as the current sort and filters show them. They are
-/// fetched from the core in blocks as they scroll into view. The active cell is the selected row
-/// (when exactly one is selected) and `activeColumn`.
+/// fetched from the core in blocks as they scroll into view. The grid owns the selection: a
+/// rectangle of cells whose cursor is the active cell; NSTableView only draws.
 final class GridViewController: NSViewController {
     let document: CSVDocument
     let tableView = GridTableView()
@@ -20,13 +20,14 @@ final class GridViewController: NSViewController {
     let filterContainer: NSView
     let headerMenu = NSMenu()
     let cellMenu = NSMenu()
-    var activeColumn = 0
+    private(set) var selection: GridSelection?
     private(set) var info: DocumentInfo
 
     private let scrollView = NSScrollView()
     private let statusLabel = NSTextField(labelWithString: "")
     private var rowCache: [Int: CachedRow] = [:]
-    private var highlightedRow: Int?
+    /// The current drag started on row numbers and selects whole rows.
+    private var selectingRows = false
     private var changeObserver: NSObjectProtocol?
 
     private struct CachedRow {
@@ -38,6 +39,12 @@ final class GridViewController: NSViewController {
     private static let cacheBlock = 128
     private static let cacheLimit = 8_192
     private static let defaultColumnWidth: CGFloat = 140
+    private static let decimalFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 4
+        return formatter
+    }()
     private static let numberFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
@@ -141,8 +148,8 @@ final class GridViewController: NSViewController {
     override func viewDidAppear() {
         super.viewDidAppear()
         view.window?.makeFirstResponder(tableView)
-        if tableView.selectedRow < 0 {
-            selectDataRow(0)
+        if selection == nil {
+            selectCell(row: 0, column: 0)
         }
         #if DEBUG
         DebugScript.run(on: self)
@@ -157,7 +164,8 @@ final class GridViewController: NSViewController {
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.gridStyleMask = [.solidVerticalGridLineMask, .solidHorizontalGridLineMask]
         tableView.gridColor = .separatorColor
-        tableView.allowsMultipleSelection = true
+        tableView.selectionHighlightStyle = .none
+        tableView.allowsMultipleSelection = false
         tableView.allowsColumnReordering = false
         tableView.allowsColumnResizing = true
         tableView.allowsColumnSelection = false
@@ -165,10 +173,7 @@ final class GridViewController: NSViewController {
         tableView.headerView = NSTableHeaderView()
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.keyHandler = self
-        tableView.target = self
-        tableView.action = #selector(tableClicked(_:))
-        tableView.doubleAction = #selector(tableDoubleClicked(_:))
+        tableView.interaction = self
     }
 
     private static func withBottomSeparator(_ content: NSView) -> NSView {
@@ -215,7 +220,6 @@ final class GridViewController: NSViewController {
             column.headerToolTip = Self.columnLetter(index)
             tableView.addTableColumn(column)
         }
-        activeColumn = min(activeColumn, max(0, columnCount - 1))
         refreshColumnTitles()
         updateRowNumberWidth()
     }
@@ -328,8 +332,9 @@ final class GridViewController: NSViewController {
                 refreshColumnTitles()
                 updateRowNumberWidth()
             }
-            highlightedRow = nil
+            selection = selection?.clamped(rowCount: dataRowCount, columnCount: columnCount)
             tableView.reloadData()
+            syncTableSelection()
             syncFilterBar()
         }
         updateStatus()
@@ -368,77 +373,100 @@ final class GridViewController: NSViewController {
         if info.unterminatedQuote {
             parts.append(L("Unclosed quote"))
         }
+        if let selection, !selection.isSingleCell {
+            parts.insert(contentsOf: selectionSummary(selection), at: 0)
+        }
         statusLabel.stringValue = parts.joined(separator: "   ·   ")
         filterBar.setSummary(
             spec.filters.isEmpty ? "" : L("Showing %@ of %@", Self.format(dataRowCount), Self.format(totalDataRowCount))
         )
     }
 
-    // MARK: Selection and the active cell
+    // MARK: Selection
 
-    func selectDataRow(_ row: Int) {
-        guard row >= 0, row < dataRowCount else { return }
-        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        tableView.scrollRowToVisible(row)
-    }
-
-    var activeRow: Int? {
-        tableView.selectedRowIndexes.count == 1 ? tableView.selectedRow : nil
-    }
+    var activeRow: Int? { selection?.cursor.row }
+    var activeColumn: Int { selection?.cursor.column ?? 0 }
 
     /// The file row of the active cell, which survives re-sorting and filtering.
     var activeFileRow: Int? {
         activeRow.flatMap { cachedRow($0)?.fileRow }
     }
 
+    /// Changes the selection, redraws it and, unless `scroll` is false, scrolls the cursor into view.
+    func select(_ newSelection: GridSelection?, scroll: Bool = true) {
+        let clamped = newSelection?.clamped(rowCount: dataRowCount, columnCount: columnCount)
+        if clamped != selection {
+            selection = clamped
+            syncTableSelection()
+            redrawVisibleRows()
+            updateStatus()
+        }
+        if scroll, let cursor = clamped?.cursor {
+            tableView.scrollRowToVisible(cursor.row)
+            tableView.scrollColumnToVisible(cursor.column + 1)
+        }
+    }
+
+    func selectCell(row: Int, column: Int) {
+        select(GridSelection(GridCell(row: row, column: column)))
+    }
+
     /// Selects a file row again after the view changed, if it is still visible.
     func reselect(fileRow: Int?) {
-        guard let fileRow, let row = core.visibleIndex(row: UInt64(fileRow)) else {
-            tableView.deselectAll(nil)
-            selectDataRow(0)
-            return
-        }
-        selectDataRow(Int(row))
+        let row = fileRow.flatMap { core.visibleIndex(row: UInt64($0)) }.map { Int($0) } ?? 0
+        selectCell(row: row, column: activeColumn)
     }
 
     /// Moves the active cell, scrolling it into view.
     func activate(row: Int, column: Int) {
-        activeColumn = column
-        selectDataRow(row)
-        tableView.scrollColumnToVisible(column + 1)
-        refreshActiveCell()
+        selectCell(row: row, column: column)
     }
 
-    /// Redraws the row that shows the active cell and the row that showed it before.
-    func refreshActiveCell() {
-        var rows = IndexSet()
-        if let highlightedRow { rows.insert(highlightedRow) }
-        if let activeRow { rows.insert(activeRow) }
-        highlightedRow = activeRow
-        let visible = rows.filteredIndexSet { $0 < tableView.numberOfRows }
-        guard !visible.isEmpty, tableView.numberOfColumns > 1 else { return }
-        tableView.reloadData(forRowIndexes: visible, columnIndexes: IndexSet(integersIn: 1..<tableView.numberOfColumns))
-    }
-
-    private func moveActiveColumn(by delta: Int) {
-        guard columnCount > 0 else { return }
-        activeColumn = min(max(0, activeColumn + delta), columnCount - 1)
-        tableView.scrollColumnToVisible(activeColumn + 1)
-        refreshActiveCell()
-    }
-
-    @objc private func tableClicked(_ sender: Any?) {
-        if let column = dataColumn(atTableColumn: tableView.clickedColumn) {
-            activeColumn = column
+    /// NSTableView's own (invisible) selection follows the cursor row: editing needs it.
+    private func syncTableSelection() {
+        guard let row = activeRow else {
+            tableView.deselectAll(nil)
+            return
         }
-        refreshActiveCell()
+        if tableView.selectedRow != row {
+            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
     }
 
-    @objc private func tableDoubleClicked(_ sender: Any?) {
-        guard tableView.clickedRow >= 0,
-              let column = dataColumn(atTableColumn: tableView.clickedColumn) else { return }
-        activeColumn = column
-        editActiveCell()
+    private func redrawVisibleRows() {
+        let visible = tableView.rows(in: tableView.visibleRect)
+        guard visible.length > 0, tableView.numberOfColumns > 0 else { return }
+        tableView.reloadData(
+            forRowIndexes: IndexSet(integersIn: visible.location..<NSMaxRange(visible)),
+            columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
+        )
+    }
+
+    /// Moves the cursor by rows and columns, or to the edge of the table. With `extend` the
+    /// anchor stays and the selection grows.
+    private func moveCursor(rows: Int, columns: Int, extend: Bool = false, toEdge: Bool = false) {
+        guard dataRowCount > 0, columnCount > 0 else { return }
+        let current = selection ?? GridSelection(GridCell(row: 0, column: 0))
+        var target = current.cursor
+        if toEdge {
+            if rows != 0 { target.row = rows < 0 ? 0 : dataRowCount - 1 }
+            if columns != 0 { target.column = columns < 0 ? 0 : columnCount - 1 }
+        } else {
+            target.row += rows
+            target.column += columns
+        }
+        select(extend ? GridSelection(anchor: current.anchor, cursor: target) : GridSelection(target))
+    }
+
+    /// Size of the selection, and the sum and average of its numbers.
+    private func selectionSummary(_ selection: GridSelection) -> [String] {
+        var parts = [L("Selected: %@ × %@", Self.format(selection.rows.count), Self.format(selection.columns.count))]
+        guard selection.cellCount <= 2_000_000,
+              let stats = try? core.rangeStats(range: selection.range),
+              stats.numbers > 0 else { return parts }
+        parts.append(L("Sum: %@", Self.format(stats.sum)))
+        parts.append(L("Average: %@", Self.format(stats.sum / Double(stats.numbers))))
+        return parts
     }
 
     // MARK: Editing cells
@@ -506,28 +534,25 @@ final class GridViewController: NSViewController {
     }
 
     private func insertRow(below: Bool) {
-        let selection = tableView.selectedRowIndexes
-        let row: Int
-        if let first = selection.first, let last = selection.last {
-            row = below ? last + 1 : first
-        } else {
-            row = dataRowCount
-        }
+        let row = selection.map { below ? $0.rows.upperBound + 1 : $0.rows.lowerBound } ?? dataRowCount
+        let column = activeColumn
         if document.insertRows(beforeVisibleRow: row, count: 1) {
-            selectDataRow(row)
+            selectCell(row: row, column: column)
         }
     }
 
     @objc func deleteRows(_ sender: Any?) {
-        let selection = tableView.selectedRowIndexes
-        guard let first = selection.first else { return }
-        if document.deleteRows(visibleRows: Array(selection)) {
-            selectDataRow(min(first, dataRowCount - 1))
+        guard let selection else { return }
+        let column = activeColumn
+        if document.deleteRows(visibleRows: Array(selection.rows)) {
+            selectCell(row: min(selection.rows.lowerBound, dataRowCount - 1), column: column)
         }
     }
 
+    /// Edit ▸ Delete and the Delete key clear the selected cells.
     @objc func delete(_ sender: Any?) {
-        deleteRows(sender)
+        guard let selection else { return }
+        document.fillRange(selection.range, value: "", actionName: L("Clear"))
     }
 
     @objc func insertColumnLeft(_ sender: Any?) {
@@ -539,10 +564,10 @@ final class GridViewController: NSViewController {
     }
 
     private func insertColumn(at column: Int) {
-        guard document.insertColumn(at: column) else { return }
-        activeColumn = column
-        tableView.scrollColumnToVisible(column + 1)
-        refreshActiveCell()
+        let row = activeRow ?? 0
+        if document.insertColumn(at: column) {
+            selectCell(row: row, column: column)
+        }
     }
 
     @objc func deleteColumn(_ sender: Any?) {
@@ -559,18 +584,52 @@ final class GridViewController: NSViewController {
         reselect(fileRow: fileRow)
     }
 
-    /// Copies the selected rows as tab-separated text, which spreadsheets paste as cells.
+    /// Copies the selected cells as tab-separated text, which spreadsheets paste as cells.
     @objc func copy(_ sender: Any?) {
-        let rows = tableView.selectedRowIndexes
-        guard !rows.isEmpty else { return }
-        let text = rows.map { row in
-            let values = values(forRow: row)
-            return (0..<columnCount)
-                .map { Self.tsvField($0 < values.count ? values[$0] : "") }
-                .joined(separator: "\t")
-        }.joined(separator: "\n")
+        guard let selection, let text = try? core.copyRange(range: selection.range) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc func cut(_ sender: Any?) {
+        guard let selection else { return }
+        copy(sender)
+        document.fillRange(selection.range, value: "", actionName: L("Cutting"))
+    }
+
+    /// Pastes cells from the top-left of the selection, growing the table if needed. A single
+    /// copied value fills the whole selection.
+    @objc func paste(_ sender: Any?) {
+        guard let text = NSPasteboard.general.string(forType: .string) else { return }
+        paste(text: text)
+    }
+
+    func paste(text: String) {
+        let grid = parsePastedText(text: text)
+        guard !grid.isEmpty else { return }
+        let target = selection ?? GridSelection(GridCell(row: dataRowCount, column: 0))
+        if grid.count == 1, grid[0].count == 1, !target.isSingleCell {
+            document.fillRange(target.range, value: grid[0][0], actionName: L("Pasting"))
+            return
+        }
+        guard let written = document.paste(grid, atRow: target.rows.lowerBound, column: target.columns.lowerBound) else {
+            return
+        }
+        select(GridSelection(
+            anchor: GridCell(row: Int(written.bottom), column: Int(written.right)),
+            cursor: GridCell(row: Int(written.top), column: Int(written.left))
+        ))
+    }
+
+    /// Copies the top row of the selection down; with one row selected, copies the row above.
+    @objc func fillDown(_ sender: Any?) {
+        guard let selection else { return }
+        var range = selection.range
+        if selection.rows.count == 1 {
+            guard range.top > 0 else { return }
+            range.top -= 1
+        }
+        document.fillDown(range)
     }
 
     // MARK: Helpers
@@ -606,6 +665,10 @@ final class GridViewController: NSViewController {
     static func format(_ number: Int) -> String {
         numberFormatter.string(from: NSNumber(value: number)) ?? String(number)
     }
+
+    static func format(_ number: Double) -> String {
+        decimalFormatter.string(from: NSNumber(value: number)) ?? String(number)
+    }
 }
 
 // MARK: - Table data source and delegate
@@ -620,7 +683,9 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         if tableColumn.identifier == .rowNumberColumn {
             let cell = reusableCell(.rowNumberCell)
             let fileRow = cachedRow(row)?.fileRow ?? row
+            let selected = selection?.rows.contains(row) ?? false
             cell.textField?.stringValue = String(fileRow - headerOffset + 1)
+            cell.textField?.textColor = selected ? .controlAccentColor : .secondaryLabelColor
             return cell
         }
         guard let column = dataColumn(of: tableColumn) else { return nil }
@@ -628,13 +693,12 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         let value = value(row: row, column: column)
         cell.textField?.stringValue = Self.singleLine(value)
         cell.textField?.isEditable = !Self.isMultiline(value)
-        let isActive = row == activeRow && column == activeColumn
-        cell.layer?.borderWidth = isActive ? 2 : 0
+        let isCursor = selection?.cursor == GridCell(row: row, column: column)
+        let isSelected = selection.map { !$0.isSingleCell && $0.contains(row: row, column: column) } ?? false
+        cell.layer?.borderWidth = isCursor ? 2 : 0
+        cell.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        cell.layer?.backgroundColor = isSelected ? NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor : nil
         return cell
-    }
-
-    func tableViewSelectionDidChange(_ notification: Notification) {
-        refreshActiveCell()
     }
 
     /// Clicking a column header sorts by it: ascending, descending, then back to file order.
@@ -665,8 +729,6 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         let cell = NSTableCellView()
         cell.identifier = identifier
         cell.wantsLayer = true
-        // The active cell is always on the selected row, drawn in the accent color.
-        cell.layer?.borderColor = NSColor.alternateSelectedControlTextColor.cgColor
 
         let field = NSTextField(labelWithString: "")
         field.translatesAutoresizingMaskIntoConstraints = false
@@ -709,11 +771,11 @@ extension GridViewController: NSTextFieldDelegate {
         view.window?.makeFirstResponder(tableView)
         switch movement {
         case .return?:
-            selectDataRow(row + 1)
+            moveCursor(rows: 1, columns: 0)
         case .tab?:
-            moveActiveColumn(by: 1)
+            moveCursor(rows: 0, columns: 1)
         case .backtab?:
-            moveActiveColumn(by: -1)
+            moveCursor(rows: 0, columns: -1)
         default:
             break
         }
@@ -733,38 +795,95 @@ extension GridViewController: NSTextFieldDelegate {
     }
 }
 
-// MARK: - Keyboard
+// MARK: - Keyboard and mouse
 
-extension GridViewController: GridTableViewKeyHandler {
+extension GridViewController: GridTableViewInteraction {
     func gridTableView(_ tableView: GridTableView, handleKeyDown event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags
             .intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
-        guard modifiers.isEmpty || modifiers == .shift else { return false }
+        guard modifiers.subtracting([.shift, .command]).isEmpty else { return false }
+        let shift = modifiers.contains(.shift)
+        let command = modifiers.contains(.command)
 
+        if event.keyCode == 53 {  // Escape: collapse the selection to the active cell.
+            guard let selection, !selection.isSingleCell else { return false }
+            select(GridSelection(selection.cursor))
+            return true
+        }
+        let page = max(1, tableView.rows(in: tableView.visibleRect).length - 1)
         switch event.specialKey {
-        case .carriageReturn?, .enter?:
+        case .upArrow?:
+            moveCursor(rows: -1, columns: 0, extend: shift, toEdge: command)
+        case .downArrow?:
+            moveCursor(rows: 1, columns: 0, extend: shift, toEdge: command)
+        case .leftArrow?:
+            moveCursor(rows: 0, columns: -1, extend: shift, toEdge: command)
+        case .rightArrow?:
+            moveCursor(rows: 0, columns: 1, extend: shift, toEdge: command)
+        case .pageUp?:
+            moveCursor(rows: -page, columns: 0, extend: shift)
+        case .pageDown?:
+            moveCursor(rows: page, columns: 0, extend: shift)
+        case .home?:
+            moveCursor(rows: -1, columns: 0, extend: shift, toEdge: true)
+        case .end?:
+            moveCursor(rows: 1, columns: 0, extend: shift, toEdge: true)
+        case .carriageReturn? where modifiers.isEmpty, .enter? where modifiers.isEmpty:
             editActiveCell()
-            return true
-        case .leftArrow? where modifiers.isEmpty, .backTab?:
-            moveActiveColumn(by: -1)
-            return true
-        case .rightArrow? where modifiers.isEmpty, .tab?:
-            moveActiveColumn(by: 1)
-            return true
-        case .delete?, .deleteForward?:
-            guard let row = activeRow, columnCount > 0 else { return false }
-            document.setCell(visibleRow: row, column: activeColumn, value: "")
-            return true
-        case nil:
+        case .tab? where !command:
+            moveCursor(rows: 0, columns: 1)
+        case .backTab? where !command:
+            moveCursor(rows: 0, columns: -1)
+        case .delete? where !command, .deleteForward? where !command:
+            delete(nil)
+        case nil where !command:
             // Typing on a cell starts editing it with the typed text, as in a spreadsheet.
             guard let characters = event.characters, !characters.isEmpty,
                   !characters.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
                   activeRow != nil else { return false }
             editActiveCell(typing: characters)
-            return true
         default:
             return false
         }
+        return true
+    }
+
+    /// Clicking a cell selects it, Shift-click extends the selection, a click on a row number
+    /// selects the whole row, a double-click edits.
+    func gridTableView(_ tableView: GridTableView, mouseDownAtRow row: Int, tableColumn: Int, extend: Bool, clickCount: Int) {
+        selectingRows = tableColumn == 0
+        if selectingRows {
+            let anchorRow = extend ? (selection?.anchor.row ?? row) : row
+            select(GridSelection(
+                anchor: GridCell(row: anchorRow, column: columnCount - 1),
+                cursor: GridCell(row: row, column: 0)
+            ), scroll: false)
+            return
+        }
+        guard let column = dataColumn(atTableColumn: tableColumn) else { return }
+        let cell = GridCell(row: row, column: column)
+        if extend, let selection {
+            select(GridSelection(anchor: selection.anchor, cursor: cell), scroll: false)
+        } else {
+            select(GridSelection(cell), scroll: false)
+        }
+        if clickCount == 2 {
+            editActiveCell()
+        }
+    }
+
+    func gridTableView(_ tableView: GridTableView, mouseDraggedToRow row: Int, tableColumn: Int) {
+        guard let selection else { return }
+        let column = selectingRows ? 0 : (dataColumn(atTableColumn: tableColumn) ?? 0)
+        select(GridSelection(anchor: selection.anchor, cursor: GridCell(row: row, column: column)), scroll: false)
+    }
+
+    func gridTableViewSelectAll(_ tableView: GridTableView) {
+        guard dataRowCount > 0, columnCount > 0 else { return }
+        select(GridSelection(
+            anchor: GridCell(row: dataRowCount - 1, column: columnCount - 1),
+            cursor: GridCell(row: 0, column: 0)
+        ), scroll: false)
     }
 }

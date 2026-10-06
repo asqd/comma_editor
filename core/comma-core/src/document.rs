@@ -259,6 +259,11 @@ impl Document {
         &self.view.spec
     }
 
+    /// Whether rows are sorted or filtered.
+    pub fn has_view(&self) -> bool {
+        !self.view.spec.is_empty()
+    }
+
     /// Sorts and filters the visible rows. Fails on an invalid regular expression or column.
     pub fn set_view(&mut self, spec: ViewSpec) -> Result<()> {
         let columns = spec

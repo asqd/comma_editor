@@ -216,6 +216,28 @@ final class CSVDocument: NSDocument {
         return Int(count)
     }
 
+    /// Sets every cell of a range of visible cells; an empty value clears them.
+    @discardableResult
+    func fillRange(_ range: CellRange, value: String, actionName: String) -> Bool {
+        perform(actionName, .structure) { try $0.fillRange(range: range, value: value) > 0 }
+    }
+
+    /// Copies the top row of the range into the rows below it.
+    @discardableResult
+    func fillDown(_ range: CellRange) -> Bool {
+        perform(L("Filling Down"), .structure) { try $0.fillDown(range: range) > 0 }
+    }
+
+    /// Writes cells from (`row`, `column`), adding rows and columns as needed; returns the range written.
+    func paste(_ grid: [[String]], atRow row: Int, column: Int) -> CellRange? {
+        var written: CellRange?
+        perform(L("Pasting"), .structure) {
+            written = try $0.paste(top: UInt64(row), left: UInt64(column), grid: grid)
+            return written != nil
+        }
+        return written
+    }
+
     /// Sorting and filtering change what is shown, not the file, so they are not undoable.
     /// Throws on an invalid regular expression; callers show the error where it was typed.
     func setView(_ spec: ViewSpec) throws {

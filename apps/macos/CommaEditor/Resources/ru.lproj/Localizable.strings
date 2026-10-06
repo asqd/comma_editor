@@ -149,3 +149,13 @@
 "LF — macOS, Linux" = "LF — macOS, Linux";
 "CRLF — Windows" = "CRLF — Windows";
 "CR — classic Mac OS" = "CR — классическая Mac OS";
+
+/* Cell ranges */
+"Fill Down" = "Заполнить вниз";
+"Filling Down" = "заполнение вниз";
+"Clear" = "очистку ячеек";
+"Pasting" = "вставку";
+"Cutting" = "вырезание";
+"Selected: %@ × %@" = "Выделено: %@ × %@";
+"Sum: %@" = "Сумма: %@";
+"Average: %@" = "Среднее: %@";

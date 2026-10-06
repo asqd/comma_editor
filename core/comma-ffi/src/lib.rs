@@ -213,6 +213,52 @@ pub struct SearchQuery {
     pub column: Option<u64>,
 }
 
+/// Visible rows `top..=bottom` and columns `left..=right`.
+#[derive(uniffi::Record)]
+pub struct CellRange {
+    pub top: u64,
+    pub left: u64,
+    pub bottom: u64,
+    pub right: u64,
+}
+
+impl From<CellRange> for core::CellRange {
+    fn from(range: CellRange) -> Self {
+        Self {
+            top: range.top as usize,
+            left: range.left as usize,
+            bottom: range.bottom as usize,
+            right: range.right as usize,
+        }
+    }
+}
+
+impl From<core::CellRange> for CellRange {
+    fn from(range: core::CellRange) -> Self {
+        Self {
+            top: range.top as u64,
+            left: range.left as u64,
+            bottom: range.bottom as u64,
+            right: range.right as u64,
+        }
+    }
+}
+
+#[derive(uniffi::Record)]
+pub struct RangeStats {
+    pub cells: u64,
+    pub filled: u64,
+    pub numbers: u64,
+    pub sum: f64,
+}
+
+/// Cells from clipboard text: tab-separated text is split into cells, other text gives one
+/// cell per line.
+#[uniffi::export]
+pub fn parse_pasted_text(text: String) -> Vec<Vec<String>> {
+    core::parse_pasted_text(&text)
+}
+
 /// A visible row and a column.
 #[derive(uniffi::Record)]
 pub struct CellPosition {
@@ -485,6 +531,39 @@ impl CoreDocument {
     /// Replaces every match in the visible rows; returns the number of changed cells.
     pub fn replace_all(&self, query: SearchQuery, replacement: String) -> Result<u64, CoreError> {
         Ok(self.lock().replace_all(&query.into(), &replacement)? as u64)
+    }
+
+    // Ranges of visible cells.
+
+    pub fn copy_range(&self, range: CellRange) -> Result<String, CoreError> {
+        Ok(self.lock().copy_range(range.into())?)
+    }
+
+    pub fn range_stats(&self, range: CellRange) -> Result<RangeStats, CoreError> {
+        let stats = self.lock().range_stats(range.into())?;
+        Ok(RangeStats {
+            cells: stats.cells as u64,
+            filled: stats.filled as u64,
+            numbers: stats.numbers as u64,
+            sum: stats.sum,
+        })
+    }
+
+    /// Sets every cell of the range; returns the number of changed cells.
+    pub fn fill_range(&self, range: CellRange, value: String) -> Result<u64, CoreError> {
+        Ok(self.lock().fill_range(range.into(), &value)? as u64)
+    }
+
+    pub fn fill_down(&self, range: CellRange) -> Result<u64, CoreError> {
+        Ok(self.lock().fill_down(range.into())? as u64)
+    }
+
+    /// Writes `grid` from (`top`, `left`); returns the range written.
+    pub fn paste(&self, top: u64, left: u64, grid: Vec<Vec<String>>) -> Result<Option<CellRange>, CoreError> {
+        Ok(self
+            .lock()
+            .paste(top as usize, left as usize, &grid)?
+            .map(Into::into))
     }
 
     pub fn set_has_header(&self, has_header: bool) {

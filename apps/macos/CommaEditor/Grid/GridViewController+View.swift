@@ -215,8 +215,7 @@ extension GridViewController: NSMenuDelegate {
             guard let headerView = tableView.headerView, let event = NSApp.currentEvent else { return }
             let point = headerView.convert(event.locationInWindow, from: nil)
             if let column = dataColumn(atTableColumn: headerView.column(at: point)) {
-                activeColumn = column
-                refreshActiveCell()
+                selectCell(row: activeRow ?? 0, column: column)
             }
             return
         }
@@ -224,11 +223,9 @@ extension GridViewController: NSMenuDelegate {
         menu.removeAllItems()
         let row = tableView.clickedRow
         guard row >= 0, let column = dataColumn(atTableColumn: tableView.clickedColumn) else { return }
-        if !tableView.selectedRowIndexes.contains(row) {
-            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        if selection?.contains(row: row, column: column) != true {
+            select(GridSelection(GridCell(row: row, column: column)), scroll: false)
         }
-        activeColumn = column
-        refreshActiveCell()
 
         let value = value(row: row, column: column)
         var shown = Self.singleLine(value)
@@ -244,7 +241,9 @@ extension GridViewController: NSMenuDelegate {
         }
         menu.addItem(.separator())
         menu.addItem(menuItem(L("Edit Cell"), #selector(editCell(_:))))
+        menu.addItem(menuItem(L("Cut"), #selector(cut(_:))))
         menu.addItem(menuItem(L("Copy"), #selector(copy(_:))))
+        menu.addItem(menuItem(L("Paste"), #selector(paste(_:))))
         menu.addItem(.separator())
         menu.addItem(menuItem(L("Insert Row Above"), #selector(insertRowAbove(_:))))
         menu.addItem(menuItem(L("Insert Row Below"), #selector(insertRowBelow(_:))))
@@ -314,8 +313,12 @@ extension GridViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let spec = core.viewSpec()
         switch menuItem.action {
-        case #selector(deleteRows(_:)), #selector(delete(_:)), #selector(copy(_:)):
-            return !tableView.selectedRowIndexes.isEmpty
+        case #selector(deleteRows(_:)), #selector(delete(_:)), #selector(copy(_:)), #selector(cut(_:)):
+            return selection != nil
+        case #selector(paste(_:)):
+            return NSPasteboard.general.string(forType: .string) != nil
+        case #selector(fillDown(_:)):
+            return selection.map { $0.rows.count > 1 || $0.rows.lowerBound > 0 } ?? false
         case #selector(insertRowAbove(_:)), #selector(insertRowBelow(_:)):
             // A new empty row would jump away or be filtered out at once.
             return spec.sort.isEmpty && spec.filters.isEmpty
