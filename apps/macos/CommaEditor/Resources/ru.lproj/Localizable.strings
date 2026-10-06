@@ -130,3 +130,22 @@
 "Hide “%@”" = "Скрыть «%@»";
 "Show Only Empty" = "Показать только пустые";
 "Hide Empty" = "Скрыть пустые";
+
+/* Save formats */
+"Export…" = "Экспортировать…";
+"Export for Excel…" = "Экспортировать для Excel…";
+"Encoding:" = "Кодировка:";
+"Delimiter:" = "Разделитель:";
+"Line Endings:" = "Переводы строк:";
+"For Excel" = "Для Excel";
+"UTF-8 with BOM, CRLF and the list separator Excel uses with your region settings" = "UTF-8 с BOM, CRLF и разделитель, который Excel ожидает при ваших региональных настройках";
+"UTF-8 with BOM" = "UTF-8 с BOM";
+"Windows-1251 (Cyrillic)" = "Windows-1251 (кириллица)";
+"Windows-1252 (Western)" = "Windows-1252 (западноевропейская)";
+"Comma (,)" = "Запятая (,)";
+"Semicolon (;)" = "Точка с запятой (;)";
+"Vertical Bar (|)" = "Вертикальная черта (|)";
+"Other: “%@”" = "Другой: «%@»";
+"LF — macOS, Linux" = "LF — macOS, Linux";
+"CRLF — Windows" = "CRLF — Windows";
+"CR — classic Mac OS" = "CR — классическая Mac OS";

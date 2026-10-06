@@ -7,6 +7,7 @@ use crate::error::{Error, Result};
 use crate::history::{History, Splice, Transaction};
 use crate::parser::{self, Terminator};
 use crate::view::{self, CompiledFilter, ViewSpec};
+use crate::writer::SaveFormat;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Record {
@@ -50,7 +51,8 @@ impl Record {
     }
 }
 
-/// Summary of a document for the UI.
+/// Summary of a document for the UI. Encoding, BOM, delimiter and line endings are those the
+/// document will be saved with.
 #[derive(Clone, Debug)]
 pub struct Info {
     pub encoding: TextEncoding,
@@ -91,6 +93,8 @@ pub struct Document {
     unterminated_quote: bool,
     history: History,
     view: View,
+    /// Format to save in; the detected one unless "Save As" chose another.
+    format: SaveFormat,
 }
 
 impl Document {
@@ -113,6 +117,12 @@ impl Document {
             unterminated_quote: false,
             history: History::default(),
             view: View::default(),
+            format: SaveFormat {
+                encoding: TextEncoding::Utf8,
+                bom: false,
+                delimiter: b',',
+                line_ending: crate::dialect::LineEnding::Lf,
+            },
         }
     }
 
@@ -161,6 +171,12 @@ impl Document {
             unterminated_quote: scan.unterminated_quote,
             history: History::default(),
             view: View::default(),
+            format: SaveFormat {
+                encoding: prepared.encoding,
+                bom: prepared.has_bom,
+                delimiter: dialect.delimiter,
+                line_ending: dialect.line_ending,
+            },
         };
         document.has_header = document.records.len() > 1
             && document
@@ -171,9 +187,13 @@ impl Document {
 
     pub fn info(&self) -> Info {
         Info {
-            encoding: self.encoding,
-            has_bom: self.has_bom,
-            dialect: self.dialect,
+            encoding: self.format.encoding,
+            has_bom: self.format.bom,
+            dialect: Dialect {
+                delimiter: self.format.delimiter,
+                line_ending: self.format.line_ending,
+                ..self.dialect
+            },
             has_header: self.has_header,
             trailing_newline: self.trailing_newline,
             row_count: self.records.len(),
@@ -181,6 +201,27 @@ impl Document {
             visible_row_count: self.visible_row_count(),
             unterminated_quote: self.unterminated_quote,
         }
+    }
+
+    /// The format the file had when it was opened.
+    pub fn source_format(&self) -> SaveFormat {
+        SaveFormat {
+            encoding: self.encoding,
+            bom: self.has_bom,
+            delimiter: self.dialect.delimiter,
+            line_ending: self.dialect.line_ending,
+        }
+    }
+
+    pub fn save_format(&self) -> SaveFormat {
+        self.format
+    }
+
+    /// Format for later saves, as chosen in "Save As". The original format keeps saves byte-exact.
+    pub fn set_save_format(&mut self, format: SaveFormat) -> Result<()> {
+        format.validate(self.dialect.quote)?;
+        self.format = format;
+        Ok(())
     }
 
     pub fn row_count(&self) -> usize {

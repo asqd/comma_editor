@@ -66,6 +66,8 @@ enum MainMenu {
             item(L("Save As…"), #selector(NSDocument.saveAs(_:)), "S", [.command, .option]),
             item(L("Rename…"), #selector(NSDocument.rename(_:))),
             item(L("Move To…"), #selector(NSDocument.move(_:))),
+            item(L("Export…"), #selector(NSDocument.saveTo(_:))),
+            item(L("Export for Excel…"), #selector(CSVDocument.exportForExcel(_:)), "e", [.command, .shift]),
             item(L("Revert To Saved"), #selector(NSDocument.revertToSaved(_:))),
         ])
     }

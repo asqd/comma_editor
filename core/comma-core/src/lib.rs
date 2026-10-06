@@ -21,3 +21,4 @@ pub use error::{Error, Result};
 pub use parser::Terminator;
 pub use search::SearchQuery;
 pub use view::{Filter, FilterOp, SortKey, ViewSpec};
+pub use writer::SaveFormat;

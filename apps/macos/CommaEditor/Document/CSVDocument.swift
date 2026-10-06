@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// A CSV file open in the app. The data and the edit history live in the Rust core;
 /// each core edit is mirrored by one step in the document's undo manager.
@@ -16,6 +17,12 @@ final class CSVDocument: NSDocument {
     static let changeKey = "change"
 
     private(set) var core: CoreDocument
+
+    /// The format controls of the save panel being shown.
+    private var formatAccessory: SaveFormatAccessoryView?
+    /// Format of the copy being exported; the document keeps its own.
+    private var exportFormat: SaveFormat?
+    private var exportsForExcel = false
 
     override init() {
         core = CoreDocument.newEmpty()
@@ -46,13 +53,85 @@ final class CSVDocument: NSDocument {
         post(.structure)
     }
 
-    /// Unchanged records are copied byte for byte, so saving never reformats the file.
+    /// In its own format, unchanged records are copied byte for byte, so saving never
+    /// reformats the file.
     override func write(to url: URL, ofType typeName: String) throws {
         do {
-            try core.save(path: url.path)
+            if let exportFormat {
+                try core.saveWith(path: url.path, format: exportFormat)
+            } else {
+                try core.save(path: url.path)
+            }
         } catch {
             throw Self.userFacingError(error)
         }
+    }
+
+    // MARK: Save panel
+
+    /// The panel shows our format controls instead of NSDocument's file type menu.
+    override var shouldRunSavePanelWithAccessoryView: Bool { false }
+
+    override func prepareSavePanel(_ savePanel: NSSavePanel) -> Bool {
+        let accessory = SaveFormatAccessoryView(format: core.saveFormat())
+        accessory.onChange = { [weak savePanel] format in
+            savePanel?.allowedContentTypes = [SaveFormatAccessoryView.contentType(for: format)]
+        }
+        if exportsForExcel {
+            exportsForExcel = false
+            accessory.applyExcelPreset()
+        }
+        savePanel.accessoryView = accessory
+        savePanel.allowedContentTypes = [SaveFormatAccessoryView.contentType(for: accessory.format)]
+        formatAccessory = accessory
+        return true
+    }
+
+    override var fileTypeFromLastRunSavePanel: String? {
+        formatAccessory.map { SaveFormatAccessoryView.contentType(for: $0.format).identifier }
+            ?? super.fileTypeFromLastRunSavePanel
+    }
+
+    /// "Save As" switches the document to the chosen format; "Export" writes a copy in it.
+    override func save(
+        to url: URL,
+        ofType typeName: String,
+        for saveOperation: NSDocument.SaveOperationType,
+        completionHandler: @escaping (Error?) -> Void
+    ) {
+        var previousFormat: SaveFormat?
+        if let accessory = formatAccessory {
+            formatAccessory = nil
+            switch saveOperation {
+            case .saveAsOperation:
+                previousFormat = core.saveFormat()
+                do {
+                    try core.setSaveFormat(format: accessory.format)
+                } catch {
+                    completionHandler(Self.userFacingError(error))
+                    return
+                }
+            case .saveToOperation:
+                exportFormat = accessory.format
+            default:
+                break
+            }
+        }
+        super.save(to: url, ofType: typeName, for: saveOperation) { [weak self] error in
+            guard let self else { return completionHandler(error) }
+            self.exportFormat = nil
+            if error != nil, let previousFormat {
+                try? self.core.setSaveFormat(format: previousFormat)
+            }
+            self.post(.structure)
+            completionHandler(error)
+        }
+    }
+
+    /// File ▸ Export for Excel: the export panel with the Excel preset chosen.
+    @objc func exportForExcel(_ sender: Any?) {
+        exportsForExcel = true
+        saveTo(sender)
     }
 
     // MARK: Editing
@@ -218,6 +297,8 @@ final class CSVDocument: NSDocument {
             )
         case .LastColumn:
             userInfo[NSLocalizedDescriptionKey] = L("The last column cannot be deleted.")
+        case .InvalidDelimiter(let message):
+            userInfo[NSLocalizedDescriptionKey] = message
         case .InvalidPattern(let message):
             userInfo[NSLocalizedDescriptionKey] = L("The regular expression is not valid.")
             userInfo[NSLocalizedRecoverySuggestionErrorKey] = message

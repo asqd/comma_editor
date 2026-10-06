@@ -21,6 +21,9 @@ pub enum Error {
 
     #[error("invalid regular expression: {0}")]
     InvalidPattern(String),
+
+    #[error("{0} cannot be used as a delimiter")]
+    InvalidDelimiter(char),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

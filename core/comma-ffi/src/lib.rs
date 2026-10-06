@@ -24,6 +24,8 @@ pub enum CoreError {
     LastColumn,
     #[error("{message}")]
     InvalidPattern { message: String },
+    #[error("{message}")]
+    InvalidDelimiter { message: String },
 }
 
 impl From<core::Error> for CoreError {
@@ -48,6 +50,9 @@ impl From<core::Error> for CoreError {
             },
             core::Error::LastColumn => Self::LastColumn,
             core::Error::InvalidPattern(message) => Self::InvalidPattern { message },
+            core::Error::InvalidDelimiter(_) => Self::InvalidDelimiter {
+                message: error.to_string(),
+            },
         }
     }
 }
@@ -57,6 +62,87 @@ pub enum LineEnding {
     Lf,
     CrLf,
     Cr,
+}
+
+#[derive(uniffi::Enum)]
+pub enum TextEncoding {
+    Utf8,
+    Utf16Le,
+    Utf16Be,
+    Windows1251,
+    Koi8R,
+    Windows1252,
+}
+
+/// Encoding, BOM, delimiter and line endings a file is written with.
+#[derive(uniffi::Record)]
+pub struct SaveFormat {
+    pub encoding: TextEncoding,
+    pub bom: bool,
+    /// One ASCII character.
+    pub delimiter: String,
+    pub line_ending: LineEnding,
+}
+
+impl From<core::SaveFormat> for SaveFormat {
+    fn from(format: core::SaveFormat) -> Self {
+        Self {
+            encoding: match format.encoding {
+                core::TextEncoding::Utf8 => TextEncoding::Utf8,
+                core::TextEncoding::Utf16Le => TextEncoding::Utf16Le,
+                core::TextEncoding::Utf16Be => TextEncoding::Utf16Be,
+                core::TextEncoding::Windows1251 => TextEncoding::Windows1251,
+                core::TextEncoding::Koi8R => TextEncoding::Koi8R,
+                core::TextEncoding::Windows1252 => TextEncoding::Windows1252,
+            },
+            bom: format.bom,
+            delimiter: (format.delimiter as char).to_string(),
+            line_ending: format.line_ending.into(),
+        }
+    }
+}
+
+impl TryFrom<SaveFormat> for core::SaveFormat {
+    type Error = CoreError;
+
+    fn try_from(format: SaveFormat) -> Result<Self, CoreError> {
+        let mut chars = format.delimiter.chars();
+        let delimiter = match (chars.next(), chars.next()) {
+            (Some(c), None) if c.is_ascii() => c as u8,
+            _ => {
+                return Err(CoreError::InvalidDelimiter {
+                    message: format!("“{}” cannot be used as a delimiter", format.delimiter),
+                });
+            }
+        };
+        Ok(Self {
+            encoding: match format.encoding {
+                TextEncoding::Utf8 => core::TextEncoding::Utf8,
+                TextEncoding::Utf16Le => core::TextEncoding::Utf16Le,
+                TextEncoding::Utf16Be => core::TextEncoding::Utf16Be,
+                TextEncoding::Windows1251 => core::TextEncoding::Windows1251,
+                TextEncoding::Koi8R => core::TextEncoding::Koi8R,
+                TextEncoding::Windows1252 => core::TextEncoding::Windows1252,
+            },
+            bom: format.bom,
+            delimiter,
+            line_ending: match format.line_ending {
+                LineEnding::Lf => core::LineEnding::Lf,
+                LineEnding::CrLf => core::LineEnding::CrLf,
+                LineEnding::Cr => core::LineEnding::Cr,
+            },
+        })
+    }
+}
+
+impl From<core::LineEnding> for LineEnding {
+    fn from(line_ending: core::LineEnding) -> Self {
+        match line_ending {
+            core::LineEnding::Lf => Self::Lf,
+            core::LineEnding::CrLf => Self::CrLf,
+            core::LineEnding::Cr => Self::Cr,
+        }
+    }
 }
 
 #[derive(uniffi::Enum)]
@@ -260,11 +346,7 @@ impl CoreDocument {
             encoding: info.encoding.name().to_owned(),
             has_bom: info.has_bom,
             delimiter: (info.dialect.delimiter as char).to_string(),
-            line_ending: match info.dialect.line_ending {
-                core::LineEnding::Lf => LineEnding::Lf,
-                core::LineEnding::CrLf => LineEnding::CrLf,
-                core::LineEnding::Cr => LineEnding::Cr,
-            },
+            line_ending: info.dialect.line_ending.into(),
             quote_style: match info.dialect.quote_style {
                 core::QuoteStyle::Minimal => QuoteStyle::Minimal,
                 core::QuoteStyle::Always => QuoteStyle::Always,
@@ -415,6 +497,25 @@ impl CoreDocument {
 
     pub fn redo(&self) -> bool {
         self.lock().redo()
+    }
+
+    /// The format the file had when it was opened.
+    pub fn source_format(&self) -> SaveFormat {
+        self.lock().source_format().into()
+    }
+
+    /// The format saves use; changed by "Save As".
+    pub fn save_format(&self) -> SaveFormat {
+        self.lock().save_format().into()
+    }
+
+    pub fn set_save_format(&self, format: SaveFormat) -> Result<(), CoreError> {
+        Ok(self.lock().set_save_format(format.try_into()?)?)
+    }
+
+    /// Writes a copy in `format`; the document keeps its own format (for "Export").
+    pub fn save_with(&self, path: String, format: SaveFormat) -> Result<(), CoreError> {
+        Ok(self.lock().save_with(path, &format.try_into()?)?)
     }
 
     pub fn save(&self, path: String) -> Result<(), CoreError> {
