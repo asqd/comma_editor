@@ -199,3 +199,13 @@
 "Text Change" = "изменение текста";
 "empty: split at spaces" = "пусто — по пробелам";
 "empty: a space" = "пусто — пробел";
+
+/* Export */
+"Export As" = "Экспортировать как";
+"JSON…" = "JSON…";
+"Markdown…" = "Markdown…";
+"HTML…" = "HTML…";
+"SQL…" = "SQL…";
+"Excel Workbook (XLSX)…" = "Книга Excel (XLSX)…";
+"Copy As" = "Скопировать как";
+"Only the rows shown are exported, in the order shown." = "Экспортируются только показанные строки, в показанном порядке.";

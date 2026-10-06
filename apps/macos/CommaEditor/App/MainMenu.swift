@@ -69,6 +69,13 @@ enum MainMenu {
             item(L("Move To…"), #selector(NSDocument.move(_:))),
             item(L("Export…"), #selector(NSDocument.saveTo(_:))),
             item(L("Export for Excel…"), #selector(CSVDocument.exportForExcel(_:)), "e", [.command, .shift]),
+            submenuItem(L("Export As"), [
+                tagged(item(L("JSON…"), #selector(GridViewController.exportAs(_:))), 0),
+                tagged(item(L("Markdown…"), #selector(GridViewController.exportAs(_:))), 1),
+                tagged(item(L("HTML…"), #selector(GridViewController.exportAs(_:))), 2),
+                tagged(item(L("SQL…"), #selector(GridViewController.exportAs(_:))), 3),
+                tagged(item(L("Excel Workbook (XLSX)…"), #selector(GridViewController.exportAs(_:))), 4),
+            ]),
             item(L("Revert To Saved"), #selector(NSDocument.revertToSaved(_:))),
         ])
     }
@@ -81,6 +88,12 @@ enum MainMenu {
             item(L("Cut"), #selector(NSText.cut(_:)), "x"),
             item(L("Copy"), #selector(NSText.copy(_:)), "c"),
             item(L("Paste"), #selector(NSText.paste(_:)), "v"),
+            submenuItem(L("Copy As"), [
+                tagged(item(L("Markdown"), #selector(GridViewController.copyAs(_:))), 1),
+                tagged(item(L("JSON"), #selector(GridViewController.copyAs(_:))), 0),
+                tagged(item(L("HTML"), #selector(GridViewController.copyAs(_:))), 2),
+                tagged(item(L("SQL"), #selector(GridViewController.copyAs(_:))), 3),
+            ]),
             item(L("Delete"), #selector(NSText.delete(_:))),
             item(L("Select All"), #selector(NSText.selectAll(_:)), "a"),
             .separator(),
@@ -153,6 +166,11 @@ enum MainMenu {
             .separator(),
             item(L("Bring All to Front"), #selector(NSApplication.arrangeInFront(_:))),
         ])
+    }
+
+    private static func tagged(_ item: NSMenuItem, _ tag: Int) -> NSMenuItem {
+        item.tag = tag
+        return item
     }
 
     private static func submenuItem(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {

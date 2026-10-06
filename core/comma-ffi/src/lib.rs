@@ -26,6 +26,8 @@ pub enum CoreError {
     InvalidPattern { message: String },
     #[error("{message}")]
     InvalidDelimiter { message: String },
+    #[error("{message}")]
+    Export { message: String },
 }
 
 impl From<core::Error> for CoreError {
@@ -53,6 +55,7 @@ impl From<core::Error> for CoreError {
             core::Error::InvalidDelimiter(_) => Self::InvalidDelimiter {
                 message: error.to_string(),
             },
+            core::Error::Export(message) => Self::Export { message },
         }
     }
 }
@@ -242,6 +245,15 @@ impl From<core::CellRange> for CellRange {
             right: range.right as u64,
         }
     }
+}
+
+#[derive(uniffi::Enum)]
+pub enum ExportFormat {
+    Json,
+    Markdown,
+    Html,
+    Sql,
+    Xlsx,
 }
 
 #[derive(uniffi::Enum)]
@@ -573,6 +585,25 @@ impl CoreDocument {
             .lock()
             .paste(top as usize, left as usize, &grid)?
             .map(Into::into))
+    }
+
+    /// Visible rows of `range` (all visible cells when `None`) in `format`. `name` titles the
+    /// HTML page, SQL table and sheet; a `fragment` is for the clipboard.
+    pub fn export(
+        &self,
+        format: ExportFormat,
+        range: Option<CellRange>,
+        name: String,
+        fragment: bool,
+    ) -> Result<Vec<u8>, CoreError> {
+        let format = match format {
+            ExportFormat::Json => core::ExportFormat::Json,
+            ExportFormat::Markdown => core::ExportFormat::Markdown,
+            ExportFormat::Html => core::ExportFormat::Html,
+            ExportFormat::Sql => core::ExportFormat::Sql,
+            ExportFormat::Xlsx => core::ExportFormat::Xlsx,
+        };
+        Ok(self.lock().export(format, range.map(Into::into), &name, fragment)?)
     }
 
     // Column operations.

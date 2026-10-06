@@ -361,7 +361,7 @@ final class CSVDocument: NSDocument {
             )
         case .LastColumn:
             userInfo[NSLocalizedDescriptionKey] = L("The last column cannot be deleted.")
-        case .InvalidDelimiter(let message):
+        case .InvalidDelimiter(let message), .Export(let message):
             userInfo[NSLocalizedDescriptionKey] = message
         case .InvalidPattern(let message):
             userInfo[NSLocalizedDescriptionKey] = L("The regular expression is not valid.")

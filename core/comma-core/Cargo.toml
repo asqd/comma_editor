@@ -9,6 +9,7 @@ rust-version.workspace = true
 encoding_rs.workspace = true
 memchr.workspace = true
 regex.workspace = true
+rust_xlsxwriter.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

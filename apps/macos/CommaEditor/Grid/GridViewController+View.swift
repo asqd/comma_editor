@@ -321,6 +321,10 @@ extension GridViewController: NSMenuItemValidation {
             return selection != nil
         case #selector(mergeColumns(_:)):
             return (selection?.columns.count ?? 0) > 1
+        case #selector(copyAs(_:)):
+            return selection != nil
+        case #selector(exportAs(_:)):
+            return columnCount > 0
         case #selector(paste(_:)):
             return NSPasteboard.general.string(forType: .string) != nil
         case #selector(fillDown(_:)):

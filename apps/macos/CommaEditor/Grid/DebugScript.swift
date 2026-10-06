@@ -4,7 +4,8 @@ import AppKit
 /// Debug builds only: applies UI steps from `COMMA_DEBUG_SCRIPT` to the first window, so the
 /// sort, filter and find UI can be checked from the command line. Steps are separated by `;`:
 /// `sort=<column>:a|d`, `filter=<column|*>:<op>:<value>`, `find=<text>`, `replace`, `exportexcel`,
-/// `select=<row>,<column>:<row>,<column>`, `paste=<text>`, `filldown`, `action=<selector>`.
+/// `select=<row>,<column>:<row>,<column>`, `paste=<text>`, `filldown`, `action=<selector>`,
+/// `exportas=<0 JSON…4 XLSX>`.
 /// Example: `open --env COMMA_DEBUG_SCRIPT='sort=2:d;find=lon' -a CommaEditor file.csv`
 @MainActor
 enum DebugScript {
@@ -48,6 +49,10 @@ enum DebugScript {
                 grid.paste(text: argument.replacingOccurrences(of: "\\t", with: "\t").replacingOccurrences(of: "\\n", with: "\n"))
             case "filldown":
                 grid.fillDown(nil)
+            case "exportas":
+                let item = NSMenuItem()
+                item.tag = Int(argument) ?? 0
+                grid.exportAs(item)
             case "action":
                 // action=<selector>, e.g. action=trimSpaces: — any command of the grid.
                 NSApp.sendAction(Selector(argument), to: grid, from: nil)

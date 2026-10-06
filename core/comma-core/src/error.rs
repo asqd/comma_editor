@@ -24,6 +24,9 @@ pub enum Error {
 
     #[error("{0} cannot be used as a delimiter")]
     InvalidDelimiter(char),
+
+    #[error("{0}")]
+    Export(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
