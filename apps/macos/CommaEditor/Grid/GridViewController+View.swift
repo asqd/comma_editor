@@ -102,7 +102,11 @@ extension GridViewController {
 
     // MARK: Find and replace
 
+    /// ⌘F: the toolbar's search field, or the find bar when the toolbar has none.
     @objc func showFindBar(_ sender: Any?) {
+        if findContainer.isHidden, documentToolbar?.beginSearch() == true {
+            return
+        }
         showFindBar(replace: false)
     }
 
@@ -110,8 +114,22 @@ extension GridViewController {
         showFindBar(replace: true)
     }
 
+    func focusTable() {
+        view.window?.makeFirstResponder(tableView)
+    }
+
+    /// Typing in the toolbar's search field searches as you type.
+    func toolbarSearchChanged(_ text: String) {
+        findBar.searchField.stringValue = text
+        updateFindResults(jump: true)
+    }
+
     private func showFindBar(replace: Bool) {
+        if let field = documentToolbar?.searchField, !field.stringValue.isEmpty {
+            findBar.searchField.stringValue = field.stringValue
+        }
         findContainer.isHidden = false
+        updateStatus()
         findBar.isReplaceVisible = replace
         view.window?.makeFirstResponder(findBar.searchField)
         findBar.searchField.selectText(nil)
@@ -132,7 +150,7 @@ extension GridViewController {
     private func findMatch(forward: Bool, from position: CellPosition? = nil) {
         let query = findBar.query
         guard !query.text.isEmpty || query.wholeCell else {
-            showFindBar(replace: false)
+            showFindBar(nil)
             return
         }
         do {
@@ -150,18 +168,25 @@ extension GridViewController {
     private func updateFindResults(jump: Bool) {
         let query = findBar.query
         guard !query.text.isEmpty || query.wholeCell else {
-            findBar.showResult("")
+            showFindResult(nil)
             return
         }
         do {
             let count = Int(try core.countMatches(query: query))
-            findBar.showResult(count == 0 ? L("Not found") : L("Matches: %@", Self.format(count)))
+            showFindResult(count == 0 ? L("Not found") : L("Matches: %@", Self.format(count)))
             if count > 0 && jump {
                 findMatch(forward: true, from: positionBeforeActiveCell)
             }
         } catch {
-            findBar.showResult(L("Invalid regular expression"), isError: true)
+            showFindResult(L("Invalid regular expression"), isError: true)
         }
+    }
+
+    /// The search result goes to the find bar and, while the bar is hidden, to the status bar.
+    private func showFindResult(_ text: String?, isError: Bool = false) {
+        findBar.showResult(text ?? "", isError: isError)
+        searchSummary = text
+        updateStatus()
     }
 
     /// The cell just before the active one, so that a search can start at the active cell itself.
@@ -255,6 +280,7 @@ extension GridViewController: NSMenuDelegate {
 
 extension GridViewController: FindBarDelegate {
     func findBarQueryDidChange(_ bar: FindBarView) {
+        documentToolbar?.searchField?.stringValue = bar.searchField.stringValue
         updateFindResults(jump: true)
     }
 
@@ -283,6 +309,7 @@ extension GridViewController: FindBarDelegate {
 
     func findBarClose(_ bar: FindBarView) {
         findContainer.isHidden = true
+        updateStatus()
         view.window?.makeFirstResponder(tableView)
     }
 }
@@ -307,7 +334,25 @@ extension GridViewController: FilterBarDelegate {
     }
 }
 
-// MARK: - Menu validation
+// MARK: - Column header icons
+
+extension GridViewController: GridHeaderViewDelegate {
+    func gridHeaderView(_ headerView: GridHeaderView, didClickFilterOf tableColumn: Int) {
+        guard let column = dataColumn(atTableColumn: tableColumn) else { return }
+        filterContainer.isHidden = false
+        filterBar.beginRule(column: column)
+        updateStatus()
+    }
+}
+
+// MARK: - Menu and toolbar validation
+
+extension GridViewController: NSToolbarItemValidation {
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        let menuItem = NSMenuItem(title: "", action: item.action, keyEquivalent: "")
+        return validateMenuItem(menuItem)
+    }
+}
 
 extension GridViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {

@@ -69,6 +69,13 @@ final class FilterBarView: NSView {
         }
     }
 
+    /// Starts a condition on `column`: fills the first empty row or adds one, and focuses it.
+    func beginRule(column: Int) {
+        let row = rows.first { $0.isBlank } ?? addRow(after: rows.last)
+        row.selectColumn(column)
+        row.focus()
+    }
+
     func setSummary(_ text: String) {
         summaryLabel.stringValue = text
     }
@@ -211,6 +218,15 @@ private final class FilterRowView: NSStackView, NSTextFieldDelegate {
             columnPopUp.addItem(withTitle: title)
         }
         columnPopUp.selectItem(at: selected > 1 && selected < columnPopUp.numberOfItems ? selected : 0)
+    }
+
+    var isBlank: Bool {
+        valueField.stringValue.isEmpty && Self.operators[opPopUp.indexOfSelectedItem].0 != .isEmpty
+            && Self.operators[opPopUp.indexOfSelectedItem].0 != .isNotEmpty
+    }
+
+    func selectColumn(_ column: Int) {
+        columnPopUp.selectItem(at: column + 2)
     }
 
     func clear() {

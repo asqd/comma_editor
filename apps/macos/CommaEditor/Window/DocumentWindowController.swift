@@ -18,6 +18,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         return editor
     }()
 
+    let documentToolbar = DocumentToolbar()
+
     init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
@@ -26,6 +28,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
             defer: true
         )
         window.minSize = NSSize(width: 520, height: 320)
+        window.toolbarStyle = .unified
+        window.toolbar = documentToolbar.toolbar
         window.center()
         super.init(window: window)
         window.delegate = self
@@ -42,7 +46,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate {
         didSet {
             guard let document = document as? CSVDocument, contentViewController == nil else { return }
             let frame = window?.frame
-            contentViewController = GridViewController(document: document)
+            let grid = GridViewController(document: document)
+            grid.documentToolbar = documentToolbar
+            documentToolbar.grid = grid
+            contentViewController = grid
             if let frame {
                 window?.setFrame(frame, display: false)
             }

@@ -209,3 +209,20 @@
 "Excel Workbook (XLSX)…" = "Книга Excel (XLSX)…";
 "Copy As" = "Скопировать как";
 "Only the rows shown are exported, in the order shown." = "Экспортируются только показанные строки, в показанном порядке.";
+
+/* Toolbar */
+"Insert Row" = "Строка";
+"Insert Column" = "Колонка";
+"Sort" = "Сортировка";
+"Filter" = "Фильтр";
+"Export" = "Экспорт";
+"Insert a row below (⌥⌘↓)" = "Вставить строку ниже (⌥⌘↓)";
+"Insert a column to the right (⌥⌘→)" = "Вставить колонку справа (⌥⌘→)";
+"Delete the selected rows (⌘⌫)" = "Удалить выделенные строки (⌘⌫)";
+"Sort by the active column" = "Сортировать по активной колонке";
+"Show or hide the filter (⇧⌘L)" = "Показать или скрыть фильтр (⇧⌘L)";
+"Clean up text, fill empty cells, split and merge columns" = "Почистить текст, заполнить пустые ячейки, разделить и объединить колонки";
+"Export for Excel, JSON, Markdown, HTML, SQL" = "Экспорт для Excel, в JSON, Markdown, HTML, SQL";
+"Find in the table (⌘F)" = "Найти в таблице (⌘F)";
+"Show Toolbar" = "Показать панель инструментов";
+"Customize Toolbar…" = "Настроить панель инструментов…";

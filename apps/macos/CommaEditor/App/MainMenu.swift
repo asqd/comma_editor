@@ -69,13 +69,7 @@ enum MainMenu {
             item(L("Move To…"), #selector(NSDocument.move(_:))),
             item(L("Export…"), #selector(NSDocument.saveTo(_:))),
             item(L("Export for Excel…"), #selector(CSVDocument.exportForExcel(_:)), "e", [.command, .shift]),
-            submenuItem(L("Export As"), [
-                tagged(item(L("JSON…"), #selector(GridViewController.exportAs(_:))), 0),
-                tagged(item(L("Markdown…"), #selector(GridViewController.exportAs(_:))), 1),
-                tagged(item(L("HTML…"), #selector(GridViewController.exportAs(_:))), 2),
-                tagged(item(L("SQL…"), #selector(GridViewController.exportAs(_:))), 3),
-                tagged(item(L("Excel Workbook (XLSX)…"), #selector(GridViewController.exportAs(_:))), 4),
-            ]),
+            submenuItem(L("Export As"), exportAsItems()),
             item(L("Revert To Saved"), #selector(NSDocument.revertToSaved(_:))),
         ])
     }
@@ -133,7 +127,37 @@ enum MainMenu {
         ])
     }
 
-    private static func makeDataMenu() -> NSMenu {
+    /// File ▸ Export As items; also used by the toolbar's export menu.
+    static func exportAsItems() -> [NSMenuItem] {
+        [
+            tagged(item(L("JSON…"), #selector(GridViewController.exportAs(_:))), 0),
+            tagged(item(L("Markdown…"), #selector(GridViewController.exportAs(_:))), 1),
+            tagged(item(L("HTML…"), #selector(GridViewController.exportAs(_:))), 2),
+            tagged(item(L("SQL…"), #selector(GridViewController.exportAs(_:))), 3),
+            tagged(item(L("Excel Workbook (XLSX)…"), #selector(GridViewController.exportAs(_:))), 4),
+        ]
+    }
+
+    /// Menus for the toolbar: a menu can belong to one place only, so each call builds a new one.
+    static func makeToolbarExportMenu() -> NSMenu {
+        menu([
+            item(L("Export for Excel…"), #selector(CSVDocument.exportForExcel(_:))),
+            item(L("Export…"), #selector(NSDocument.saveTo(_:))),
+            .separator(),
+        ] + exportAsItems())
+    }
+
+    static func makeToolbarSortMenu() -> NSMenu {
+        menu([
+            item(L("Sort Ascending"), #selector(GridViewController.sortAscending(_:))),
+            item(L("Sort Descending"), #selector(GridViewController.sortDescending(_:))),
+            item(L("Clear Sort"), #selector(GridViewController.clearSort(_:))),
+            .separator(),
+            item(L("Reorder Rows in File"), #selector(GridViewController.applySortToFile(_:))),
+        ])
+    }
+
+    static func makeDataMenu() -> NSMenu {
         menu([
             submenuItem(L("Text"), [
                 item(L("Trim Spaces"), #selector(GridViewController.trimSpaces(_:))),
@@ -155,6 +179,9 @@ enum MainMenu {
 
     private static func makeViewMenu() -> NSMenu {
         menu([
+            item(L("Show Toolbar"), #selector(NSWindow.toggleToolbarShown(_:)), "t", [.command, .option]),
+            item(L("Customize Toolbar…"), #selector(NSWindow.runToolbarCustomizationPalette(_:))),
+            .separator(),
             item(L("Enter Full Screen"), #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]),
         ])
     }

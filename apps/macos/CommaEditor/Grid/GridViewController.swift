@@ -28,6 +28,10 @@ final class GridViewController: NSViewController {
     private var rowCache: [Int: CachedRow] = [:]
     /// The current drag started on row numbers and selects whole rows.
     private var selectingRows = false
+    /// The window's toolbar, for its search field and sort and filter state.
+    weak var documentToolbar: DocumentToolbar?
+    /// Result of the last search, shown in the status bar.
+    var searchSummary: String?
     private var changeObserver: NSObjectProtocol?
 
     private struct CachedRow {
@@ -170,7 +174,9 @@ final class GridViewController: NSViewController {
         tableView.allowsColumnResizing = true
         tableView.allowsColumnSelection = false
         tableView.columnAutoresizingStyle = .noColumnAutoresizing
-        tableView.headerView = NSTableHeaderView()
+        let header = GridHeaderView()
+        header.gridDelegate = self
+        tableView.headerView = header
         tableView.dataSource = self
         tableView.delegate = self
         tableView.interaction = self
@@ -214,6 +220,10 @@ final class GridViewController: NSViewController {
 
         for index in 0..<columnCount {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("c\(index)"))
+            let cell = GridHeaderCell(textCell: "")
+            cell.font = column.headerCell.font
+            cell.alignment = column.headerCell.alignment
+            column.headerCell = cell
             column.width = widths[column.identifier.rawValue] ?? Self.defaultColumnWidth
             column.minWidth = 36
             column.resizingMask = .userResizingMask
@@ -232,23 +242,23 @@ final class GridViewController: NSViewController {
             column.title = name.isEmpty ? Self.columnLetter(index) : name
         }
         tableView.headerView?.needsDisplay = true
-        updateSortIndicators()
+        updateHeaderIcons()
         let titles = (0..<columnCount).map(columnTitle)
         findBar.setColumns(titles)
         filterBar.setColumns(titles)
     }
 
-    private func updateSortIndicators() {
-        let keys = core.viewSpec().sort
+    /// Sort and filter icons in the column headers.
+    private func updateHeaderIcons() {
+        let spec = core.viewSpec()
+        let keys = spec.sort
         for column in tableView.tableColumns {
-            tableView.setIndicatorImage(nil, in: column)
+            guard let cell = column.headerCell as? GridHeaderCell, let index = dataColumn(of: column) else { continue }
+            let key = keys.first { Int($0.column) == index }
+            cell.sort = key.map { $0.ascending ? .ascending : .descending } ?? .none
+            cell.isFiltered = spec.filters.contains { $0.column.map { Int($0) } == index }
         }
-        for key in keys {
-            let index = Int(key.column) + 1
-            guard index < tableView.tableColumns.count else { continue }
-            let name = key.ascending ? "NSAscendingSortIndicator" : "NSDescendingSortIndicator"
-            tableView.setIndicatorImage(NSImage(named: NSImage.Name(name)), in: tableView.tableColumns[index])
-        }
+        tableView.headerView?.needsDisplay = true
         tableView.highlightedTableColumn = keys.first.flatMap { key in
             let index = Int(key.column) + 1
             return index < tableView.tableColumns.count ? tableView.tableColumns[index] : nil
@@ -376,6 +386,10 @@ final class GridViewController: NSViewController {
         if let selection, !selection.isSingleCell {
             parts.insert(contentsOf: selectionSummary(selection), at: 0)
         }
+        if let searchSummary, findContainer.isHidden {
+            parts.insert(searchSummary, at: 0)
+        }
+        documentToolbar?.update(sortActive: !spec.sort.isEmpty, filterActive: !spec.filters.isEmpty)
         statusLabel.stringValue = parts.joined(separator: "   ·   ")
         filterBar.setSummary(
             spec.filters.isEmpty ? "" : L("Showing %@ of %@", Self.format(dataRowCount), Self.format(totalDataRowCount))
