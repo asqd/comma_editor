@@ -74,3 +74,59 @@
 "Row %ld, column %@" = "Строка %ld, колонка %@";
 "Save" = "Сохранить";
 "Line breaks are kept. Press ⌘↩ to save." = "Переносы строк сохраняются. ⌘↩ — сохранить.";
+
+/* Find */
+"Find" = "Найти";
+"Find…" = "Найти…";
+"Find and Replace…" = "Найти и заменить…";
+"Find Next" = "Найти далее";
+"Find Previous" = "Найти ранее";
+"Replace with" = "Заменить на";
+"Replace" = "Заменить";
+"Replace All" = "Заменить все";
+"Match Case" = "Учитывать регистр";
+"Whole Cell" = "Ячейка целиком";
+"Regex" = "Регулярное выражение";
+"Use a regular expression; replacements can refer to groups as $1." = "Искать по регулярному выражению; в замене можно ссылаться на группы: $1.";
+"All Columns" = "Все колонки";
+"Done" = "Готово";
+"Not found" = "Не найдено";
+"Matches: %@" = "Совпадений: %@";
+"Replaced: %@" = "Заменено: %@";
+"Invalid regular expression" = "Ошибка в регулярном выражении";
+"The regular expression is not valid." = "Регулярное выражение содержит ошибку.";
+"Replacement" = "замену";
+
+/* Sort */
+"Sort Ascending" = "Сортировать по возрастанию";
+"Sort Descending" = "Сортировать по убыванию";
+"Clear Sort" = "Сбросить сортировку";
+"Reorder Rows in File" = "Упорядочить строки в файле";
+"Sorting" = "упорядочивание строк";
+"Sorted by %@" = "Сортировка: %@";
+"Row number in the file" = "Номер строки в файле";
+
+/* Filter */
+"Show Filter" = "Показать фильтр";
+"Hide Filter" = "Скрыть фильтр";
+"Clear Filter" = "Сбросить фильтр";
+"Showing %@ of %@" = "Показано %@ из %@";
+"Any Column" = "Любая колонка";
+"Value" = "Значение";
+"Remove Condition" = "Удалить условие";
+"Add Condition" = "Добавить условие";
+"contains" = "содержит";
+"does not contain" = "не содержит";
+"is" = "равно";
+"is not" = "не равно";
+"begins with" = "начинается с";
+"ends with" = "заканчивается на";
+"matches regex" = "соответствует regex";
+"is greater than" = "больше";
+"is less than" = "меньше";
+"is empty" = "пусто";
+"is not empty" = "не пусто";
+"Show Only “%@”" = "Показать только «%@»";
+"Hide “%@”" = "Скрыть «%@»";
+"Show Only Empty" = "Показать только пустые";
+"Hide Empty" = "Скрыть пустые";

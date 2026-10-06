@@ -6,20 +6,34 @@ private extension NSUserInterfaceItemIdentifier {
     static let dataCell = NSUserInterfaceItemIdentifier("dataCell")
 }
 
-/// The table of a document. Rows are fetched from the core in blocks as they scroll into view.
+/// The table of a document, with the find and filter bars above it and a status bar below.
 ///
-/// Row indices here are *data rows*: when the first row is a header, data row 0 is core row 1.
-/// The active cell is the selected row (when exactly one is selected) and `activeColumn`.
+/// Rows here are *visible rows*: data rows as the current sort and filters show them. They are
+/// fetched from the core in blocks as they scroll into view. The active cell is the selected row
+/// (when exactly one is selected) and `activeColumn`.
 final class GridViewController: NSViewController {
-    private let document: CSVDocument
+    let document: CSVDocument
+    let tableView = GridTableView()
+    let findBar = FindBarView()
+    let filterBar = FilterBarView()
+    let findContainer: NSView
+    let filterContainer: NSView
+    let headerMenu = NSMenu()
+    let cellMenu = NSMenu()
+    var activeColumn = 0
+    private(set) var info: DocumentInfo
+
     private let scrollView = NSScrollView()
-    private let tableView = GridTableView()
     private let statusLabel = NSTextField(labelWithString: "")
-    private var info: DocumentInfo
-    private var rowCache: [Int: [String]] = [:]
-    private var activeColumn = 0
+    private var rowCache: [Int: CachedRow] = [:]
     private var highlightedRow: Int?
     private var changeObserver: NSObjectProtocol?
+
+    private struct CachedRow {
+        let values: [String]
+        /// Row of the file, the header row counted.
+        let fileRow: Int
+    }
 
     private static let cacheBlock = 128
     private static let cacheLimit = 8_192
@@ -33,6 +47,8 @@ final class GridViewController: NSViewController {
     init(document: CSVDocument) {
         self.document = document
         self.info = document.core.info()
+        findContainer = Self.withBottomSeparator(findBar)
+        filterContainer = Self.withBottomSeparator(filterBar)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -47,10 +63,12 @@ final class GridViewController: NSViewController {
         }
     }
 
-    private var core: CoreDocument { document.core }
-    private var headerOffset: Int { info.hasHeader ? 1 : 0 }
-    private var dataRowCount: Int { max(0, Int(info.rowCount) - headerOffset) }
-    private var columnCount: Int { Int(info.columnCount) }
+    var core: CoreDocument { document.core }
+    var dataRowCount: Int { Int(info.visibleRowCount) }
+    var columnCount: Int { Int(info.columnCount) }
+    private var headerOffset: Int { info.hasHeader && info.rowCount > 0 ? 1 : 0 }
+    /// Data rows in the file, shown or not.
+    var totalDataRowCount: Int { Int(info.rowCount) - headerOffset }
 
     // MARK: View
 
@@ -63,37 +81,50 @@ final class GridViewController: NSViewController {
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
-        let separator = NSBox()
-        separator.boxType = .separator
-
         statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        for subview in [scrollView, separator, statusLabel] as [NSView] {
-            subview.translatesAutoresizingMaskIntoConstraints = false
-            root.addSubview(subview)
-        }
+        let statusBar = NSView()
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusBar.addSubview(statusLabel)
         NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: root.topAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            separator.topAnchor.constraint(equalTo: scrollView.bottomAnchor),
-            separator.leadingAnchor.constraint(equalTo: root.leadingAnchor),
-            separator.trailingAnchor.constraint(equalTo: root.trailingAnchor),
-            separator.heightAnchor.constraint(equalToConstant: 1),
-            statusLabel.topAnchor.constraint(equalTo: separator.bottomAnchor, constant: 5),
-            statusLabel.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -10),
-            statusLabel.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -6),
+            statusLabel.topAnchor.constraint(equalTo: statusBar.topAnchor, constant: 5),
+            statusLabel.bottomAnchor.constraint(equalTo: statusBar.bottomAnchor, constant: -6),
+            statusLabel.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 10),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: statusBar.trailingAnchor, constant: -10),
         ])
+        let separator = NSBox()
+        separator.boxType = .separator
+
+        let stack = NSStackView(views: [findContainer, filterContainer, scrollView, separator, statusBar])
+        stack.orientation = .vertical
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: root.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+        ])
+        for view in stack.arrangedSubviews {
+            view.leadingAnchor.constraint(equalTo: stack.leadingAnchor).isActive = true
+            view.trailingAnchor.constraint(equalTo: stack.trailingAnchor).isActive = true
+            view.setContentHuggingPriority(.required, for: .vertical)
+        }
+        scrollView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        findContainer.isHidden = true
+        filterContainer.isHidden = true
         view = root
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         configureTableView()
+        configureMenus()
+        findBar.delegate = self
+        filterBar.delegate = self
         rebuildColumns()
         updateStatus()
         changeObserver = NotificationCenter.default.addObserver(
@@ -113,6 +144,9 @@ final class GridViewController: NSViewController {
         if tableView.selectedRow < 0 {
             selectDataRow(0)
         }
+        #if DEBUG
+        DebugScript.run(on: self)
+        #endif
     }
 
     private func configureTableView() {
@@ -137,6 +171,26 @@ final class GridViewController: NSViewController {
         tableView.doubleAction = #selector(tableDoubleClicked(_:))
     }
 
+    private static func withBottomSeparator(_ content: NSView) -> NSView {
+        let container = NSView()
+        let separator = NSBox()
+        separator.boxType = .separator
+        for view in [content, separator] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            content.topAnchor.constraint(equalTo: container.topAnchor),
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            separator.topAnchor.constraint(equalTo: content.bottomAnchor),
+            separator.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+        return container
+    }
+
     // MARK: Columns
 
     private func rebuildColumns() {
@@ -150,6 +204,7 @@ final class GridViewController: NSViewController {
         numbers.title = ""
         numbers.isEditable = false
         numbers.resizingMask = []
+        numbers.headerToolTip = L("Row number in the file")
         tableView.addTableColumn(numbers)
 
         for index in 0..<columnCount {
@@ -173,48 +228,75 @@ final class GridViewController: NSViewController {
             column.title = name.isEmpty ? Self.columnLetter(index) : name
         }
         tableView.headerView?.needsDisplay = true
+        updateSortIndicators()
+        let titles = (0..<columnCount).map(columnTitle)
+        findBar.setColumns(titles)
+        filterBar.setColumns(titles)
+    }
+
+    private func updateSortIndicators() {
+        let keys = core.viewSpec().sort
+        for column in tableView.tableColumns {
+            tableView.setIndicatorImage(nil, in: column)
+        }
+        for key in keys {
+            let index = Int(key.column) + 1
+            guard index < tableView.tableColumns.count else { continue }
+            let name = key.ascending ? "NSAscendingSortIndicator" : "NSDescendingSortIndicator"
+            tableView.setIndicatorImage(NSImage(named: NSImage.Name(name)), in: tableView.tableColumns[index])
+        }
+        tableView.highlightedTableColumn = keys.first.flatMap { key in
+            let index = Int(key.column) + 1
+            return index < tableView.tableColumns.count ? tableView.tableColumns[index] : nil
+        }
     }
 
     private func updateRowNumberWidth() {
-        let digits = max(3, String(dataRowCount).count)
+        let digits = max(3, String(Int(info.rowCount)).count)
         tableView.tableColumn(withIdentifier: .rowNumberColumn)?.width = CGFloat(digits) * 8 + 14
     }
 
-    private func dataColumn(of tableColumn: NSTableColumn) -> Int? {
+    func dataColumn(of tableColumn: NSTableColumn) -> Int? {
         let raw = tableColumn.identifier.rawValue
         guard raw.hasPrefix("c") else { return nil }
         return Int(raw.dropFirst())
     }
 
-    private func dataColumn(atTableColumn index: Int) -> Int? {
+    func dataColumn(atTableColumn index: Int) -> Int? {
         guard index >= 0, index < tableView.tableColumns.count else { return nil }
         return dataColumn(of: tableView.tableColumns[index])
     }
 
-    private func columnTitle(_ column: Int) -> String {
+    func columnTitle(_ column: Int) -> String {
         let index = column + 1
         return index < tableView.tableColumns.count ? tableView.tableColumns[index].title : Self.columnLetter(column)
     }
 
     // MARK: Data
 
-    private func values(forDataRow row: Int) -> [String] {
-        let coreRow = row + headerOffset
-        if let cached = rowCache[coreRow] {
+    private func cachedRow(_ row: Int) -> CachedRow? {
+        if let cached = rowCache[row] {
             return cached
         }
+        guard row >= 0, row < dataRowCount else { return nil }
         if rowCache.count > Self.cacheLimit {
             rowCache.removeAll(keepingCapacity: true)
         }
-        let start = coreRow - coreRow % Self.cacheBlock
-        for (offset, values) in core.rows(start: UInt64(start), count: UInt64(Self.cacheBlock)).enumerated() {
-            rowCache[start + offset] = values
+        let start = row - row % Self.cacheBlock
+        for (offset, values) in core.visibleRows(start: UInt64(start), count: UInt64(Self.cacheBlock)).enumerated() {
+            let visibleRow = start + offset
+            let fileRow = core.visibleRecord(visibleRow: UInt64(visibleRow)).map { Int($0) } ?? visibleRow
+            rowCache[visibleRow] = CachedRow(values: values, fileRow: fileRow)
         }
-        return rowCache[coreRow] ?? []
+        return rowCache[row]
     }
 
-    private func value(dataRow row: Int, column: Int) -> String {
-        let values = values(forDataRow: row)
+    func values(forRow row: Int) -> [String] {
+        cachedRow(row)?.values ?? []
+    }
+
+    func value(row: Int, column: Int) -> String {
+        let values = values(forRow: row)
         return column < values.count ? values[column] : ""
     }
 
@@ -223,20 +305,22 @@ final class GridViewController: NSViewController {
         info = core.info()
         let change = notification.userInfo?[CSVDocument.changeKey] as? CSVDocument.Change
         let sameShape = previous.rowCount == info.rowCount
+            && previous.visibleRowCount == info.visibleRowCount
             && previous.columnCount == info.columnCount
             && previous.hasHeader == info.hasHeader
 
-        if case .cell(let row, _)? = change, sameShape {
+        switch change {
+        case .cell(let row, _)? where sameShape:
             rowCache[row] = nil
-            if info.hasHeader && row == 0 {
-                refreshColumnTitles()
-            } else {
+            if row < tableView.numberOfRows {
                 tableView.reloadData(
-                    forRowIndexes: IndexSet(integer: row - headerOffset),
+                    forRowIndexes: IndexSet(integer: row),
                     columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
                 )
             }
-        } else {
+        case .header? where sameShape:
+            refreshColumnTitles()
+        default:
             rowCache.removeAll(keepingCapacity: true)
             if previous.columnCount != info.columnCount || previous.hasHeader != info.hasHeader {
                 rebuildColumns()
@@ -246,13 +330,15 @@ final class GridViewController: NSViewController {
             }
             highlightedRow = nil
             tableView.reloadData()
+            syncFilterBar()
         }
         updateStatus()
     }
 
     // MARK: Status bar
 
-    private func updateStatus() {
+    func updateStatus() {
+        let spec = core.viewSpec()
         let delimiter = switch info.delimiter {
         case "\t": L("Tab")
         case " ": L("Space")
@@ -263,36 +349,68 @@ final class GridViewController: NSViewController {
         case .crLf: "CRLF"
         case .cr: "CR"
         }
-        var parts = [
-            L("Rows: %@", Self.format(dataRowCount)),
+        var parts: [String] = []
+        if spec.filters.isEmpty {
+            parts.append(L("Rows: %@", Self.format(dataRowCount)))
+        } else {
+            parts.append(L("Showing %@ of %@", Self.format(dataRowCount), Self.format(totalDataRowCount)))
+        }
+        parts += [
             L("Columns: %@", Self.format(columnCount)),
             info.hasBom ? L("%@ with BOM", info.encoding) : info.encoding,
             L("Delimiter: %@", delimiter),
             lineEnding,
         ]
-        if info.hasHeader {
-            parts.append(L("Header row"))
+        if !spec.sort.isEmpty {
+            let keys = spec.sort.map { columnTitle(Int($0.column)) + ($0.ascending ? " ↑" : " ↓") }
+            parts.append(L("Sorted by %@", keys.joined(separator: ", ")))
         }
         if info.unterminatedQuote {
             parts.append(L("Unclosed quote"))
         }
         statusLabel.stringValue = parts.joined(separator: "   ·   ")
+        filterBar.setSummary(
+            spec.filters.isEmpty ? "" : L("Showing %@ of %@", Self.format(dataRowCount), Self.format(totalDataRowCount))
+        )
     }
 
     // MARK: Selection and the active cell
 
-    private func selectDataRow(_ row: Int) {
+    func selectDataRow(_ row: Int) {
         guard row >= 0, row < dataRowCount else { return }
         tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         tableView.scrollRowToVisible(row)
     }
 
-    private var activeRow: Int? {
+    var activeRow: Int? {
         tableView.selectedRowIndexes.count == 1 ? tableView.selectedRow : nil
     }
 
+    /// The file row of the active cell, which survives re-sorting and filtering.
+    var activeFileRow: Int? {
+        activeRow.flatMap { cachedRow($0)?.fileRow }
+    }
+
+    /// Selects a file row again after the view changed, if it is still visible.
+    func reselect(fileRow: Int?) {
+        guard let fileRow, let row = core.visibleIndex(row: UInt64(fileRow)) else {
+            tableView.deselectAll(nil)
+            selectDataRow(0)
+            return
+        }
+        selectDataRow(Int(row))
+    }
+
+    /// Moves the active cell, scrolling it into view.
+    func activate(row: Int, column: Int) {
+        activeColumn = column
+        selectDataRow(row)
+        tableView.scrollColumnToVisible(column + 1)
+        refreshActiveCell()
+    }
+
     /// Redraws the row that shows the active cell and the row that showed it before.
-    private func refreshActiveCell() {
+    func refreshActiveCell() {
         var rows = IndexSet()
         if let highlightedRow { rows.insert(highlightedRow) }
         if let activeRow { rows.insert(activeRow) }
@@ -317,13 +435,10 @@ final class GridViewController: NSViewController {
     }
 
     @objc private func tableDoubleClicked(_ sender: Any?) {
-        guard let column = dataColumn(atTableColumn: tableView.clickedColumn) else { return }
+        guard tableView.clickedRow >= 0,
+              let column = dataColumn(atTableColumn: tableView.clickedColumn) else { return }
         activeColumn = column
-        if tableView.clickedRow < 0 {
-            promptToRenameColumn(column)
-        } else {
-            editActiveCell()
-        }
+        editActiveCell()
     }
 
     // MARK: Editing cells
@@ -332,7 +447,7 @@ final class GridViewController: NSViewController {
     /// Values with line breaks open in a sheet instead.
     private func editActiveCell(typing text: String? = nil) {
         guard let row = activeRow, columnCount > 0 else { return }
-        if Self.isMultiline(value(dataRow: row, column: activeColumn)) {
+        if Self.isMultiline(value(row: row, column: activeColumn)) {
             presentCellEditor(row: row, column: activeColumn)
             return
         }
@@ -346,10 +461,9 @@ final class GridViewController: NSViewController {
     private func presentCellEditor(row: Int, column: Int) {
         let editor = CellEditorViewController(
             heading: L("Row %ld, column %@", row + 1, columnTitle(column)),
-            value: value(dataRow: row, column: column)
+            value: value(row: row, column: column)
         ) { [weak self] newValue in
-            guard let self else { return }
-            self.document.setCell(row: row + self.headerOffset, column: column, value: newValue)
+            self?.document.setCell(visibleRow: row, column: column, value: newValue)
         }
         presentAsSheet(editor)
     }
@@ -399,7 +513,7 @@ final class GridViewController: NSViewController {
         } else {
             row = dataRowCount
         }
-        if document.insertRows(at: row + headerOffset, count: 1) {
+        if document.insertRows(beforeVisibleRow: row, count: 1) {
             selectDataRow(row)
         }
     }
@@ -407,7 +521,7 @@ final class GridViewController: NSViewController {
     @objc func deleteRows(_ sender: Any?) {
         let selection = tableView.selectedRowIndexes
         guard let first = selection.first else { return }
-        if document.deleteRows(selection.map { $0 + headerOffset }) {
+        if document.deleteRows(visibleRows: Array(selection)) {
             selectDataRow(min(first, dataRowCount - 1))
         }
     }
@@ -440,7 +554,9 @@ final class GridViewController: NSViewController {
     }
 
     @objc func toggleHeaderRow(_ sender: Any?) {
+        let fileRow = activeFileRow
         document.setHasHeader(!info.hasHeader)
+        reselect(fileRow: fileRow)
     }
 
     /// Copies the selected rows as tab-separated text, which spreadsheets paste as cells.
@@ -448,7 +564,7 @@ final class GridViewController: NSViewController {
         let rows = tableView.selectedRowIndexes
         guard !rows.isEmpty else { return }
         let text = rows.map { row in
-            let values = values(forDataRow: row)
+            let values = values(forRow: row)
             return (0..<columnCount)
                 .map { Self.tsvField($0 < values.count ? values[$0] : "") }
                 .joined(separator: "\t")
@@ -470,11 +586,11 @@ final class GridViewController: NSViewController {
         return letters
     }
 
-    private static func isMultiline(_ value: String) -> Bool {
+    static func isMultiline(_ value: String) -> Bool {
         value.unicodeScalars.contains { $0 == "\n" || $0 == "\r" }
     }
 
-    private static func singleLine(_ value: String) -> String {
+    static func singleLine(_ value: String) -> String {
         guard isMultiline(value) else { return value }
         return value
             .replacingOccurrences(of: "\r\n", with: " ↵ ")
@@ -487,7 +603,7 @@ final class GridViewController: NSViewController {
         return needsQuotes ? "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" : value
     }
 
-    private static func format(_ number: Int) -> String {
+    static func format(_ number: Int) -> String {
         numberFormatter.string(from: NSNumber(value: number)) ?? String(number)
     }
 }
@@ -503,12 +619,13 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         guard let tableColumn else { return nil }
         if tableColumn.identifier == .rowNumberColumn {
             let cell = reusableCell(.rowNumberCell)
-            cell.textField?.stringValue = String(row + 1)
+            let fileRow = cachedRow(row)?.fileRow ?? row
+            cell.textField?.stringValue = String(fileRow - headerOffset + 1)
             return cell
         }
         guard let column = dataColumn(of: tableColumn) else { return nil }
         let cell = reusableCell(.dataCell)
-        let value = value(dataRow: row, column: column)
+        let value = value(row: row, column: column)
         cell.textField?.stringValue = Self.singleLine(value)
         cell.textField?.isEditable = !Self.isMultiline(value)
         let isActive = row == activeRow && column == activeColumn
@@ -518,6 +635,26 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         refreshActiveCell()
+    }
+
+    /// Clicking a column header sorts by it: ascending, descending, then back to file order.
+    /// Shift-click adds the column as a further sort key.
+    func tableView(_ tableView: NSTableView, didClick tableColumn: NSTableColumn) {
+        guard let column = dataColumn(of: tableColumn) else { return }
+        let extend = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
+        var keys = core.viewSpec().sort
+        if let index = keys.firstIndex(where: { $0.column == UInt64(column) }), extend || keys.count == 1 {
+            if keys[index].ascending {
+                keys[index].ascending = false
+            } else {
+                keys.remove(at: index)
+            }
+        } else if extend {
+            keys.append(SortKey(column: UInt64(column), ascending: true))
+        } else {
+            keys = [SortKey(column: UInt64(column), ascending: true)]
+        }
+        setSort(keys)
     }
 
     private func reusableCell(_ identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
@@ -563,8 +700,8 @@ extension GridViewController: NSTextFieldDelegate {
         guard row >= 0, let column = dataColumn(atTableColumn: tableView.column(for: field)) else { return }
 
         let newValue = field.stringValue
-        if newValue != value(dataRow: row, column: column) {
-            document.setCell(row: row + headerOffset, column: column, value: newValue)
+        if newValue != value(row: row, column: column) {
+            document.setCell(visibleRow: row, column: column, value: newValue)
         }
 
         let movement = (notification.userInfo?[NSText.movementUserInfoKey] as? Int)
@@ -589,7 +726,7 @@ extension GridViewController: NSTextFieldDelegate {
         let row = tableView.row(for: field)
         if row >= 0, let column = dataColumn(atTableColumn: tableView.column(for: field)) {
             field.abortEditing()
-            field.stringValue = value(dataRow: row, column: column)
+            field.stringValue = Self.singleLine(value(row: row, column: column))
         }
         view.window?.makeFirstResponder(tableView)
         return true
@@ -617,7 +754,7 @@ extension GridViewController: GridTableViewKeyHandler {
             return true
         case .delete?, .deleteForward?:
             guard let row = activeRow, columnCount > 0 else { return false }
-            document.setCell(row: row + headerOffset, column: activeColumn, value: "")
+            document.setCell(visibleRow: row, column: activeColumn, value: "")
             return true
         case nil:
             // Typing on a cell starts editing it with the typed text, as in a spreadsheet.
@@ -628,28 +765,6 @@ extension GridViewController: GridTableViewKeyHandler {
             return true
         default:
             return false
-        }
-    }
-}
-
-// MARK: - Menu validation
-
-extension GridViewController: NSMenuItemValidation {
-    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        switch menuItem.action {
-        case #selector(deleteRows(_:)), #selector(delete(_:)), #selector(copy(_:)):
-            return !tableView.selectedRowIndexes.isEmpty
-        case #selector(editCell(_:)), #selector(editCellInWindow(_:)):
-            return activeRow != nil && columnCount > 0
-        case #selector(deleteColumn(_:)):
-            return columnCount > 1
-        case #selector(renameColumn(_:)):
-            return info.hasHeader && columnCount > 0
-        case #selector(toggleHeaderRow(_:)):
-            menuItem.state = info.hasHeader ? .on : .off
-            return info.rowCount > 0
-        default:
-            return true
         }
     }
 }

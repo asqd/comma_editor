@@ -80,6 +80,13 @@ enum MainMenu {
             item(L("Paste"), #selector(NSText.paste(_:)), "v"),
             item(L("Delete"), #selector(NSText.delete(_:))),
             item(L("Select All"), #selector(NSText.selectAll(_:)), "a"),
+            .separator(),
+            submenuItem(L("Find"), [
+                item(L("Find…"), #selector(GridViewController.showFindBar(_:)), "f"),
+                item(L("Find and Replace…"), #selector(GridViewController.showFindAndReplaceBar(_:)), "f", [.command, .option]),
+                item(L("Find Next"), #selector(GridViewController.findNextMatch(_:)), "g"),
+                item(L("Find Previous"), #selector(GridViewController.findPreviousMatch(_:)), "G"),
+            ]),
         ])
     }
 
@@ -96,6 +103,14 @@ enum MainMenu {
             item(L("Insert Column Right"), #selector(GridViewController.insertColumnRight(_:)), key(NSRightArrowFunctionKey), [.command, .option]),
             item(L("Delete Column"), #selector(GridViewController.deleteColumn(_:)), "\u{8}", [.command, .option]),
             item(L("Rename Column…"), #selector(GridViewController.renameColumn(_:))),
+            .separator(),
+            item(L("Sort Ascending"), #selector(GridViewController.sortAscending(_:))),
+            item(L("Sort Descending"), #selector(GridViewController.sortDescending(_:))),
+            item(L("Clear Sort"), #selector(GridViewController.clearSort(_:))),
+            item(L("Reorder Rows in File"), #selector(GridViewController.applySortToFile(_:))),
+            .separator(),
+            item(L("Show Filter"), #selector(GridViewController.toggleFilterBar(_:)), "l", [.command, .shift]),
+            item(L("Clear Filter"), #selector(GridViewController.clearFilter(_:))),
             .separator(),
             item(L("First Row Is Header"), #selector(GridViewController.toggleHeaderRow(_:))),
         ])
@@ -114,6 +129,13 @@ enum MainMenu {
             .separator(),
             item(L("Bring All to Front"), #selector(NSApplication.arrangeInFront(_:))),
         ])
+    }
+
+    private static func submenuItem(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.submenu = menu(items)
+        item.submenu?.title = title
+        return item
     }
 
     private static func menu(_ items: [NSMenuItem]) -> NSMenu {

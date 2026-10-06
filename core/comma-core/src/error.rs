@@ -18,6 +18,9 @@ pub enum Error {
 
     #[error("the last column cannot be deleted")]
     LastColumn,
+
+    #[error("invalid regular expression: {0}")]
+    InvalidPattern(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

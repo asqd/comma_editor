@@ -155,6 +155,32 @@ pub(crate) fn split_fields(record: &[u8], delimiter: u8, quote: u8) -> Vec<(usiz
     }
 }
 
+/// Raw byte range of field `n` of one record, relative to `record`; `None` if the record is
+/// shorter. Unlike `split_fields`, stops at the field and allocates nothing.
+pub(crate) fn nth_field(record: &[u8], delimiter: u8, quote: u8, n: usize) -> Option<(usize, usize)> {
+    let len = record.len();
+    let mut index = 0;
+    let mut field_start = 0;
+    let mut i = 0;
+    loop {
+        if i < len && record[i] == quote {
+            i = skip_quoted(record, i + 1, quote).0;
+        }
+        match memchr(delimiter, &record[i..]) {
+            None => return (index == n).then_some((field_start, len)),
+            Some(offset) => {
+                let p = i + offset;
+                if index == n {
+                    return Some((field_start, p));
+                }
+                index += 1;
+                field_start = p + 1;
+                i = p + 1;
+            }
+        }
+    }
+}
+
 /// Value of a raw field: surrounding quotes removed and doubled quotes collapsed.
 pub(crate) fn unquote(raw: &[u8], quote: u8) -> Cow<'_, [u8]> {
     if raw.first() != Some(&quote) {
@@ -250,5 +276,9 @@ mod tests {
             fields,
             vec!["plain", "quoted, with comma", "say \"hi\"", "", "xtail"]
         );
+        for (n, span) in split_fields(record, b',', b'"').into_iter().enumerate() {
+            assert_eq!(nth_field(record, b',', b'"', n), Some(span));
+        }
+        assert_eq!(nth_field(record, b',', b'"', 5), None);
     }
 }

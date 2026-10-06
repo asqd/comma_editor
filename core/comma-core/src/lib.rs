@@ -10,6 +10,8 @@ mod encoding;
 mod error;
 mod history;
 mod parser;
+mod search;
+mod view;
 mod writer;
 
 pub use dialect::{Dialect, LineEnding, QuoteStyle};
@@ -17,3 +19,5 @@ pub use document::{Document, Info};
 pub use encoding::TextEncoding;
 pub use error::{Error, Result};
 pub use parser::Terminator;
+pub use search::SearchQuery;
+pub use view::{Filter, FilterOp, SortKey, ViewSpec};

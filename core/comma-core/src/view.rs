@@ -1,0 +1,407 @@
+//! Sorting and filtering. A view only decides which rows are shown and in what order;
+//! the file itself does not change.
+
+use std::borrow::Cow;
+use std::cmp::Ordering;
+
+use regex::{Regex, RegexBuilder};
+
+use crate::error::{Error, Result};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SortKey {
+    pub column: usize,
+    pub ascending: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilterOp {
+    Contains,
+    NotContains,
+    Equals,
+    NotEquals,
+    StartsWith,
+    EndsWith,
+    /// Regular expression.
+    Matches,
+    IsEmpty,
+    IsNotEmpty,
+    GreaterThan,
+    LessThan,
+}
+
+/// One condition. With `column: None` it applies to any column: a row passes if some value
+/// satisfies the condition (for negated operators: if no value satisfies the positive one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Filter {
+    pub column: Option<usize>,
+    pub op: FilterOp,
+    pub value: String,
+    pub case_sensitive: bool,
+}
+
+/// Rows pass when they satisfy every filter; then they are ordered by the sort keys in turn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ViewSpec {
+    pub sort: Vec<SortKey>,
+    pub filters: Vec<Filter>,
+}
+
+impl ViewSpec {
+    pub fn is_empty(&self) -> bool {
+        self.sort.is_empty() && self.filters.is_empty()
+    }
+}
+
+pub(crate) struct CompiledFilter {
+    filter: Filter,
+    needle: String,
+    regex: Option<Regex>,
+}
+
+impl CompiledFilter {
+    pub fn new(filter: &Filter) -> Result<Self> {
+        let regex = match filter.op {
+            FilterOp::Matches => Some(
+                RegexBuilder::new(&filter.value)
+                    .case_insensitive(!filter.case_sensitive)
+                    .build()
+                    .map_err(|error| Error::InvalidPattern(error.to_string()))?,
+            ),
+            _ => None,
+        };
+        Ok(Self {
+            needle: fold(&filter.value, filter.case_sensitive).into_owned(),
+            filter: filter.clone(),
+            regex,
+        })
+    }
+
+    pub fn column(&self) -> Option<usize> {
+        self.filter.column
+    }
+
+    /// The row passes when `test` holds for the column (or some column) XOR this is true.
+    pub fn negated(&self) -> bool {
+        matches!(
+            self.filter.op,
+            FilterOp::NotContains | FilterOp::NotEquals | FilterOp::IsNotEmpty
+        )
+    }
+
+    /// Whether one value satisfies the positive form of the condition.
+    pub fn test(&self, value: &str) -> bool {
+        use FilterOp::*;
+        match self.filter.op {
+            IsEmpty | IsNotEmpty => value.trim().is_empty(),
+            Matches => self.regex.as_ref().is_some_and(|regex| regex.is_match(value)),
+            GreaterThan | LessThan => {
+                if value.trim().is_empty() {
+                    return false;
+                }
+                let wanted = if self.filter.op == GreaterThan {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                };
+                compare_values(value, &self.filter.value) == wanted
+            }
+            Contains | NotContains | Equals | NotEquals | StartsWith | EndsWith => {
+                let value = fold(value, self.filter.case_sensitive);
+                let needle = self.needle.as_str();
+                match self.filter.op {
+                    Contains | NotContains => value.contains(needle),
+                    Equals | NotEquals => value == needle,
+                    StartsWith => value.starts_with(needle),
+                    _ => value.ends_with(needle),
+                }
+            }
+        }
+    }
+}
+
+fn fold(value: &str, case_sensitive: bool) -> Cow<'_, str> {
+    if case_sensitive {
+        Cow::Borrowed(value)
+    } else {
+        Cow::Owned(value.to_lowercase())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Number,
+    Date,
+    Text,
+}
+
+enum Key {
+    Empty,
+    Number(f64),
+    Date(i64),
+    Text(String),
+}
+
+/// Stable sort of `rows` (record indices) by `keys`. Each column is compared as numbers if all
+/// its values are numbers, as dates if all are dates, and as text otherwise. Empty values go last
+/// in both directions.
+pub(crate) fn sort_rows<'a>(
+    rows: &mut Vec<usize>,
+    keys: &[SortKey],
+    value: impl Fn(usize, usize) -> Cow<'a, str>,
+) {
+    let columns: Vec<(Vec<Key>, bool)> = keys
+        .iter()
+        .map(|key| {
+            let values: Vec<Cow<str>> = rows.iter().map(|&row| value(row, key.column)).collect();
+            let kind = infer_kind(values.iter().map(|v| v.as_ref()));
+            let keys = values.iter().map(|v| make_key(v, kind)).collect();
+            (keys, key.ascending)
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..rows.len()).collect();
+    order.sort_by(|&a, &b| {
+        columns
+            .iter()
+            .map(|(keys, ascending)| compare_keys(&keys[a], &keys[b], *ascending))
+            .find(|ordering| ordering.is_ne())
+            .unwrap_or(Ordering::Equal)
+    });
+    *rows = order.into_iter().map(|index| rows[index]).collect();
+}
+
+fn infer_kind<'a>(values: impl Iterator<Item = &'a str> + Clone) -> Kind {
+    let mut non_empty = values.filter(|v| !v.trim().is_empty()).peekable();
+    if non_empty.peek().is_none() {
+        return Kind::Text;
+    }
+    if non_empty.clone().all(|v| parse_number(v).is_some()) {
+        Kind::Number
+    } else if non_empty.all(|v| parse_date(v).is_some()) {
+        Kind::Date
+    } else {
+        Kind::Text
+    }
+}
+
+fn make_key(value: &str, kind: Kind) -> Key {
+    if value.trim().is_empty() {
+        return Key::Empty;
+    }
+    match kind {
+        Kind::Number => parse_number(value).map_or(Key::Empty, Key::Number),
+        Kind::Date => parse_date(value).map_or(Key::Empty, Key::Date),
+        Kind::Text => Key::Text(text_key(value)),
+    }
+}
+
+fn compare_keys(a: &Key, b: &Key, ascending: bool) -> Ordering {
+    let ordering = match (a, b) {
+        (Key::Empty, Key::Empty) => return Ordering::Equal,
+        (Key::Empty, _) => return Ordering::Greater,
+        (_, Key::Empty) => return Ordering::Less,
+        (Key::Number(a), Key::Number(b)) => a.total_cmp(b),
+        (Key::Date(a), Key::Date(b)) => a.cmp(b),
+        (Key::Text(a), Key::Text(b)) => natural_cmp(a, b),
+        _ => Ordering::Equal,
+    };
+    if ascending { ordering } else { ordering.reverse() }
+}
+
+/// Compares two values the way sorting would: as numbers, then dates, then text.
+pub(crate) fn compare_values(a: &str, b: &str) -> Ordering {
+    if let (Some(a), Some(b)) = (parse_number(a), parse_number(b)) {
+        return a.total_cmp(&b);
+    }
+    if let (Some(a), Some(b)) = (parse_date(a), parse_date(b)) {
+        return a.cmp(&b);
+    }
+    natural_cmp(&text_key(a), &text_key(b))
+}
+
+/// Case-insensitive text with ё sorted as е.
+fn text_key(value: &str) -> String {
+    value.trim().to_lowercase().replace('ё', "е")
+}
+
+/// Numbers as people write them: `1250.50`, `1 250,50`, `1,250.50`, `-3`, `12%`, `1e5`.
+pub(crate) fn parse_number(value: &str) -> Option<f64> {
+    let value = value.trim();
+    if !value.bytes().any(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut number: String = value
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '\u{a0}' | '\u{202f}' | '_' | '\''))
+        .collect();
+    if number.ends_with('%') {
+        number.pop();
+    }
+    let commas = number.matches(',').count();
+    if commas > 0 {
+        number = match (number.rfind('.'), number.rfind(',')) {
+            // Both separators: the last one is the decimal point.
+            (Some(dot), Some(comma)) if comma > dot => number.replace('.', "").replace(',', "."),
+            (Some(_), _) => number.replace(',', ""),
+            _ if commas == 1 => number.replace(',', "."),
+            _ => number.replace(',', ""),
+        };
+    }
+    let plain = number
+        .bytes()
+        .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'+' | b'e' | b'E'));
+    if !plain {
+        return None;
+    }
+    number.parse().ok()
+}
+
+/// `31.12.2024` or `31.12.2024 23:59[:59]`, as a sortable number. ISO dates already sort
+/// correctly as text.
+pub(crate) fn parse_date(value: &str) -> Option<i64> {
+    let value = value.trim();
+    let (date, time) = match value.split_once(' ') {
+        Some((date, time)) => (date, Some(time.trim())),
+        None => (value, None),
+    };
+    let mut parts = date.split('.');
+    let (day, month, year) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() || year.len() != 4 {
+        return None;
+    }
+    let number = |text: &str| -> Option<i64> {
+        (!text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())).then(|| text.parse().ok())?
+    };
+    let (day, month, year) = (number(day)?, number(month)?, number(year)?);
+    if !(1..=31).contains(&day) || !(1..=12).contains(&month) {
+        return None;
+    }
+    let (mut hour, mut minute, mut second) = (0, 0, 0);
+    if let Some(time) = time {
+        let mut parts = time.split(':');
+        hour = number(parts.next()?)?;
+        minute = number(parts.next()?)?;
+        second = parts.next().map_or(Some(0), number)?;
+        if parts.next().is_some() || hour > 23 || minute > 59 || second > 59 {
+            return None;
+        }
+    }
+    Some((((year * 100 + month) * 100 + day) * 100 + hour) * 10_000 + minute * 100 + second)
+}
+
+/// Compares runs of digits by numeric value, so `file2` < `file10`.
+pub(crate) fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let (mut a, mut b) = (a, b);
+    loop {
+        match (a.chars().next(), b.chars().next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let digits = |s: &str| s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+                let (run_a, rest_a) = a.split_at(digits(a));
+                let (run_b, rest_b) = b.split_at(digits(b));
+                let (value_a, value_b) = (run_a.trim_start_matches('0'), run_b.trim_start_matches('0'));
+                let ordering = value_a
+                    .len()
+                    .cmp(&value_b.len())
+                    .then_with(|| value_a.cmp(value_b))
+                    .then_with(|| run_a.len().cmp(&run_b.len()));
+                if ordering.is_ne() {
+                    return ordering;
+                }
+                (a, b) = (rest_a, rest_b);
+            }
+            (Some(x), Some(y)) => {
+                if x != y {
+                    return x.cmp(&y);
+                }
+                (a, b) = (&a[x.len_utf8()..], &b[y.len_utf8()..]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_numbers_as_written() {
+        assert_eq!(parse_number("1250.50"), Some(1250.5));
+        assert_eq!(parse_number("1 250,50"), Some(1250.5));
+        assert_eq!(parse_number("1,250.50"), Some(1250.5));
+        assert_eq!(parse_number("1.250,50"), Some(1250.5));
+        assert_eq!(parse_number("1,234,567"), Some(1234567.0));
+        assert_eq!(parse_number("-3"), Some(-3.0));
+        assert_eq!(parse_number("12%"), Some(12.0));
+        assert_eq!(parse_number("2024-01-15"), None);
+        assert_eq!(parse_number("inf"), None);
+        assert_eq!(parse_number("Nan"), None);
+        assert_eq!(parse_number("+7 999 123-45-67"), None);
+    }
+
+    #[test]
+    fn parses_day_first_dates() {
+        assert!(parse_date("01.02.2024") < parse_date("31.01.2025"));
+        assert!(parse_date("1.2.2024 09:30") < parse_date("1.2.2024 10:00:01"));
+        assert_eq!(parse_date("32.01.2024"), None);
+        assert_eq!(parse_date("1.2.24"), None);
+    }
+
+    #[test]
+    fn natural_order() {
+        let mut values = vec!["file10", "file2", "File1", "file02", "apple"];
+        values.sort_by(|a, b| natural_cmp(&text_key(a), &text_key(b)));
+        assert_eq!(values, vec!["apple", "File1", "file2", "file02", "file10"]);
+        assert_eq!(natural_cmp(&text_key("Ёлка"), &text_key("яблоко")), Ordering::Less);
+    }
+
+    fn sorted(values: &[&str], ascending: bool) -> Vec<String> {
+        let mut rows: Vec<usize> = (0..values.len()).collect();
+        sort_rows(&mut rows, &[SortKey { column: 0, ascending }], |row, _| {
+            Cow::Borrowed(values[row])
+        });
+        rows.into_iter().map(|row| values[row].to_owned()).collect()
+    }
+
+    #[test]
+    fn sorts_by_inferred_type_with_empty_values_last() {
+        assert_eq!(sorted(&["10", "", "9", "1 000,5"], true), vec!["9", "10", "1 000,5", ""]);
+        assert_eq!(sorted(&["10", "", "9"], false), vec!["10", "9", ""]);
+        assert_eq!(
+            sorted(&["02.01.2024", "31.12.2023", "15.06.2024"], true),
+            vec!["31.12.2023", "02.01.2024", "15.06.2024"]
+        );
+        assert_eq!(sorted(&["b", "a10", "a9", "A1"], true), vec!["A1", "a9", "a10", "b"]);
+    }
+
+    #[test]
+    fn filters() {
+        let filter = |op, value: &str| {
+            CompiledFilter::new(&Filter {
+                column: Some(0),
+                op,
+                value: value.to_owned(),
+                case_sensitive: false,
+            })
+            .unwrap()
+        };
+        assert!(filter(FilterOp::Contains, "моск").test("Москва"));
+        assert!(filter(FilterOp::Equals, "LONDON").test("london"));
+        assert!(filter(FilterOp::StartsWith, "new").test("New York"));
+        assert!(filter(FilterOp::Matches, r"^\d{3}$").test("042"));
+        assert!(filter(FilterOp::GreaterThan, "100").test("1 250,50"));
+        assert!(!filter(FilterOp::GreaterThan, "100").test(""));
+        assert!(filter(FilterOp::LessThan, "01.01.2025").test("31.12.2024"));
+        assert!(filter(FilterOp::IsEmpty, "").test("  "));
+        assert!(filter(FilterOp::NotContains, "x").negated());
+        assert!(CompiledFilter::new(&Filter {
+            column: None,
+            op: FilterOp::Matches,
+            value: "(".into(),
+            case_sensitive: false
+        })
+        .is_err());
+    }
+}

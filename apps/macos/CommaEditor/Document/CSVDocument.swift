@@ -4,9 +4,11 @@ import AppKit
 /// each core edit is mirrored by one step in the document's undo manager.
 final class CSVDocument: NSDocument {
     enum Change {
-        /// One cell changed; row is a core row (the header row counts).
-        case cell(row: Int, column: Int)
-        /// Rows, columns or the header setting changed.
+        /// One cell of a visible row changed.
+        case cell(visibleRow: Int, column: Int)
+        /// The header row changed.
+        case header
+        /// Rows, columns, the view or the header setting changed.
         case structure
     }
 
@@ -54,34 +56,40 @@ final class CSVDocument: NSDocument {
     }
 
     // MARK: Editing
+    //
+    // Rows are visible rows: data rows as the current sort and filters show them.
 
     @discardableResult
-    func setCell(row: Int, column: Int, value: String) -> Bool {
-        perform(L("Cell Edit"), .cell(row: row, column: column)) {
-            try $0.setCell(row: UInt64(row), column: UInt64(column), value: value)
+    func setCell(visibleRow: Int, column: Int, value: String) -> Bool {
+        guard let row = core.visibleRecord(visibleRow: UInt64(visibleRow)) else { return false }
+        return perform(L("Cell Edit"), .cell(visibleRow: visibleRow, column: column)) {
+            try $0.setCell(row: row, column: UInt64(column), value: value)
         }
     }
 
     @discardableResult
     func renameColumn(_ column: Int, to name: String) -> Bool {
-        perform(L("Column Rename"), .cell(row: 0, column: column)) {
+        perform(L("Column Rename"), .header) {
             try $0.setCell(row: 0, column: UInt64(column), value: name)
         }
     }
 
+    /// Inserts empty rows before a visible row (or after the last one).
     @discardableResult
-    func insertRows(at row: Int, count: Int) -> Bool {
+    func insertRows(beforeVisibleRow visibleRow: Int, count: Int) -> Bool {
         perform(L("Row Insertion"), .structure) {
-            try $0.insertRows(at: UInt64(row), count: UInt64(count))
+            let row = $0.insertionRow(visibleRow: UInt64(visibleRow))
+            try $0.insertRows(at: row, count: UInt64(count))
             return true
         }
     }
 
     @discardableResult
-    func deleteRows(_ rows: [Int]) -> Bool {
-        perform(L("Row Deletion"), .structure) {
-            try $0.deleteRows(rows: rows.map { UInt64($0) })
-            return true
+    func deleteRows(visibleRows: [Int]) -> Bool {
+        perform(L("Row Deletion"), .structure) { core in
+            let rows = visibleRows.compactMap { core.visibleRecord(visibleRow: UInt64($0)) }
+            try core.deleteRows(rows: rows)
+            return !rows.isEmpty
         }
     }
 
@@ -101,6 +109,41 @@ final class CSVDocument: NSDocument {
         }
     }
 
+    /// Reorders the rows of the file by the current sort.
+    @discardableResult
+    func applySort() -> Bool {
+        perform(L("Sorting"), .structure) { try $0.applySort() }
+    }
+
+    @discardableResult
+    func replaceInCell(visibleRow: Int, column: Int, query: SearchQuery, replacement: String) -> Bool {
+        perform(L("Replacement"), .cell(visibleRow: visibleRow, column: column)) {
+            try $0.replaceInCell(
+                visibleRow: UInt64(visibleRow),
+                column: UInt64(column),
+                query: query,
+                replacement: replacement
+            )
+        }
+    }
+
+    /// Replaces every match in the visible rows; returns the number of changed cells.
+    func replaceAll(query: SearchQuery, replacement: String) -> Int {
+        var count: UInt64 = 0
+        perform(L("Replacement"), .structure) {
+            count = try $0.replaceAll(query: query, replacement: replacement)
+            return count > 0
+        }
+        return Int(count)
+    }
+
+    /// Sorting and filtering change what is shown, not the file, so they are not undoable.
+    /// Throws on an invalid regular expression; callers show the error where it was typed.
+    func setView(_ spec: ViewSpec) throws {
+        try core.setView(spec: spec)
+        post(.structure)
+    }
+
     /// Display setting only: the file does not change.
     func setHasHeader(_ hasHeader: Bool) {
         core.setHasHeader(hasHeader: hasHeader)
@@ -108,6 +151,7 @@ final class CSVDocument: NSDocument {
     }
 
     /// Runs one core edit. If it changed something, registers an undo step and notifies the UI.
+    @discardableResult
     private func perform(_ actionName: String, _ change: Change, _ edit: (CoreDocument) throws -> Bool) -> Bool {
         do {
             guard try edit(core) else { return false }
@@ -174,6 +218,9 @@ final class CSVDocument: NSDocument {
             )
         case .LastColumn:
             userInfo[NSLocalizedDescriptionKey] = L("The last column cannot be deleted.")
+        case .InvalidPattern(let message):
+            userInfo[NSLocalizedDescriptionKey] = L("The regular expression is not valid.")
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = message
         }
         return NSError(domain: "app.commaeditor", code: 1, userInfo: userInfo)
     }

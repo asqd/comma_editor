@@ -36,6 +36,14 @@ pub(crate) struct Transaction {
     pub splices: Vec<Splice>,
     pub columns_before: usize,
     pub columns_after: usize,
+    /// Rows were added, removed or reordered, so row indices no longer line up.
+    pub structural: bool,
+}
+
+/// What an undo or redo changed.
+pub(crate) struct Reverted {
+    pub columns: usize,
+    pub structural: bool,
 }
 
 #[derive(Default)]
@@ -58,25 +66,31 @@ impl History {
         !self.redo.is_empty()
     }
 
-    /// Reverts the last transaction and returns the column count to restore.
-    pub fn undo(&mut self, records: &mut Vec<Record>) -> Option<usize> {
+    /// Reverts the last transaction.
+    pub fn undo(&mut self, records: &mut Vec<Record>) -> Option<Reverted> {
         let mut transaction = self.undo.pop()?;
         for splice in transaction.splices.iter_mut().rev() {
             splice.toggle(records);
         }
-        let columns = transaction.columns_before;
+        let reverted = Reverted {
+            columns: transaction.columns_before,
+            structural: transaction.structural,
+        };
         self.redo.push(transaction);
-        Some(columns)
+        Some(reverted)
     }
 
-    /// Re-applies the last undone transaction and returns the column count to restore.
-    pub fn redo(&mut self, records: &mut Vec<Record>) -> Option<usize> {
+    /// Re-applies the last undone transaction.
+    pub fn redo(&mut self, records: &mut Vec<Record>) -> Option<Reverted> {
         let mut transaction = self.redo.pop()?;
         for splice in transaction.splices.iter_mut() {
             splice.toggle(records);
         }
-        let columns = transaction.columns_after;
+        let reverted = Reverted {
+            columns: transaction.columns_after,
+            structural: transaction.structural,
+        };
         self.undo.push(transaction);
-        Some(columns)
+        Some(reverted)
     }
 }
