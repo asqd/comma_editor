@@ -15,6 +15,7 @@ enum MainMenu {
             (L("File"), makeFileMenu()),
             (L("Edit"), makeEditMenu()),
             (L("Table"), makeTableMenu()),
+            (L("Data"), makeDataMenu()),
             (L("View"), makeViewMenu()),
             (L("Window"), windowMenu),
             (L("Help"), helpMenu),
@@ -116,6 +117,26 @@ enum MainMenu {
             item(L("Clear Filter"), #selector(GridViewController.clearFilter(_:))),
             .separator(),
             item(L("First Row Is Header"), #selector(GridViewController.toggleHeaderRow(_:))),
+        ])
+    }
+
+    private static func makeDataMenu() -> NSMenu {
+        menu([
+            submenuItem(L("Text"), [
+                item(L("Trim Spaces"), #selector(GridViewController.trimSpaces(_:))),
+                item(L("Remove Extra Spaces"), #selector(GridViewController.collapseSpaces(_:))),
+                .separator(),
+                item(L("UPPERCASE"), #selector(GridViewController.makeUppercase(_:))),
+                item(L("lowercase"), #selector(GridViewController.makeLowercase(_:))),
+                item(L("Capitalize Each Word"), #selector(GridViewController.capitalizeWords(_:))),
+            ]),
+            item(L("Fill Empty Cells from Above"), #selector(GridViewController.fillEmptyFromAbove(_:))),
+            item(L("Fill Empty Cells…"), #selector(GridViewController.fillEmptyWithValue(_:))),
+            .separator(),
+            item(L("Split Column…"), #selector(GridViewController.splitColumn(_:))),
+            item(L("Merge Columns…"), #selector(GridViewController.mergeColumns(_:))),
+            .separator(),
+            item(L("Remove Duplicate Rows…"), #selector(GridViewController.removeDuplicateRows(_:))),
         ])
     }
 

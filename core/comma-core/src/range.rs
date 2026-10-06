@@ -18,11 +18,11 @@ pub struct CellRange {
 }
 
 impl CellRange {
-    fn rows(&self) -> Range<usize> {
+    pub(crate) fn rows(&self) -> Range<usize> {
         self.top..self.bottom + 1
     }
 
-    fn columns(&self) -> Range<usize> {
+    pub(crate) fn columns(&self) -> Range<usize> {
         self.left..self.right + 1
     }
 }
@@ -88,7 +88,7 @@ impl Document {
     /// Returns the number of cells that changed.
     pub fn fill_range(&mut self, range: CellRange, value: &str) -> Result<usize> {
         self.check_range(&range)?;
-        Ok(self.edit_range(Vec::new(), range.rows(), range.columns(), false, |_, _| {
+        Ok(self.edit_range(Vec::new(), range.rows(), range.columns(), false, |_, _, _| {
             Some(value.to_owned())
         }))
     }
@@ -106,7 +106,7 @@ impl Document {
             range.top + 1..range.bottom + 1,
             range.columns(),
             false,
-            |_, column| Some(source[column - range.left].clone()),
+            |_, column, _| Some(source[column - range.left].clone()),
         ))
     }
 
@@ -146,7 +146,7 @@ impl Document {
             return Ok(None);
         }
         let structural = !splices.is_empty();
-        self.edit_range(splices, top..bottom, left..left + width, structural, |row, column| {
+        self.edit_range(splices, top..bottom, left..left + width, structural, |row, column, _| {
             grid[row - top].get(column - left).cloned()
         });
         Ok(Some(CellRange {
@@ -157,15 +157,16 @@ impl Document {
         }))
     }
 
-    /// Applies `value(row, column)` to the cells of visible `rows` × `columns` (`None` keeps a
-    /// cell) and records everything, with `splices` already applied, as one undoable step.
-    fn edit_range(
+    /// Applies `value(row, column, current)` to the cells of visible `rows` × `columns`, row by
+    /// row (`None` keeps a cell), and records everything, with `splices` already applied, as one
+    /// undoable step.
+    pub(crate) fn edit_range(
         &mut self,
         mut splices: Vec<Splice>,
         rows: Range<usize>,
         columns: Range<usize>,
         structural: bool,
-        mut value: impl FnMut(usize, usize) -> Option<String>,
+        mut value: impl FnMut(usize, usize, &str) -> Option<String>,
     ) -> usize {
         let mut changed = 0;
         let mut columns_after = self.column_count();
@@ -173,10 +174,12 @@ impl Document {
             let Some(record) = self.visible_record(row) else { continue };
             let mut fields: Option<Vec<Field>> = None;
             for column in columns.clone() {
-                let Some(new_value) = value(row, column) else { continue };
-                if self.value_at(record, column) == new_value {
+                let current = self.value_at(record, column);
+                let Some(new_value) = value(row, column, &current) else { continue };
+                if current == new_value {
                     continue;
                 }
+                drop(current);
                 let fields = fields.get_or_insert_with(|| self.fields(&self.records[record]));
                 if fields.len() <= column {
                     fields.resize(column + 1, Field::Text(String::new()));
@@ -196,7 +199,7 @@ impl Document {
         changed
     }
 
-    fn check_range(&self, range: &CellRange) -> Result<()> {
+    pub(crate) fn check_range(&self, range: &CellRange) -> Result<()> {
         if range.top > range.bottom || range.bottom >= self.visible_row_count() {
             return Err(Error::RowOutOfRange {
                 row: range.bottom,

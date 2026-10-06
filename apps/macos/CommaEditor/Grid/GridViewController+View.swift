@@ -315,6 +315,12 @@ extension GridViewController: NSMenuItemValidation {
         switch menuItem.action {
         case #selector(deleteRows(_:)), #selector(delete(_:)), #selector(copy(_:)), #selector(cut(_:)):
             return selection != nil
+        case #selector(trimSpaces(_:)), #selector(collapseSpaces(_:)), #selector(makeUppercase(_:)),
+             #selector(makeLowercase(_:)), #selector(capitalizeWords(_:)), #selector(fillEmptyFromAbove(_:)),
+             #selector(fillEmptyWithValue(_:)), #selector(splitColumn(_:)), #selector(removeDuplicateRows(_:)):
+            return selection != nil
+        case #selector(mergeColumns(_:)):
+            return (selection?.columns.count ?? 0) > 1
         case #selector(paste(_:)):
             return NSPasteboard.general.string(forType: .string) != nil
         case #selector(fillDown(_:)):

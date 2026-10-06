@@ -238,6 +238,48 @@ final class CSVDocument: NSDocument {
         return written
     }
 
+    // MARK: Column operations
+
+    @discardableResult
+    func transform(_ range: CellRange, _ transform: TextTransform, actionName: String) -> Bool {
+        perform(actionName, .structure) { try $0.transformRange(range: range, transform: transform) > 0 }
+    }
+
+    @discardableResult
+    func fillEmpty(_ range: CellRange, fromAbove: Bool, value: String) -> Bool {
+        perform(L("Filling Empty Cells"), .structure) {
+            try $0.fillEmpty(range: range, fromAbove: fromAbove, value: value) > 0
+        }
+    }
+
+    /// Returns the number of columns added.
+    func splitColumn(_ column: Int, separator: String, regex: Bool) -> Int {
+        var added: UInt64 = 0
+        perform(L("Column Split"), .structure) {
+            added = try $0.splitColumn(column: UInt64(column), separator: separator, regex: regex)
+            return added > 0
+        }
+        return Int(added)
+    }
+
+    @discardableResult
+    func mergeColumns(_ columns: [Int], separator: String) -> Bool {
+        perform(L("Column Merge"), .structure) {
+            try $0.mergeColumns(columns: columns.map { UInt64($0) }, separator: separator)
+            return true
+        }
+    }
+
+    /// Returns the number of rows removed.
+    func removeDuplicates(columns: [Int], normalize: Bool) -> Int {
+        var removed: UInt64 = 0
+        perform(L("Duplicate Removal"), .structure) {
+            removed = try $0.removeDuplicates(columns: columns.map { UInt64($0) }, normalize: normalize)
+            return removed > 0
+        }
+        return Int(removed)
+    }
+
     /// Sorting and filtering change what is shown, not the file, so they are not undoable.
     /// Throws on an invalid regular expression; callers show the error where it was typed.
     func setView(_ spec: ViewSpec) throws {

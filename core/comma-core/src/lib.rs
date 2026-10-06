@@ -4,6 +4,7 @@
 //! so `open → save` without edits reproduces the file exactly, and an edit changes only the
 //! fields that were edited.
 
+mod columns;
 mod dialect;
 mod document;
 mod encoding;
@@ -15,6 +16,7 @@ mod search;
 mod view;
 mod writer;
 
+pub use columns::TextTransform;
 pub use dialect::{Dialect, LineEnding, QuoteStyle};
 pub use document::{Document, Info};
 pub use encoding::TextEncoding;

@@ -244,6 +244,15 @@ impl From<core::CellRange> for CellRange {
     }
 }
 
+#[derive(uniffi::Enum)]
+pub enum TextTransform {
+    Trim,
+    CollapseSpaces,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
 #[derive(uniffi::Record)]
 pub struct RangeStats {
     pub cells: u64,
@@ -564,6 +573,42 @@ impl CoreDocument {
             .lock()
             .paste(top as usize, left as usize, &grid)?
             .map(Into::into))
+    }
+
+    // Column operations.
+
+    /// Transforms the text of every cell in the range; returns the number of changed cells.
+    pub fn transform_range(&self, range: CellRange, transform: TextTransform) -> Result<u64, CoreError> {
+        let transform = match transform {
+            TextTransform::Trim => core::TextTransform::Trim,
+            TextTransform::CollapseSpaces => core::TextTransform::CollapseSpaces,
+            TextTransform::Uppercase => core::TextTransform::Uppercase,
+            TextTransform::Lowercase => core::TextTransform::Lowercase,
+            TextTransform::Capitalize => core::TextTransform::Capitalize,
+        };
+        Ok(self.lock().transform_range(range.into(), transform)? as u64)
+    }
+
+    /// Fills empty cells with the value above them or with `value`.
+    pub fn fill_empty(&self, range: CellRange, from_above: bool, value: String) -> Result<u64, CoreError> {
+        Ok(self.lock().fill_empty(range.into(), from_above, &value)? as u64)
+    }
+
+    /// Splits a column into new columns after it; returns how many were added.
+    pub fn split_column(&self, column: u64, separator: String, regex: bool) -> Result<u64, CoreError> {
+        Ok(self.lock().split_column(column as usize, &separator, regex)? as u64)
+    }
+
+    /// Joins columns into a new column after the last of them.
+    pub fn merge_columns(&self, columns: Vec<u64>, separator: String) -> Result<(), CoreError> {
+        let columns: Vec<usize> = columns.into_iter().map(|column| column as usize).collect();
+        Ok(self.lock().merge_columns(&columns, &separator)?)
+    }
+
+    /// Deletes repeated visible rows; returns how many were removed.
+    pub fn remove_duplicates(&self, columns: Vec<u64>, normalize: bool) -> Result<u64, CoreError> {
+        let columns: Vec<usize> = columns.into_iter().map(|column| column as usize).collect();
+        Ok(self.lock().remove_duplicates(&columns, normalize)? as u64)
     }
 
     pub fn set_has_header(&self, has_header: bool) {

@@ -42,7 +42,7 @@ impl Record {
         }
     }
 
-    fn is_blank(&self) -> bool {
+    pub(crate) fn is_blank(&self) -> bool {
         matches!(self, Self::Original { start, end, .. } if start == end)
     }
 
@@ -382,11 +382,11 @@ impl Document {
     }
 
     /// Columns moved, so sort keys and filters no longer point at the right data.
-    fn reset_view(&mut self) {
+    pub(crate) fn reset_view(&mut self) {
         self.view = View::default();
     }
 
-    fn header_offset(&self) -> usize {
+    pub(crate) fn header_offset(&self) -> usize {
         usize::from(self.has_header && !self.records.is_empty())
     }
 
@@ -570,7 +570,7 @@ impl Document {
         self.column_count = columns_after;
     }
 
-    fn replace_records(&mut self, records: Vec<Record>, columns_after: usize, structural: bool) {
+    pub(crate) fn replace_records(&mut self, records: Vec<Record>, columns_after: usize, structural: bool) {
         let len = self.records.len();
         let splice = Splice::apply(&mut self.records, 0, len, records);
         self.commit(vec![splice], columns_after, structural);
