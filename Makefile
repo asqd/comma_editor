@@ -15,7 +15,8 @@ xcodeproj: core
 
 app: xcodeproj
 	xcodebuild -project apps/macos/CommaEditor.xcodeproj -scheme CommaEditor \
-		-configuration Debug -derivedDataPath build/DerivedData build
+		-configuration Debug -destination "platform=macOS,arch=$$(uname -m)" \
+		-derivedDataPath build/DerivedData -quiet build
 
 run: app
 	open $(APP)
