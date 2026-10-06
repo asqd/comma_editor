@@ -15,6 +15,9 @@ core/
 apps/
   macos/                 приложение для macOS (XcodeGen: project.yml)
 scripts/build-core.sh    сборка статической библиотеки и биндингов для Xcode
+scripts/release.sh       Release-сборка, DMG, подпись и нотаризация
+design/                  иконка: скрипт отрисовки и мастер 1024 × 1024
+docs/RELEASE.md          выпуск и чек-лист ручной проверки
 samples/                 примеры файлов
 ```
 
@@ -23,9 +26,13 @@ samples/                 примеры файлов
 Нужны Rust (1.88+), Xcode 16+ и XcodeGen (`brew install xcodegen`).
 
 ```bash
-make test   # тесты ядра
-make run    # собрать ядро, сгенерировать Xcode-проект, собрать и запустить приложение
+make test     # тесты ядра
+make run      # собрать ядро, сгенерировать Xcode-проект, собрать и запустить приложение
+make release  # универсальная Release-сборка и DMG (подпись и нотаризация — docs/RELEASE.md)
+make icon     # перерисовать иконку из design/make-icon.swift
 ```
+
+Для универсальной сборки нужен ещё Rust-таргет для Intel: `rustup target add x86_64-apple-darwin`.
 
 После `make xcodeproj` проект можно открыть в Xcode: `apps/macos/CommaEditor.xcodeproj`.
 При каждой сборке Xcode сам пересобирает ядро.
@@ -152,9 +159,18 @@ open -n --env "COMMA_DEBUG_SCRIPT=sort=5:d;filter=3:equals:London;find=London" \
 - Миллион строк: JSON около 1 с, Markdown и SQL около 2 с, XLSX около 7 с; файл собирается
   в фоне.
 
+## Версия 0.6.0: подготовка к выпуску
+
+- Иконка приложения, нарисованная кодом (`design/make-icon.swift`).
+- Универсальная сборка для Apple Silicon и Intel: ядро собирается под обе архитектуры
+  и склеивается через `lipo`. Приложение весит около 8 МБ, DMG — около 4 МБ.
+- `make release` собирает DMG; с `DEVELOPMENT_TEAM` и `NOTARY_PROFILE` подписывает
+  Developer ID, отправляет на нотаризацию и прикрепляет её результат.
+- Манифест приватности, версия и копирайт в Info.plist.
+
 ## Дальше
 
 - Вычисляемая колонка по выражению.
 - Сортировка и фильтрация в фоне, чтобы интерфейс не замирал на огромных файлах.
 - Открытие гигабайтных файлов через mmap с фоновой индексацией.
-- Универсальная сборка (arm64 + x86_64), иконка, подпись и нотаризация.
+- Подпись Developer ID и нотаризация на аккаунте разработчика (скрипт готов, см. docs/RELEASE.md).

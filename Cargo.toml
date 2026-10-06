@@ -24,3 +24,4 @@ uniffi = "0.32"
 [profile.release]
 debug = false
 lto = "thin"
+strip = "debuginfo"

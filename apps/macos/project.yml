@@ -11,8 +11,6 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MACOSX_DEPLOYMENT_TARGET: "14.0"
-    # The Rust core is built for Apple Silicon only for now.
-    ARCHS: arm64
     # The pre-build phase runs cargo from the repository.
     ENABLE_USER_SCRIPT_SANDBOXING: NO
 
@@ -32,8 +30,10 @@ targets:
       base:
         PRODUCT_NAME: CommaEditor
         PRODUCT_BUNDLE_IDENTIFIER: app.commaeditor.CommaEditor
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "0.6.0"
         CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        DEAD_CODE_STRIPPING: YES
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         ENABLE_HARDENED_RUNTIME: YES
@@ -44,9 +44,12 @@ targets:
       path: CommaEditor/Info.plist
       properties:
         CFBundleDisplayName: CommaEditor
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDevelopmentRegion: en
         CFBundleLocalizations: [en, ru]
         LSApplicationCategoryType: public.app-category.productivity
+        NSHumanReadableCopyright: "© 2026 CommaEditor"
         NSPrincipalClass: NSApplication
         CFBundleDocumentTypes:
           - CFBundleTypeName: CSV Document
