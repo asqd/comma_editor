@@ -354,7 +354,7 @@ impl Document {
         Ok(true)
     }
 
-    fn refresh_view(&mut self) {
+    pub(crate) fn refresh_view(&mut self) {
         if self.view.spec.is_empty() {
             self.view.rows = None;
             return;
@@ -534,6 +534,7 @@ impl Document {
     pub fn undo(&mut self) -> bool {
         match self.history.undo(&mut self.records) {
             Some(reverted) => {
+                self.trailing_newline = reverted.trailing_newline;
                 self.after_history(reverted.columns, reverted.structural);
                 true
             }
@@ -544,6 +545,7 @@ impl Document {
     pub fn redo(&mut self) -> bool {
         match self.history.redo(&mut self.records) {
             Some(reverted) => {
+                self.trailing_newline = reverted.trailing_newline;
                 self.after_history(reverted.columns, reverted.structural);
                 true
             }
@@ -561,13 +563,27 @@ impl Document {
     }
 
     pub(crate) fn commit(&mut self, splices: Vec<Splice>, columns_after: usize, structural: bool) {
+        self.commit_with_trailing(splices, columns_after, structural, self.trailing_newline);
+    }
+
+    /// Like `commit`, and also sets whether the file ends with a line break.
+    pub(crate) fn commit_with_trailing(
+        &mut self,
+        splices: Vec<Splice>,
+        columns_after: usize,
+        structural: bool,
+        trailing_after: bool,
+    ) {
         self.history.record(Transaction {
             splices,
             columns_before: self.column_count,
             columns_after,
             structural,
+            trailing_before: self.trailing_newline,
+            trailing_after,
         });
         self.column_count = columns_after;
+        self.trailing_newline = trailing_after;
     }
 
     pub(crate) fn replace_records(&mut self, records: Vec<Record>, columns_after: usize, structural: bool) {
@@ -606,7 +622,12 @@ impl Document {
 
     /// All values of a row. `row` must exist.
     pub(crate) fn values(&self, row: usize) -> Vec<Cow<'_, str>> {
-        match &self.records[row] {
+        self.record_values(&self.records[row])
+    }
+
+    /// Values of a record, which need not be in the document yet.
+    pub(crate) fn record_values<'a>(&'a self, record: &'a Record) -> Vec<Cow<'a, str>> {
+        match record {
             Record::Original { start, end, .. } => self
                 .raw_fields(*start, *end)
                 .map(|(s, e)| self.raw_value(s, e))
@@ -635,14 +656,14 @@ impl Document {
             .map(move |(s, e)| (start + s, start + e))
     }
 
-    fn field_value<'a>(&'a self, field: &'a Field) -> Cow<'a, str> {
+    pub(crate) fn field_value<'a>(&'a self, field: &'a Field) -> Cow<'a, str> {
         match field {
             Field::Raw { start, end } => self.raw_value(*start, *end),
             Field::Text(text) => Cow::Borrowed(text),
         }
     }
 
-    fn raw_value(&self, start: usize, end: usize) -> Cow<'_, str> {
+    pub(crate) fn raw_value(&self, start: usize, end: usize) -> Cow<'_, str> {
         let encoding = self.buffer_encoding();
         match parser::unquote(&self.buf[start..end], self.dialect.quote) {
             Cow::Borrowed(bytes) => encoding.decode(bytes),
@@ -650,7 +671,7 @@ impl Document {
         }
     }
 
-    fn check_row(&self, row: usize) -> Result<()> {
+    pub(crate) fn check_row(&self, row: usize) -> Result<()> {
         if row < self.records.len() {
             Ok(())
         } else {

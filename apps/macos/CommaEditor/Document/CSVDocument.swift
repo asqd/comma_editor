@@ -280,6 +280,25 @@ final class CSVDocument: NSDocument {
         return Int(removed)
     }
 
+    // MARK: Repair
+
+    /// Fixes the broken row `row` of the file (the header row counted).
+    @discardableResult
+    func applyFix(row: Int, fix: RepairFix) -> Bool {
+        perform(L("Row Repair"), .structure) { try $0.applyFix(row: UInt64(row), fix: fix) }
+    }
+
+    /// Applies the recommended fix to every broken row of one kind; returns the rows fixed.
+    @discardableResult
+    func fixAll(_ kind: ProblemKind) -> Int {
+        var fixed: UInt64 = 0
+        perform(L("Row Repair"), .structure) {
+            fixed = $0.fixAll(kind: kind)
+            return fixed > 0
+        }
+        return Int(fixed)
+    }
+
     /// Sorting and filtering change what is shown, not the file, so they are not undoable.
     /// Throws on an invalid regular expression; callers show the error where it was typed.
     func setView(_ spec: ViewSpec) throws {

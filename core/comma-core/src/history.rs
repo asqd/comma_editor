@@ -38,12 +38,16 @@ pub(crate) struct Transaction {
     pub columns_after: usize,
     /// Rows were added, removed or reordered, so row indices no longer line up.
     pub structural: bool,
+    /// Whether the file ends with a line break, before and after.
+    pub trailing_before: bool,
+    pub trailing_after: bool,
 }
 
 /// What an undo or redo changed.
 pub(crate) struct Reverted {
     pub columns: usize,
     pub structural: bool,
+    pub trailing_newline: bool,
 }
 
 #[derive(Default)]
@@ -75,6 +79,7 @@ impl History {
         let reverted = Reverted {
             columns: transaction.columns_before,
             structural: transaction.structural,
+            trailing_newline: transaction.trailing_before,
         };
         self.redo.push(transaction);
         Some(reverted)
@@ -89,6 +94,7 @@ impl History {
         let reverted = Reverted {
             columns: transaction.columns_after,
             structural: transaction.structural,
+            trailing_newline: transaction.trailing_after,
         };
         self.undo.push(transaction);
         Some(reverted)

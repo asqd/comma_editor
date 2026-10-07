@@ -4,19 +4,44 @@ import AppKit
 // in the table while the panel is open.
 
 extension GridViewController {
-    var isProfileVisible: Bool { !profileContainer.isHidden }
+    enum SidePanel {
+        case profile, repair
+    }
 
-    @objc func toggleProfilePanel(_ sender: Any?) {
-        profileContainer.isHidden.toggle()
-        profileWidth.constant = isProfileVisible ? 280 : 0
-        if isProfileVisible {
-            configureProfileActions()
-            refreshProfile()
-        } else {
+    var shownSidePanel: SidePanel? {
+        sidePanel.isHidden ? nil : (profileHost.isHidden ? .repair : .profile)
+    }
+
+    var isProfileVisible: Bool { shownSidePanel == .profile }
+
+    /// Shows one of the panels at the right of the table, or hides the panel.
+    func showSidePanel(_ panel: SidePanel?) {
+        let previous = shownSidePanel
+        guard panel != previous else { return }
+        sidePanel.isHidden = panel == nil
+        profileHost.isHidden = panel != .profile
+        repairHost.isHidden = panel != .repair
+        sidePanelWidth.constant = switch panel {
+        case .profile?: 280
+        case .repair?: 320
+        case nil: 0
+        }
+        if previous == .profile {
             profiledColumn = nil
             profileModel.profile = nil
             tableView.reloadData()
         }
+        if panel == .profile {
+            configureProfileActions()
+            refreshProfile()
+        }
+        if panel == .repair {
+            repairCursorMoved()
+        }
+    }
+
+    @objc func toggleProfilePanel(_ sender: Any?) {
+        showSidePanel(isProfileVisible ? nil : .profile)
     }
 
     /// Profiles the active column off the main thread; the newest request wins.

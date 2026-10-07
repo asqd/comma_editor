@@ -180,6 +180,7 @@ enum MainMenu {
     private static func makeViewMenu() -> NSMenu {
         menu([
             item(L("Show Column Profile"), #selector(GridViewController.toggleProfilePanel(_:)), "p", [.command, .option]),
+            item(L("Show File Repair"), #selector(GridViewController.toggleRepairPanel(_:)), "r", [.command, .option]),
             .separator(),
             item(L("Show Toolbar"), #selector(NSWindow.toggleToolbarShown(_:)), "t", [.command, .option]),
             item(L("Customize Toolbar…"), #selector(NSWindow.runToolbarCustomizationPalette(_:))),

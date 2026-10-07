@@ -314,6 +314,109 @@ pub struct ColumnProfile {
     pub histogram: Vec<u64>,
 }
 
+#[derive(uniffi::Enum)]
+pub enum ProblemKind {
+    UnclosedQuote,
+    StrayQuote,
+    MissingFields,
+    ExtraFields,
+}
+
+impl From<core::ProblemKind> for ProblemKind {
+    fn from(kind: core::ProblemKind) -> Self {
+        match kind {
+            core::ProblemKind::UnclosedQuote => Self::UnclosedQuote,
+            core::ProblemKind::StrayQuote => Self::StrayQuote,
+            core::ProblemKind::MissingFields => Self::MissingFields,
+            core::ProblemKind::ExtraFields => Self::ExtraFields,
+        }
+    }
+}
+
+impl From<ProblemKind> for core::ProblemKind {
+    fn from(kind: ProblemKind) -> Self {
+        match kind {
+            ProblemKind::UnclosedQuote => Self::UnclosedQuote,
+            ProblemKind::StrayQuote => Self::StrayQuote,
+            ProblemKind::MissingFields => Self::MissingFields,
+            ProblemKind::ExtraFields => Self::ExtraFields,
+        }
+    }
+}
+
+/// A broken row; `row` counts the header row.
+#[derive(uniffi::Record)]
+pub struct Problem {
+    pub row: u64,
+    pub kind: ProblemKind,
+    pub fields: u64,
+    /// Lines of the file the row takes.
+    pub lines: u64,
+}
+
+#[derive(uniffi::Record)]
+pub struct ProblemCount {
+    pub kind: ProblemKind,
+    pub count: u64,
+}
+
+#[derive(uniffi::Record)]
+pub struct RepairReport {
+    /// The number of fields most rows have.
+    pub expected_fields: u64,
+    /// The first problems in file order.
+    pub problems: Vec<Problem>,
+    /// All problems of each kind.
+    pub counts: Vec<ProblemCount>,
+}
+
+#[derive(uniffi::Enum)]
+pub enum RepairFix {
+    QuoteAsText,
+    RemoveQuote,
+    PadFields,
+    JoinNext,
+    MergeFields { column: u64 },
+    DropEmptyFields,
+    DeleteRow,
+}
+
+impl From<core::Fix> for RepairFix {
+    fn from(fix: core::Fix) -> Self {
+        match fix {
+            core::Fix::QuoteAsText => Self::QuoteAsText,
+            core::Fix::RemoveQuote => Self::RemoveQuote,
+            core::Fix::PadFields => Self::PadFields,
+            core::Fix::JoinNext => Self::JoinNext,
+            core::Fix::MergeFields { column } => Self::MergeFields { column: column as u64 },
+            core::Fix::DropEmptyFields => Self::DropEmptyFields,
+            core::Fix::DeleteRow => Self::DeleteRow,
+        }
+    }
+}
+
+impl From<RepairFix> for core::Fix {
+    fn from(fix: RepairFix) -> Self {
+        match fix {
+            RepairFix::QuoteAsText => Self::QuoteAsText,
+            RepairFix::RemoveQuote => Self::RemoveQuote,
+            RepairFix::PadFields => Self::PadFields,
+            RepairFix::JoinNext => Self::JoinNext,
+            RepairFix::MergeFields { column } => Self::MergeFields { column: column as usize },
+            RepairFix::DropEmptyFields => Self::DropEmptyFields,
+            RepairFix::DeleteRow => Self::DeleteRow,
+        }
+    }
+}
+
+/// A fix with the first rows it would produce.
+#[derive(uniffi::Record)]
+pub struct RepairOption {
+    pub fix: RepairFix,
+    pub rows: Vec<Vec<String>>,
+    pub row_count: u64,
+}
+
 /// The kind of one value, as column profiles classify it.
 #[uniffi::export]
 pub fn classify_value(value: String) -> ValueKind {
@@ -718,6 +821,59 @@ impl CoreDocument {
         self.lock()
             .find_issue(column as usize, issue, kind.into(), after.map(|row| row as usize))
             .map(|row| row as u64)
+    }
+
+    // Repair.
+
+    /// Broken rows: the first `limit` of them, and counts of all.
+    pub fn find_problems(&self, limit: u64) -> RepairReport {
+        let report = self.lock().find_problems(limit as usize);
+        RepairReport {
+            expected_fields: report.expected_fields as u64,
+            problems: report
+                .problems
+                .into_iter()
+                .map(|problem| Problem {
+                    row: problem.row as u64,
+                    kind: problem.kind.into(),
+                    fields: problem.fields as u64,
+                    lines: problem.lines as u64,
+                })
+                .collect(),
+            counts: report
+                .counts
+                .into_iter()
+                .map(|(kind, count)| ProblemCount { kind: kind.into(), count: count as u64 })
+                .collect(),
+        }
+    }
+
+    /// Fixes for the problem in `row`, the recommended one first.
+    pub fn repair_options(&self, row: u64) -> Result<Vec<RepairOption>, CoreError> {
+        Ok(self
+            .lock()
+            .repair_options(row as usize)?
+            .into_iter()
+            .map(|option| RepairOption {
+                fix: option.fix.into(),
+                rows: option.rows,
+                row_count: option.row_count as u64,
+            })
+            .collect())
+    }
+
+    pub fn apply_fix(&self, row: u64, fix: RepairFix) -> Result<bool, CoreError> {
+        Ok(self.lock().apply_fix(row as usize, fix.into())?)
+    }
+
+    /// Applies the recommended fix to every problem of one kind; returns the rows fixed.
+    pub fn fix_all(&self, kind: ProblemKind) -> u64 {
+        self.lock().fix_all(kind.into()) as u64
+    }
+
+    /// The row as written in the file, cut to `max_chars` characters.
+    pub fn raw_text(&self, row: u64, max_chars: u64) -> Result<String, CoreError> {
+        Ok(self.lock().raw_text(row as usize, max_chars as usize)?)
     }
 
     // Column operations.

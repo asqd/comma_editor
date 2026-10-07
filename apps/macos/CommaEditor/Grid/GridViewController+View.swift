@@ -369,6 +369,9 @@ extension GridViewController: NSMenuItemValidation {
         case #selector(toggleProfilePanel(_:)):
             menuItem.title = isProfileVisible ? L("Hide Column Profile") : L("Show Column Profile")
             return columnCount > 0
+        case #selector(toggleRepairPanel(_:)):
+            menuItem.title = isRepairVisible ? L("Hide File Repair") : L("Show File Repair")
+            return true
         case #selector(copyAs(_:)):
             return selection != nil
         case #selector(exportAs(_:)):

@@ -33,14 +33,24 @@ final class GridViewController: NSViewController {
     weak var documentToolbar: DocumentToolbar?
     /// Result of the last search, shown in the status bar.
     var searchSummary: String?
-    /// The column profile panel at the right of the table.
+    /// The panel at the right of the table: the column profile or the file repair.
+    let sidePanel = NSView()
+    /// 0 while the panel is hidden.
+    lazy var sidePanelWidth = sidePanel.widthAnchor.constraint(equalToConstant: 0)
     let profileModel = ColumnProfileModel()
-    let profileContainer = NSView()
+    lazy var profileHost = NSHostingView(rootView: ColumnProfileView(model: profileModel))
     /// Column whose profile the panel shows, and a counter that drops stale results.
     var profiledColumn: Int?
     var profileGeneration = 0
-    /// 0 while the panel is hidden.
-    lazy var profileWidth = profileContainer.widthAnchor.constraint(equalToConstant: 0)
+    let repairModel = RepairModel()
+    lazy var repairHost = NSHostingView(rootView: RepairView(model: repairModel))
+    /// Broken rows by file row, marked on the row numbers.
+    var problemRows: [Int: ProblemKind] = [:]
+    /// The pending check for broken rows, and a counter that drops stale results.
+    var problemCheck: DispatchWorkItem?
+    var problemGeneration = 0
+    /// Opens the repair panel from the status bar; hidden while the file has no broken rows.
+    let problemsButton = NSButton()
     private var changeObserver: NSObjectProtocol?
 
     private struct CachedRow {
@@ -86,7 +96,7 @@ final class GridViewController: NSViewController {
     var core: CoreDocument { document.core }
     var dataRowCount: Int { Int(info.visibleRowCount) }
     var columnCount: Int { Int(info.columnCount) }
-    private var headerOffset: Int { info.hasHeader && info.rowCount > 0 ? 1 : 0 }
+    var headerOffset: Int { info.hasHeader && info.rowCount > 0 ? 1 : 0 }
     /// Data rows in the file, shown or not.
     var totalDataRowCount: Int { Int(info.rowCount) - headerOffset }
 
@@ -107,37 +117,45 @@ final class GridViewController: NSViewController {
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusLabel.setContentHuggingPriority(.required, for: .vertical)
         let statusBar = NSView()
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
-        statusBar.addSubview(statusLabel)
+        configureProblemsButton()
+        for subview in [statusLabel, problemsButton] as [NSView] {
+            subview.translatesAutoresizingMaskIntoConstraints = false
+            statusBar.addSubview(subview)
+        }
         NSLayoutConstraint.activate([
             statusLabel.topAnchor.constraint(equalTo: statusBar.topAnchor, constant: 5),
             statusLabel.bottomAnchor.constraint(equalTo: statusBar.bottomAnchor, constant: -6),
             statusLabel.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 10),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: statusBar.trailingAnchor, constant: -10),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: problemsButton.leadingAnchor, constant: -10),
+            problemsButton.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
+            problemsButton.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor, constant: -10),
         ])
         let separator = NSBox()
         separator.boxType = .separator
 
-        let profileHost = NSHostingView(rootView: ColumnProfileView(model: profileModel))
-        let profileSeparator = NSBox()
-        profileSeparator.boxType = .separator
-        for subview in [profileSeparator, profileHost] as [NSView] {
+        let sideSeparator = NSBox()
+        sideSeparator.boxType = .separator
+        for subview in [sideSeparator, profileHost, repairHost] as [NSView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
-            profileContainer.addSubview(subview)
+            sidePanel.addSubview(subview)
         }
         NSLayoutConstraint.activate([
-            profileSeparator.topAnchor.constraint(equalTo: profileContainer.topAnchor),
-            profileSeparator.bottomAnchor.constraint(equalTo: profileContainer.bottomAnchor),
-            profileSeparator.leadingAnchor.constraint(equalTo: profileContainer.leadingAnchor),
-            profileSeparator.widthAnchor.constraint(equalToConstant: 1),
-            profileHost.topAnchor.constraint(equalTo: profileContainer.topAnchor),
-            profileHost.bottomAnchor.constraint(equalTo: profileContainer.bottomAnchor),
-            profileHost.leadingAnchor.constraint(equalTo: profileSeparator.trailingAnchor),
-            profileHost.trailingAnchor.constraint(equalTo: profileContainer.trailingAnchor),
+            sideSeparator.topAnchor.constraint(equalTo: sidePanel.topAnchor),
+            sideSeparator.bottomAnchor.constraint(equalTo: sidePanel.bottomAnchor),
+            sideSeparator.leadingAnchor.constraint(equalTo: sidePanel.leadingAnchor),
+            sideSeparator.widthAnchor.constraint(equalToConstant: 1),
         ])
-        profileContainer.isHidden = true
+        for host in [profileHost, repairHost] as [NSView] {
+            NSLayoutConstraint.activate([
+                host.topAnchor.constraint(equalTo: sidePanel.topAnchor),
+                host.bottomAnchor.constraint(equalTo: sidePanel.bottomAnchor),
+                host.leadingAnchor.constraint(equalTo: sideSeparator.trailingAnchor),
+                host.trailingAnchor.constraint(equalTo: sidePanel.trailingAnchor),
+            ])
+        }
+        sidePanel.isHidden = true
         let content = NSView()
-        for subview in [scrollView, profileContainer] as [NSView] {
+        for subview in [scrollView, sidePanel] as [NSView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(subview)
         }
@@ -145,11 +163,11 @@ final class GridViewController: NSViewController {
             scrollView.topAnchor.constraint(equalTo: content.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: profileContainer.leadingAnchor),
-            profileContainer.topAnchor.constraint(equalTo: content.topAnchor),
-            profileContainer.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            profileContainer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            profileWidth,
+            scrollView.trailingAnchor.constraint(equalTo: sidePanel.leadingAnchor),
+            sidePanel.topAnchor.constraint(equalTo: content.topAnchor),
+            sidePanel.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            sidePanel.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            sidePanelWidth,
         ])
 
         let stack = NSStackView(views: [findContainer, filterContainer, content, separator, statusBar])
@@ -189,6 +207,8 @@ final class GridViewController: NSViewController {
         filterBar.delegate = self
         rebuildColumns()
         updateStatus()
+        configureRepairActions()
+        scheduleProblemCheck(after: 0)
         changeObserver = NotificationCenter.default.addObserver(
             forName: CSVDocument.didChangeNotification,
             object: document,
@@ -400,6 +420,7 @@ final class GridViewController: NSViewController {
         }
         updateStatus()
         refreshProfile()
+        scheduleProblemCheck()
     }
 
     // MARK: Status bar
@@ -431,9 +452,6 @@ final class GridViewController: NSViewController {
         if !spec.sort.isEmpty {
             let keys = spec.sort.map { columnTitle(Int($0.column)) + ($0.ascending ? " ↑" : " ↓") }
             parts.append(L("Sorted by %@", keys.joined(separator: ", ")))
-        }
-        if info.unterminatedQuote {
-            parts.append(L("Unclosed quote"))
         }
         if let selection, !selection.isSingleCell {
             parts.insert(contentsOf: selectionSummary(selection), at: 0)
@@ -470,6 +488,7 @@ final class GridViewController: NSViewController {
             if clamped?.cursor.column != previousColumn {
                 refreshProfile()
             }
+            repairCursorMoved()
         }
         if scroll, let cursor = clamped?.cursor {
             tableView.scrollRowToVisible(cursor.row)
@@ -756,6 +775,9 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
             let selected = selection?.rows.contains(row) ?? false
             cell.textField?.stringValue = String(fileRow - headerOffset + 1)
             cell.textField?.textColor = selected ? .controlAccentColor : .secondaryLabelColor
+            let problem = problemRows[fileRow]
+            cell.layer?.backgroundColor = problem.map { _ in NSColor.systemRed.withAlphaComponent(0.2).cgColor }
+            cell.toolTip = problem.map(RepairView.kindTitle)
             return cell
         }
         guard let column = dataColumn(of: tableColumn) else { return nil }
