@@ -610,6 +610,18 @@ pub enum ExportFormat {
     Xlsx,
 }
 
+impl From<ExportFormat> for core::ExportFormat {
+    fn from(format: ExportFormat) -> Self {
+        match format {
+            ExportFormat::Json => Self::Json,
+            ExportFormat::Markdown => Self::Markdown,
+            ExportFormat::Html => Self::Html,
+            ExportFormat::Sql => Self::Sql,
+            ExportFormat::Xlsx => Self::Xlsx,
+        }
+    }
+}
+
 #[derive(uniffi::Enum)]
 pub enum TextTransform {
     Trim,
@@ -780,6 +792,12 @@ impl CoreDocument {
 
     fn lock(&self) -> MutexGuard<'_, core::Document> {
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// A snapshot for work that only reads and takes a while: it runs without holding the
+    /// document, so the table stays responsive meanwhile.
+    fn read(&self) -> core::Document {
+        self.lock().snapshot()
     }
 
     /// The document for a change or a save, which must wait until indexing is done.
@@ -979,7 +997,7 @@ impl CoreDocument {
         forward: bool,
     ) -> Result<Option<CellPosition>, CoreError> {
         let from = from.map(|cell| (cell.row as usize, cell.column as usize));
-        let found = self.lock().find(&query.into(), from, forward)?;
+        let found = self.read().find(&query.into(), from, forward)?;
         Ok(found.map(|(row, column)| CellPosition {
             row: row as u64,
             column: column as u64,
@@ -987,7 +1005,7 @@ impl CoreDocument {
     }
 
     pub fn count_matches(&self, query: SearchQuery) -> Result<u64, CoreError> {
-        Ok(self.lock().count_matches(&query.into())? as u64)
+        Ok(self.read().count_matches(&query.into())? as u64)
     }
 
     /// Replaces the matches in one visible cell; `false` if it does not match.
@@ -1014,7 +1032,7 @@ impl CoreDocument {
     // Ranges of visible cells.
 
     pub fn copy_range(&self, range: CellRange) -> Result<String, CoreError> {
-        Ok(self.lock().copy_range(range.into())?)
+        Ok(self.read().copy_range(range.into())?)
     }
 
     pub fn range_stats(&self, range: CellRange) -> Result<RangeStats, CoreError> {
@@ -1046,6 +1064,12 @@ impl CoreDocument {
 
     /// Visible rows of `range` (all visible cells when `None`) in `format`. `name` titles the
     /// HTML page, SQL table and sheet; a `fragment` is for the clipboard.
+    /// Writes the visible rows to `path`, building them a batch at a time off the document.
+    pub fn export_to_file(&self, path: String, format: ExportFormat, name: String) -> Result<(), CoreError> {
+        let snapshot = self.edit()?.snapshot();
+        Ok(snapshot.export_to_file(path, format.into(), &name)?)
+    }
+
     pub fn export(
         &self,
         format: ExportFormat,
@@ -1053,18 +1077,13 @@ impl CoreDocument {
         name: String,
         fragment: bool,
     ) -> Result<Vec<u8>, CoreError> {
-        let format = match format {
-            ExportFormat::Json => core::ExportFormat::Json,
-            ExportFormat::Markdown => core::ExportFormat::Markdown,
-            ExportFormat::Html => core::ExportFormat::Html,
-            ExportFormat::Sql => core::ExportFormat::Sql,
-            ExportFormat::Xlsx => core::ExportFormat::Xlsx,
-        };
-        Ok(self.edit()?.export(format, range.map(Into::into), &name, fragment)?)
+        let format: core::ExportFormat = format.into();
+        let snapshot = self.edit()?.snapshot();
+        Ok(snapshot.export(format, range.map(Into::into), &name, fragment)?)
     }
 
     pub fn profile_column(&self, column: u64) -> Result<ColumnProfile, CoreError> {
-        let profile = self.lock().profile_column(column as usize)?;
+        let profile = self.read().profile_column(column as usize)?;
         Ok(ColumnProfile {
             kind: profile.kind.into(),
             total: profile.total as u64,
@@ -1093,7 +1112,7 @@ impl CoreDocument {
             Issue::Mismatch => core::Issue::Mismatch,
             Issue::Padding => core::Issue::Padding,
         };
-        self.lock()
+        self.read()
             .find_issue(column as usize, issue, kind.into(), after.map(|row| row as usize))
             .map(|row| row as u64)
     }
@@ -1102,7 +1121,7 @@ impl CoreDocument {
 
     /// Broken rows: the first `limit` of them, and counts of all.
     pub fn find_problems(&self, limit: u64) -> RepairReport {
-        let report = self.lock().find_problems(limit as usize);
+        let report = self.read().find_problems(limit as usize);
         RepairReport {
             expected_fields: report.expected_fields as u64,
             problems: report
@@ -1127,7 +1146,7 @@ impl CoreDocument {
     /// Fixes for the problem in `row`, the recommended one first.
     pub fn repair_options(&self, row: u64) -> Result<Vec<RepairOption>, CoreError> {
         Ok(self
-            .lock()
+            .read()
             .repair_options(row as usize)?
             .into_iter()
             .map(|option| RepairOption {
@@ -1163,7 +1182,7 @@ impl CoreDocument {
     pub fn preview_formula(&self, formula: String, start: u64, count: u64) -> Result<Vec<FormulaOutcome>, CoreError> {
         let start = start as usize;
         Ok(self
-            .lock()
+            .read()
             .preview_formula(&formula, start..start + count as usize)?
             .into_iter()
             .map(|outcome| match outcome {

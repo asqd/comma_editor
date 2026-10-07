@@ -82,3 +82,24 @@ fn xlsx_is_a_zip_with_a_sheet() {
     assert_eq!(&bytes[..2], b"PK");
     assert!(bytes.windows(19).any(|w| w == b"xl/worksheets/sheet"));
 }
+
+#[test]
+fn exporting_to_a_file_matches_exporting_to_memory() {
+    let mut text = String::from("id,name,amount\n");
+    for i in 0..40_000 {
+        text.push_str(&format!("{i},\"Name, {i}\",{}.5\n", i % 97));
+    }
+    let document = Document::from_bytes(text.into_bytes());
+    let dir = std::env::temp_dir().join(format!("comma-export-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for format in [ExportFormat::Json, ExportFormat::Markdown, ExportFormat::Html, ExportFormat::Sql] {
+        let path = dir.join("out");
+        document.export_to_file(&path, format, "data").unwrap();
+        let in_memory = document.export(format, None, "data", false).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), in_memory, "{format:?}");
+    }
+    let json = String::from_utf8(document.export(ExportFormat::Json, None, "data", false).unwrap()).unwrap();
+    assert!(json.ends_with("\"amount\": 35.5}\n]\n"), "the last row has no comma");
+    assert_eq!(json.matches("},\n").count(), 39_999);
+    std::fs::remove_dir_all(dir).unwrap();
+}

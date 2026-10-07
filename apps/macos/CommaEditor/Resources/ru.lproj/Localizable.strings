@@ -437,3 +437,5 @@
 "The file is still being read." = "Файл ещё читается.";
 "Changes and saving are possible once the whole file is read; the progress is in the status bar." = "Править и сохранять можно, когда файл будет прочитан целиком; ход чтения — в строке состояния.";
 "The file is still being read" = "Файл ещё читается";
+"Searching…" = "Поиск…";
+"Exporting…" = "Экспорт…";

@@ -31,6 +31,9 @@ extension GridViewController {
         } else if document.isUpdatingView {
             busyLabel.stringValue = L("Sorting and filtering…")
             busyCancel.isHidden = false
+        } else if exportsRunning > 0 {
+            busyLabel.stringValue = L("Exporting…")
+            busyCancel.isHidden = true
         } else {
             busyIndicator.stopAnimation(nil)
             stack?.isHidden = true

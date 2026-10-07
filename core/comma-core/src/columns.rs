@@ -54,7 +54,7 @@ impl Document {
     /// Transforms the text of every cell in the range. Returns the number of changed cells.
     pub fn transform_range(&mut self, range: CellRange, transform: TextTransform) -> Result<usize> {
         self.check_range(&range)?;
-        Ok(self.edit_range(Vec::new(), range.rows(), range.columns(), false, |_, _, value| {
+        Ok(self.edit_range_parallel(range.rows(), range.columns(), |_, _, value| {
             Some(transform.apply(value))
         }))
     }

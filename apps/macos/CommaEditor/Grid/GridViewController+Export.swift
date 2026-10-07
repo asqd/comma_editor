@@ -60,16 +60,55 @@ extension GridViewController {
         let name = exportName
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            // Large tables take seconds; build the file off the main thread.
+            self?.exportsRunning += 1
+            self?.updateStatus()
+            // Large tables take seconds: the file is built off the main thread, written to a
+            // temporary folder and then put in place, so a failed export leaves no half file.
             DispatchQueue.global(qos: .userInitiated).async {
-                let result = Result { try core.export(format: kind.format, range: nil, name: name, fragment: false) }
-                    .flatMap { data in Result { try data.write(to: url, options: .atomic) } }
+                let result = Result { try Self.export(core, kind: kind, name: name, to: url) }
                 DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.exportsRunning -= 1
+                    self.updateStatus()
                     if case .failure(let error) = result {
-                        self?.presentExportError(error)
+                        self.presentExportError(error)
                     }
                 }
             }
+        }
+    }
+
+    #if DEBUG
+    /// Exports to the app's temporary folder without the save panel, and logs the result.
+    func debugExport(_ kind: ExportKind) {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("debug-export.\(kind.fileExtension)")
+        let core = core
+        let name = exportName
+        exportsRunning += 1
+        updateStatus()
+        let started = Date()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try Self.export(core, kind: kind, name: name, to: url) }
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? -1
+            NSLog("COMMA export \(kind) \(result) in \(Date().timeIntervalSince(started)) s, \(size) bytes")
+            DispatchQueue.main.async { [weak self] in
+                self?.exportsRunning -= 1
+                self?.updateStatus()
+            }
+        }
+    }
+    #endif
+
+    private nonisolated static func export(_ core: CoreDocument, kind: ExportKind, name: String, to url: URL) throws {
+        let files = FileManager.default
+        let folder = try files.url(for: .itemReplacementDirectory, in: .userDomainMask, appropriateFor: url, create: true)
+        defer { try? files.removeItem(at: folder) }
+        let temporary = folder.appendingPathComponent(url.lastPathComponent)
+        try core.exportToFile(path: temporary.path, format: kind.format, name: name)
+        if files.fileExists(atPath: url.path) {
+            _ = try files.replaceItemAt(url, withItemAt: temporary)
+        } else {
+            try files.moveItem(at: temporary, to: url)
         }
     }
 

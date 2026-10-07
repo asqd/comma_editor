@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use rayon::prelude::*;
+
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::view::parse_number;
@@ -148,6 +150,70 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
+/// Kinds, values and lengths of a share of a column.
+struct Tally {
+    kinds: HashMap<ValueKind, usize>,
+    counts: HashMap<String, usize>,
+    empty: usize,
+    padded: usize,
+    min_length: usize,
+    max_length: usize,
+}
+
+impl Default for Tally {
+    fn default() -> Self {
+        Self {
+            kinds: HashMap::new(),
+            counts: HashMap::new(),
+            empty: 0,
+            padded: 0,
+            min_length: usize::MAX,
+            max_length: 0,
+        }
+    }
+}
+
+impl Tally {
+    fn add(&mut self, value: &str) {
+        let kind = classify(value);
+        *self.kinds.entry(kind).or_default() += 1;
+        if kind == ValueKind::Empty {
+            self.empty += 1;
+            return;
+        }
+        if has_padding(value) {
+            self.padded += 1;
+        }
+        let length = value.chars().count();
+        self.min_length = self.min_length.min(length);
+        self.max_length = self.max_length.max(length);
+        match self.counts.get_mut(value) {
+            Some(count) => *count += 1,
+            None => {
+                self.counts.insert(value.to_owned(), 1);
+            }
+        }
+    }
+
+    fn merge(mut self, mut other: Self) -> Self {
+        // Fold the smaller tally into the larger one.
+        if other.counts.len() > self.counts.len() {
+            std::mem::swap(&mut self, &mut other);
+        }
+        for (kind, count) in other.kinds {
+            *self.kinds.entry(kind).or_default() += count;
+        }
+        for (value, count) in other.counts {
+            *self.counts.entry(value).or_default() += count;
+        }
+        self.empty += other.empty;
+        self.padded += other.padded;
+        self.min_length = self.min_length.min(other.min_length);
+        self.max_length = self.max_length.max(other.max_length);
+        self
+    }
+}
+
 fn has_padding(value: &str) -> bool {
     !value.is_empty() && value.trim() != value
 }
@@ -173,32 +239,14 @@ impl Document {
             .filter_map(|row| self.visible_record(row))
             .collect();
 
-        let mut kinds: HashMap<ValueKind, usize> = HashMap::new();
-        let mut counts: HashMap<String, usize> = HashMap::new();
-        let mut empty = 0;
-        let mut padded = 0;
-        let (mut min_length, mut max_length) = (usize::MAX, 0);
-        for &record in &records {
-            let value = self.value_at(record, column);
-            let kind = classify(&value);
-            *kinds.entry(kind).or_default() += 1;
-            if kind == ValueKind::Empty {
-                empty += 1;
-                continue;
-            }
-            if has_padding(&value) {
-                padded += 1;
-            }
-            let length = value.chars().count();
-            min_length = min_length.min(length);
-            max_length = max_length.max(length);
-            match counts.get_mut(value.as_ref()) {
-                Some(count) => *count += 1,
-                None => {
-                    counts.insert(value.into_owned(), 1);
-                }
-            }
-        }
+        // Each core tallies a share of the rows; the tallies are then merged.
+        let Tally { kinds, counts, empty, padded, min_length, max_length } = records
+            .par_iter()
+            .fold(Tally::default, |mut tally, &record| {
+                tally.add(&self.value_at(record, column));
+                tally
+            })
+            .reduce(Tally::default, Tally::merge);
 
         let filled = records.len() - empty;
         let kind = dominant_kind(&kinds, filled);

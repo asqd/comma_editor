@@ -9,6 +9,8 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+use rayon::prelude::*;
+
 use crate::document::{Document, Field, Record};
 use crate::error::{Error, Result};
 use crate::profile::date_value;
@@ -69,6 +71,16 @@ pub struct FormulaReport {
     pub errors: usize,
     /// The first failing row (a row of the file) and why.
     pub first_error: Option<(usize, FormulaError)>,
+}
+
+impl FormulaReport {
+    fn add(&mut self, row: usize, error: Option<FormulaError>) {
+        self.rows += 1;
+        if let Some(error) = error {
+            self.errors += 1;
+            self.first_error.get_or_insert((row, error));
+        }
+    }
 }
 
 /// Functions a formula can call, with the number of arguments each takes.
@@ -686,24 +698,33 @@ impl Document {
         if at > self.column_count() {
             return Err(Error::ColumnOutOfRange { column: at, columns: self.column_count() });
         }
-        let mut report = FormulaReport { rows: 0, errors: 0, first_error: None };
         let header = self.header_offset();
-        let updated: Vec<Record> = (0..self.records.len())
+        // Rows are computed on all cores; the report is gathered in order afterwards.
+        let computed: Vec<(Record, Option<FormulaError>)> = (0..self.records.len())
+            .into_par_iter()
             .map(|row| {
                 let record = &self.records[row];
-                let value = if row < header {
-                    name.to_owned()
+                let (value, error) = if row < header {
+                    (name.to_owned(), None)
                 } else {
-                    self.evaluate_row(&formula, row, &mut report)
+                    self.evaluate(&formula, row)
                 };
                 let mut fields = self.fields(record);
                 if fields.len() < at {
                     fields.resize(at, Field::Text(String::new()));
                 }
                 fields.insert(at, Field::Text(value));
-                Record::modified(fields, record.term())
+                (Record::modified(fields, record.term()), error)
             })
             .collect();
+        let mut report = FormulaReport { rows: 0, errors: 0, first_error: None };
+        let mut updated = Vec::with_capacity(computed.len());
+        for (row, (record, error)) in computed.into_iter().enumerate() {
+            if row >= header {
+                report.add(row, error);
+            }
+            updated.push(record);
+        }
         self.replace_records(updated, self.column_count() + 1, false);
         self.reset_view();
         Ok(report)
@@ -716,27 +737,31 @@ impl Document {
         if column >= self.column_count() {
             return Err(Error::ColumnOutOfRange { column, columns: self.column_count() });
         }
+        // Values come from the rows as they were, so the formula may use the column itself.
+        let computed: Vec<(usize, String, Option<FormulaError>)> = (0..self.visible_row_count())
+            .into_par_iter()
+            .map(|visible| {
+                let record = self.visible_record(visible).expect("visible row");
+                let (value, error) = self.evaluate(&formula, record);
+                (record, value, error)
+            })
+            .collect();
         let mut report = FormulaReport { rows: 0, errors: 0, first_error: None };
-        let rows: Vec<usize> = (0..self.visible_row_count()).collect();
-        let mut values = Vec::with_capacity(rows.len());
-        for &visible in &rows {
-            let record = self.visible_record(visible).expect("visible row");
-            values.push(self.evaluate_row(&formula, record, &mut report));
+        let mut values = Vec::with_capacity(computed.len());
+        for (record, value, error) in computed {
+            report.add(record, error);
+            values.push(value);
         }
-        let mut values = values.into_iter();
-        self.edit_range(Vec::new(), 0..rows.len(), column..column + 1, false, |_, _, _| values.next());
+        let rows = values.len();
+        self.edit_range_parallel(0..rows, column..column + 1, |row, _, _| Some(values[row].clone()));
         Ok(report)
     }
 
-    fn evaluate_row(&self, formula: &Formula, row: usize, report: &mut FormulaReport) -> String {
-        report.rows += 1;
+    /// The formula's value for a row of the file; empty, with the reason, where it fails.
+    fn evaluate(&self, formula: &Formula, row: usize) -> (String, Option<FormulaError>) {
         match formula.evaluate(&|column| self.value_at(row, column).into_owned()) {
-            Ok(value) => value,
-            Err(error) => {
-                report.errors += 1;
-                report.first_error.get_or_insert((row, error));
-                String::new()
-            }
+            Ok(value) => (value, None),
+            Err(error) => (String::new(), Some(error)),
         }
     }
 }

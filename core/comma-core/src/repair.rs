@@ -10,8 +10,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use memchr::memchr_iter;
+use rayon::prelude::*;
 
-use crate::document::{Document, Field, Record};
+use crate::document::{Document, Field, Record, RecordRef};
 use crate::error::Result;
 use crate::history::Splice;
 use crate::parser::{self, QuotedSpan, Terminator};
@@ -100,17 +101,19 @@ impl Document {
         let survey = self.survey();
         let mut counts: HashMap<ProblemKind, usize> = HashMap::new();
         let mut problems = Vec::new();
-        for row in 0..self.records.len() {
-            if let Some(kind) = self.problem_kind(&survey, row) {
-                *counts.entry(kind).or_default() += 1;
-                if problems.len() < limit {
-                    problems.push(Problem {
-                        row,
-                        kind,
-                        fields: survey.fields[row] as usize,
-                        lines: self.line_count(row),
-                    });
-                }
+        let kinds: Vec<(usize, ProblemKind)> = (0..self.records.len())
+            .into_par_iter()
+            .filter_map(|row| self.problem_kind(&survey, row).map(|kind| (row, kind)))
+            .collect();
+        for (row, kind) in kinds {
+            *counts.entry(kind).or_default() += 1;
+            if problems.len() < limit {
+                problems.push(Problem {
+                    row,
+                    kind,
+                    fields: survey.fields[row] as usize,
+                    lines: self.line_count(row),
+                });
             }
         }
         let counts = [
@@ -180,13 +183,13 @@ impl Document {
     /// The row as it is written in the file, cut to `max_chars` characters.
     pub fn raw_text(&self, row: usize, max_chars: usize) -> Result<String> {
         self.check_row(row)?;
-        let text = match &self.records[row] {
-            Record::Original { start, end, .. } => {
+        let text = match self.records[row].get() {
+            RecordRef::Original { start, end, .. } => {
                 // Enough bytes for `max_chars` characters in any supported encoding.
-                let end = (*end).min(start + max_chars.saturating_mul(4).saturating_add(4));
-                self.buffer_encoding().decode(&self.buf[*start..end]).into_owned()
+                let end = end.min(start + max_chars.saturating_mul(4).saturating_add(4));
+                self.buffer_encoding().decode(&self.buf[start..end]).into_owned()
             }
-            Record::Modified(_) => self.values(row).join(&(self.dialect.delimiter as char).to_string()),
+            RecordRef::Modified(_) => self.values(row).join(&(self.dialect.delimiter as char).to_string()),
         };
         Ok(match text.char_indices().nth(max_chars) {
             Some((index, _)) => format!("{}…", &text[..index]),
@@ -198,22 +201,27 @@ impl Document {
 
     fn survey(&self) -> Survey {
         let (delimiter, quote) = (self.dialect.delimiter, self.dialect.quote);
-        let mut fields = Vec::with_capacity(self.records.len());
+        // Shapes are found on all cores, then gathered in order.
+        let shapes: Vec<(u32, Option<QuotedSpan>)> = self
+            .records
+            .par_iter()
+            .map(|record| match record.get() {
+                RecordRef::Original { start, end, .. } => {
+                    let (count, span) = parser::shape(&self.buf[start..end], delimiter, quote);
+                    (count as u32, span)
+                }
+                RecordRef::Modified(modified) => (modified.fields.len() as u32, None),
+            })
+            .collect();
+        let mut fields = Vec::with_capacity(shapes.len());
         let mut quoted = HashMap::new();
         let mut histogram: HashMap<u32, usize> = HashMap::new();
-        for (row, record) in self.records.iter().enumerate() {
-            let count = match record {
-                Record::Original { start, end, .. } => {
-                    let (count, span) = parser::shape(&self.buf[*start..*end], delimiter, quote);
-                    if let Some(span) = span {
-                        quoted.insert(row, span);
-                    }
-                    count
-                }
-                Record::Modified(modified) => modified.fields.len(),
-            } as u32;
+        for (row, (count, span)) in shapes.into_iter().enumerate() {
+            if let Some(span) = span {
+                quoted.insert(row, span);
+            }
             fields.push(count);
-            if !record.is_blank() {
+            if !self.records[row].is_blank() {
                 *histogram.entry(count).or_default() += 1;
             }
         }
@@ -245,7 +253,7 @@ impl Document {
     /// swallowed whole rows, or fields of one row merged into a single value.
     fn quote_problem(&self, survey: &Survey, row: usize) -> Option<(ProblemKind, usize)> {
         const CANDIDATES: usize = 8;
-        let Record::Original { start, end, .. } = self.records[row] else {
+        let RecordRef::Original { start, end, .. } = self.records[row].get() else {
             return None;
         };
         let span = survey.quoted.get(&row);
@@ -280,14 +288,14 @@ impl Document {
     }
 
     fn line_count(&self, row: usize) -> usize {
-        match self.records[row] {
-            Record::Original { start, end, .. } => {
+        match self.records[row].get() {
+            RecordRef::Original { start, end, .. } => {
                 // A record that ran to the end of the file may end with a line break.
                 let bytes = self.buf[start..end].trim_ascii_end();
                 let lf = memchr_iter(b'\n', bytes).count();
                 1 + if lf > 0 { lf } else { memchr_iter(b'\r', bytes).count() }
             }
-            Record::Modified(_) => 1,
+            RecordRef::Modified(_) => 1,
         }
     }
 
@@ -426,11 +434,10 @@ impl Document {
     /// Re-reads the lines a quote swallowed with that quote as an ordinary character, or
     /// without it. Rows without the quote stay untouched bytes of the file.
     fn split_at_quote(&self, survey: &Survey, row: usize, remove: bool) -> (usize, Vec<Record>, bool) {
-        let (Record::Original { start, end, term }, Some((_, at))) = (&self.records[row], self.quote_problem(survey, row))
+        let (RecordRef::Original { start, end, term }, Some((_, at))) = (self.records[row].get(), self.quote_problem(survey, row))
         else {
             return (1, vec![self.records[row].clone()], self.trailing_newline);
         };
-        let (start, end, term) = (*start, *end, *term);
         let (delimiter, quote) = (self.dialect.delimiter, self.dialect.quote);
         let spans = parser::scan_literal(&self.buf[..end], start, delimiter, quote, at);
         let mut trailing = self.trailing_newline;
@@ -452,11 +459,7 @@ impl Document {
                     span.term
                 };
                 if !(span.start..=span.end).contains(&at) {
-                    return Record::Original {
-                        start: span.start,
-                        end: span.end,
-                        term: span_term,
-                    };
+                    return Record::original(span.start, span.end, span_term);
                 }
                 let bytes = &self.buf[span.start..span.end];
                 let fields = parser::split_fields_with(bytes, delimiter, quote, Some(at - span.start))
@@ -525,9 +528,9 @@ impl Document {
         let (delimiter, quote) = (self.dialect.delimiter, self.dialect.quote);
         self.records
             .iter()
-            .map(|record| match record {
-                Record::Original { start, end, .. } => parser::shape(&self.buf[*start..*end], delimiter, quote).0,
-                Record::Modified(modified) => modified.fields.len(),
+            .map(|record| match record.get() {
+                RecordRef::Original { start, end, .. } => parser::shape(&self.buf[start..end], delimiter, quote).0,
+                RecordRef::Modified(modified) => modified.fields.len(),
             })
             .max()
             .unwrap_or(0)

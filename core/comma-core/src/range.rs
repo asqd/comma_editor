@@ -1,7 +1,9 @@
 //! Rectangular ranges of visible cells: copy, paste, fill and clear, each one undoable step.
 
-use std::sync::Arc;
 use std::ops::Range;
+use std::sync::Arc;
+
+use rayon::prelude::*;
 
 use crate::document::{Document, Field, Record};
 use crate::error::{Error, Result};
@@ -89,9 +91,7 @@ impl Document {
     /// Returns the number of cells that changed.
     pub fn fill_range(&mut self, range: CellRange, value: &str) -> Result<usize> {
         self.check_range(&range)?;
-        Ok(self.edit_range(Vec::new(), range.rows(), range.columns(), false, |_, _, _| {
-            Some(value.to_owned())
-        }))
+        Ok(self.edit_range_parallel(range.rows(), range.columns(), |_, _, _| Some(value.to_owned())))
     }
 
     /// Copies the top row of the range into the rows below it.
@@ -196,6 +196,50 @@ impl Document {
         }
         if !splices.is_empty() {
             self.commit(splices, columns_after, structural);
+        }
+        changed
+    }
+
+    /// Like `edit_range` for edits that look at each cell alone: new values are found on all
+    /// cores, then the changed rows are replaced in order. Returns the number of changed cells.
+    pub(crate) fn edit_range_parallel(
+        &mut self,
+        rows: Range<usize>,
+        columns: Range<usize>,
+        value: impl Fn(usize, usize, &str) -> Option<String> + Sync,
+    ) -> usize {
+        let updates: Vec<(usize, Record, usize, usize)> = rows
+            .into_par_iter()
+            .filter_map(|row| {
+                let record = self.visible_record(row)?;
+                let mut fields: Option<Vec<Field>> = None;
+                let (mut changed, mut width) = (0, 0);
+                for column in columns.clone() {
+                    let current = self.value_at(record, column);
+                    let Some(new_value) = value(row, column, &current) else { continue };
+                    if current == new_value {
+                        continue;
+                    }
+                    let fields = fields.get_or_insert_with(|| self.fields(&self.records[record]));
+                    if fields.len() <= column {
+                        fields.resize(column + 1, Field::Text(String::new()));
+                    }
+                    fields[column] = Field::Text(new_value);
+                    width = width.max(column + 1);
+                    changed += 1;
+                }
+                fields.map(|fields| (record, Record::modified(fields, self.records[record].term()), changed, width))
+            })
+            .collect();
+        let changed = updates.iter().map(|update| update.2).sum();
+        let columns_after = updates.iter().map(|update| update.3).fold(self.column_count(), usize::max);
+        let records = Arc::make_mut(&mut self.records);
+        let splices: Vec<Splice> = updates
+            .into_iter()
+            .map(|(record, updated, _, _)| Splice::apply(records, record, 1, vec![updated]))
+            .collect();
+        if !splices.is_empty() {
+            self.commit(splices, columns_after, false);
         }
         changed
     }

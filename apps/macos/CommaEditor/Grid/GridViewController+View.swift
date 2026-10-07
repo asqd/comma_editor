@@ -156,7 +156,7 @@ extension GridViewController {
         activeRow.map { CellPosition(row: UInt64($0), column: UInt64(activeColumn)) }
     }
 
-    private func findMatch(forward: Bool, from position: CellPosition? = nil) {
+    private func findMatch(forward: Bool, from position: CellPosition? = nil, quietly: Bool = false) {
         let query = findBar.query
         guard !query.text.isEmpty || query.wholeCell else {
             showFindBar(nil)
@@ -165,7 +165,7 @@ extension GridViewController {
         do {
             if let match = try core.find(query: query, from: position ?? activePosition, forward: forward) {
                 activate(row: Int(match.row), column: Int(match.column))
-            } else {
+            } else if !quietly {
                 NSSound.beep()
             }
         } catch {
@@ -174,20 +174,43 @@ extension GridViewController {
     }
 
     /// Counts the matches and moves to the first one at or after the active cell.
+    /// Counts the matches and, with `jump`, goes to the first one. Large tables are counted off
+    /// the main thread while typing goes on; a newer query drops an older count.
     private func updateFindResults(jump: Bool) {
+        findGeneration += 1
         let query = findBar.query
         guard !query.text.isEmpty || query.wholeCell else {
             showFindResult(nil)
             return
         }
-        do {
-            let count = Int(try core.countMatches(query: query))
-            showFindResult(count == 0 ? L("Not found") : L("Matches: %@", Self.format(count)))
-            if count > 0 && jump {
+        let show = { [weak self] (result: Result<UInt64, Error>) in
+            switch result {
+            case .success(let count):
+                self?.showFindResult(count == 0 ? L("Not found") : L("Matches: %@", Self.format(Int(count))))
+            case .failure:
+                self?.showFindResult(L("Invalid regular expression"), isError: true)
+            }
+        }
+        if info.rowCount < 200_000 {
+            let result = Result { try core.countMatches(query: query) }
+            show(result)
+            if jump, case .success(let count) = result, count > 0 {
                 findMatch(forward: true, from: positionBeforeActiveCell)
             }
-        } catch {
-            showFindResult(L("Invalid regular expression"), isError: true)
+            return
+        }
+        if jump {
+            findMatch(forward: true, from: positionBeforeActiveCell, quietly: true)
+        }
+        showFindResult(L("Searching…"))
+        let generation = findGeneration
+        let document = core
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try document.countMatches(query: query) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, generation == self.findGeneration else { return }
+                show(result)
+            }
         }
     }
 

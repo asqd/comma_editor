@@ -54,6 +54,10 @@ final class GridViewController: NSViewController {
     weak var documentToolbar: DocumentToolbar?
     /// Result of the last search, shown in the status bar.
     var searchSummary: String?
+    /// Counts the queries typed into find, so a late count of an older one is dropped.
+    var findGeneration = 0
+    /// Exports running in the background.
+    var exportsRunning = 0
     /// The panel at the right of the table: the column profile, the file repair or the record card.
     let sidePanel = NSView()
     var shownSidePanel: SidePanel?

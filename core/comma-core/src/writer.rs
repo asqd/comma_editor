@@ -4,7 +4,7 @@ use std::path::Path;
 use memchr::memchr;
 
 use crate::dialect::{LineEnding, QuoteStyle};
-use crate::document::{Document, Field, Record};
+use crate::document::{Document, Field, Record, RecordRef};
 use crate::encoding::{self, TextEncoding};
 use crate::error::{Error, Result};
 use crate::parser::Terminator;
@@ -118,9 +118,9 @@ impl Document {
         let default_term = self.dialect.line_ending.terminator();
         let last = self.records.len().saturating_sub(1);
         for (index, record) in self.records.iter().enumerate() {
-            match record {
-                Record::Original { start, end, .. } => out.write_all(&self.buf[*start..*end])?,
-                Record::Modified(modified) => self.write_fields(out, &modified.fields)?,
+            match record.get() {
+                RecordRef::Original { start, end, .. } => out.write_all(&self.buf[start..end])?,
+                RecordRef::Modified(modified) => self.write_fields(out, &modified.fields)?,
             }
             if index < last || self.trailing_newline {
                 let term = match record.term() {
@@ -255,9 +255,9 @@ impl Document {
     /// A record as text with the original delimiter and quoting.
     fn record_text(&self, record: &Record, out: &mut String) {
         let encoding = self.buffer_encoding();
-        match record {
-            Record::Original { start, end, .. } => out.push_str(&encoding.decode(&self.buf[*start..*end])),
-            Record::Modified(modified) => {
+        match record.get() {
+            RecordRef::Original { start, end, .. } => out.push_str(&encoding.decode(&self.buf[start..end])),
+            RecordRef::Modified(modified) => {
                 for (index, field) in modified.fields.iter().enumerate() {
                     if index > 0 {
                         out.push(self.dialect.delimiter as char);

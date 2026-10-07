@@ -94,6 +94,15 @@ enum DebugScript {
                 } else {
                     sheet?.rootView.model.onApply?()
                 }
+            case "scrollbench":
+                // scrollbench=<points a second>:<seconds>
+                ScrollBench.run(
+                    on: grid.tableView,
+                    speed: CGFloat(Double(parts.first ?? "") ?? 3000),
+                    duration: Double(parts.count > 1 ? parts[1] : "") ?? 3
+                )
+            case "exporttemp":
+                grid.debugExport(GridViewController.ExportKind(rawValue: Int(argument) ?? 0) ?? .json)
             case "dump":
                 // Geometry of both tables, for layout problems.
                 for table in grid.tables {

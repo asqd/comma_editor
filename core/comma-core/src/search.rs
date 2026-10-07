@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::ops::Range;
 
+use rayon::prelude::*;
 use regex::{NoExpand, Regex, RegexBuilder};
 
 use crate::document::{Document, Field, Record};
@@ -88,7 +89,7 @@ impl Document {
         if rows == 0 {
             return Ok(None);
         }
-        let scan = |row: usize, accept: &dyn Fn(usize) -> bool| -> Option<(usize, usize)> {
+        let scan = |row: usize, accept: &(dyn Fn(usize) -> bool + Sync)| -> Option<(usize, usize)> {
             let row = first + row;
             let record = self.visible_record(row)?;
             let hit = |&column: &usize| accept(column) && matcher.is_match(&self.value_at(record, column));
@@ -110,15 +111,14 @@ impl Document {
         if let Some(hit) = scan(start, &after) {
             return Ok(Some(hit));
         }
-        for step in 1..rows {
-            let row = if forward {
-                (start + step) % rows
-            } else {
-                (start + rows - step) % rows
-            };
-            if let Some(hit) = scan(row, &|_| true) {
-                return Ok(Some(hit));
-            }
+        // The other rows in order, searched on all cores; the first match in that order wins.
+        let row_at = |step: usize| if forward { (start + step) % rows } else { (start + rows - step) % rows };
+        let hit = (1..rows)
+            .into_par_iter()
+            .with_min_len(256)
+            .find_map_first(|step| scan(row_at(step), &|_| true));
+        if hit.is_some() {
+            return Ok(hit);
         }
         Ok(scan(start, &|c| !after(c)))
     }
@@ -129,6 +129,7 @@ impl Document {
             return Ok(0);
         };
         Ok(rows
+            .into_par_iter()
             .filter_map(|row| self.visible_record(row))
             .map(|record| {
                 columns
@@ -165,32 +166,38 @@ impl Document {
         let Some(Scope { matcher, rows, columns }) = self.prepare(query)? else {
             return Ok(0);
         };
-        let mut splices = Vec::new();
-        let mut changed = 0;
-        for row in rows {
-            let Some(record) = self.visible_record(row) else { continue };
-            let mut fields: Option<Vec<Field>> = None;
-            for &column in &columns {
-                let value = self.value_at(record, column);
-                if !matcher.is_match(&value) {
-                    continue;
+        // New values are found on all cores; the changed rows are then replaced in order.
+        let updates: Vec<(usize, Record, usize)> = rows
+            .into_par_iter()
+            .filter_map(|row| {
+                let record = self.visible_record(row)?;
+                let mut fields: Option<Vec<Field>> = None;
+                let mut changed = 0;
+                for &column in &columns {
+                    let value = self.value_at(record, column);
+                    if !matcher.is_match(&value) {
+                        continue;
+                    }
+                    let replaced = matcher.replace(&value, replacement);
+                    if replaced == value {
+                        continue;
+                    }
+                    let fields = fields.get_or_insert_with(|| self.fields(&self.records[record]));
+                    if fields.len() <= column {
+                        fields.resize(column + 1, Field::Text(String::new()));
+                    }
+                    fields[column] = Field::Text(replaced);
+                    changed += 1;
                 }
-                let replaced = matcher.replace(&value, replacement);
-                if replaced == value {
-                    continue;
-                }
-                let fields = fields.get_or_insert_with(|| self.fields(&self.records[record]));
-                if fields.len() <= column {
-                    fields.resize(column + 1, Field::Text(String::new()));
-                }
-                fields[column] = Field::Text(replaced);
-                changed += 1;
-            }
-            if let Some(fields) = fields {
-                let updated = Record::modified(fields, self.records[record].term());
-                splices.push(Splice::apply(Arc::make_mut(&mut self.records), record, 1, vec![updated]));
-            }
-        }
+                fields.map(|fields| (record, Record::modified(fields, self.records[record].term()), changed))
+            })
+            .collect();
+        let changed = updates.iter().map(|(_, _, changed)| changed).sum();
+        let records = Arc::make_mut(&mut self.records);
+        let splices: Vec<Splice> = updates
+            .into_iter()
+            .map(|(record, updated, _)| Splice::apply(records, record, 1, vec![updated]))
+            .collect();
         if !splices.is_empty() {
             self.commit(splices, self.column_count(), false);
         }

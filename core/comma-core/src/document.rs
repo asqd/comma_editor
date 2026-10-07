@@ -17,14 +17,19 @@ use crate::writer::SaveFormat;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Record {
-    /// Untouched record: a byte range of the original file.
-    Original {
-        start: usize,
-        end: usize,
-        term: Terminator,
-    },
+    /// Untouched record: `len` bytes of the original file from `start`. Kept to 16 bytes, since
+    /// a large file has tens of millions of them.
+    Original { start: usize, len: u32, term: Terminator },
+    /// Untouched record longer than 4 GB, which only a quote left open in a huge file makes.
+    Long(Box<(usize, usize, Terminator)>),
     /// Edited or inserted record.
     Modified(Box<Modified>),
+}
+
+/// A record as the rest of the code reads it, whatever way it is stored.
+pub(crate) enum RecordRef<'a> {
+    Original { start: usize, end: usize, term: Terminator },
+    Modified(&'a Modified),
 }
 
 #[derive(Clone, Debug)]
@@ -41,15 +46,35 @@ pub(crate) enum Field {
 }
 
 impl Record {
-    pub(crate) fn term(&self) -> Terminator {
+    /// The untouched record at bytes `start..end` of the file.
+    pub(crate) fn original(start: usize, end: usize, term: Terminator) -> Self {
+        match u32::try_from(end - start) {
+            Ok(len) => Self::Original { start, len, term },
+            Err(_) => Self::Long(Box::new((start, end, term))),
+        }
+    }
+
+    pub(crate) fn get(&self) -> RecordRef<'_> {
         match self {
-            Self::Original { term, .. } => *term,
-            Self::Modified(modified) => modified.term,
+            Self::Original { start, len, term } => RecordRef::Original {
+                start: *start,
+                end: start + *len as usize,
+                term: *term,
+            },
+            Self::Long(span) => RecordRef::Original { start: span.0, end: span.1, term: span.2 },
+            Self::Modified(modified) => RecordRef::Modified(modified),
+        }
+    }
+
+    pub(crate) fn term(&self) -> Terminator {
+        match self.get() {
+            RecordRef::Original { term, .. } => term,
+            RecordRef::Modified(modified) => modified.term,
         }
     }
 
     pub(crate) fn is_blank(&self) -> bool {
-        matches!(self, Self::Original { start, end, .. } if start == end)
+        matches!(self, Self::Original { len: 0, .. })
     }
 
     pub(crate) fn modified(fields: Vec<Field>, term: Terminator) -> Self {
@@ -99,7 +124,8 @@ pub struct FilePreview {
 struct View {
     spec: ViewSpec,
     filters: Vec<CompiledFilter>,
-    rows: Option<Vec<usize>>,
+    /// Shared with snapshots, which work off the document without copying it.
+    rows: Option<Arc<Vec<usize>>>,
 }
 
 /// A CSV file being edited.
@@ -278,11 +304,7 @@ impl Document {
         let records: Vec<Record> = scan
             .records
             .into_iter()
-            .map(|r| Record::Original {
-                start: r.start,
-                end: r.end,
-                term: r.term,
-            })
+            .map(|r| Record::original(r.start, r.end, r.term))
             .collect();
         let records = Arc::new(records);
         let mut document = Self {
@@ -441,8 +463,10 @@ impl Document {
         true
     }
 
-    /// The rows and settings without the edit history or the view, sharing the file's bytes.
-    fn snapshot(&self) -> Document {
+    /// The rows, settings and view without the edit history, sharing the file's bytes and the
+    /// row lists: work that only reads can run on it off the document, so the document stays
+    /// free for the table while it runs.
+    pub fn snapshot(&self) -> Document {
         Document {
             buf: Arc::clone(&self.buf),
             content_start: self.content_start,
@@ -458,7 +482,7 @@ impl Document {
             generation: self.generation,
             indexing: self.indexing,
             history: History::default(),
-            view: View::default(),
+            view: self.view.clone(),
             format: self.format,
         }
     }
@@ -516,7 +540,7 @@ impl Document {
             return Ok(false);
         }
         let start = self.header_offset();
-        let order = self.view.rows.take().unwrap_or_default();
+        let order = self.view.rows.take().map(Arc::unwrap_or_clone).unwrap_or_default();
         self.view.spec.sort.clear();
         if order.iter().enumerate().all(|(index, &row)| row == start + index) {
             self.refresh_view();
@@ -531,7 +555,7 @@ impl Document {
 
     pub(crate) fn refresh_view(&mut self) {
         let rows = self.view_rows(&self.view, &AtomicBool::new(false));
-        self.view.rows = rows.expect("not cancelled");
+        self.view.rows = rows.expect("not cancelled").map(Arc::new);
     }
 
     /// The rows a view shows, `None` for all of them; `None` outside when cancelled.
@@ -858,14 +882,14 @@ impl Document {
     /// One value; empty past the end of a short row. `row` must exist.
     pub(crate) fn value_at(&self, row: usize, column: usize) -> Cow<'_, str> {
         let (delimiter, quote) = (self.dialect.delimiter, self.dialect.quote);
-        match &self.records[row] {
-            Record::Original { start, end, .. } => {
-                match parser::nth_field(&self.buf[*start..*end], delimiter, quote, column) {
+        match self.records[row].get() {
+            RecordRef::Original { start, end, .. } => {
+                match parser::nth_field(&self.buf[start..end], delimiter, quote, column) {
                     Some((s, e)) => self.raw_value(start + s, start + e),
                     None => Cow::Borrowed(""),
                 }
             }
-            Record::Modified(modified) => match modified.fields.get(column) {
+            RecordRef::Modified(modified) => match modified.fields.get(column) {
                 Some(field) => self.field_value(field),
                 None => Cow::Borrowed(""),
             },
@@ -879,12 +903,12 @@ impl Document {
 
     /// Values of a record, which need not be in the document yet.
     pub(crate) fn record_values<'a>(&'a self, record: &'a Record) -> Vec<Cow<'a, str>> {
-        match record {
-            Record::Original { start, end, .. } => self
-                .raw_fields(*start, *end)
+        match record.get() {
+            RecordRef::Original { start, end, .. } => self
+                .raw_fields(start, end)
                 .map(|(s, e)| self.raw_value(s, e))
                 .collect(),
-            Record::Modified(modified) => modified
+            RecordRef::Modified(modified) => modified
                 .fields
                 .iter()
                 .map(|field| self.field_value(field))
@@ -893,12 +917,12 @@ impl Document {
     }
 
     pub(crate) fn fields(&self, record: &Record) -> Vec<Field> {
-        match record {
-            Record::Original { start, end, .. } => self
-                .raw_fields(*start, *end)
+        match record.get() {
+            RecordRef::Original { start, end, .. } => self
+                .raw_fields(start, end)
                 .map(|(start, end)| Field::Raw { start, end })
                 .collect(),
-            Record::Modified(modified) => modified.fields.clone(),
+            RecordRef::Modified(modified) => modified.fields.clone(),
         }
     }
 
@@ -959,7 +983,7 @@ impl ViewTask {
     pub fn run(&mut self, cancel: &AtomicBool) -> bool {
         match self.snapshot.view_rows(&self.view, cancel) {
             Some(rows) => {
-                self.view.rows = rows;
+                self.view.rows = rows.map(Arc::new);
                 self.done = true;
                 true
             }
@@ -990,30 +1014,131 @@ impl IndexChunk {
     }
 }
 
+/// Parts of a chunk smaller than this are not worth a thread.
+const MIN_PART: usize = 4 << 20;
+
 impl Indexer {
-    /// Indexes the records that start in the next `bytes` bytes.
+    /// Indexes the records that start in the next `bytes` bytes, on all cores.
     pub fn next_chunk(&mut self, bytes: usize) -> IndexChunk {
-        let stop = self.position.saturating_add(bytes);
-        let scan = parser::scan_until(&self.buf, self.position, self.delimiter, self.quote, stop);
-        self.position = scan.next;
-        IndexChunk {
-            records: scan
-                .records
-                .into_iter()
-                .map(|r| Record::Original {
-                    start: r.start,
-                    end: r.end,
-                    term: r.term,
-                })
-                .collect(),
-            max_fields: scan.max_fields,
-            unterminated_quote: scan.unterminated_quote,
-            done: self.position >= self.buf.len(),
+        self.next_chunk_in_parts(bytes, MIN_PART)
+    }
+
+    /// The chunk is cut at line breaks into parts that are scanned at once, each as if it began
+    /// a record. Stitched in order, a part is kept when the part before it ended exactly where
+    /// it begins; a value in quotes that ran over the cut makes the part scan again from where
+    /// the record really starts. The result is the same as one scan from start to end.
+    fn next_chunk_in_parts(&mut self, bytes: usize, min_part: usize) -> IndexChunk {
+        let buf: &[u8] = &self.buf;
+        let start = self.position;
+        let stop = start.saturating_add(bytes).min(buf.len());
+        let parts = rayon::current_num_threads().min((stop - start) / min_part.max(1)).max(1);
+        let size = (stop - start) / parts;
+        let mut bounds = vec![start];
+        for part in 1..parts {
+            let guess = start + part * size;
+            if let Some(offset) = memchr::memchr(b'\n', &buf[guess..stop]) {
+                let bound = guess + offset + 1;
+                if bound > *bounds.last().expect("not empty") && bound < stop {
+                    bounds.push(bound);
+                }
+            }
         }
+        bounds.push(stop);
+        let (delimiter, quote) = (self.delimiter, self.quote);
+        let scans: Vec<parser::Scan> = bounds
+            .par_windows(2)
+            .map(|part| parser::scan_until(buf, part[0], delimiter, quote, part[1]))
+            .collect();
+
+        let mut chunk = IndexChunk { records: Vec::new(), max_fields: 0, unterminated_quote: false, done: false };
+        let mut next = start;
+        for (part, scan) in bounds.windows(2).zip(scans) {
+            if next >= part[1] {
+                // A record of an earlier part reached past this one.
+                continue;
+            }
+            let scan = if part[0] == next {
+                scan
+            } else {
+                parser::scan_until(buf, next, delimiter, quote, part[1])
+            };
+            next = scan.next;
+            chunk.max_fields = chunk.max_fields.max(scan.max_fields);
+            chunk.unterminated_quote |= scan.unterminated_quote;
+            chunk.records.extend(scan.records.into_iter().map(|r| Record::original(r.start, r.end, r.term)));
+        }
+        self.position = next;
+        chunk.done = next >= buf.len();
+        chunk
     }
 
     /// Bytes indexed so far, and the size of the file.
     pub fn progress(&self) -> (usize, usize) {
         (self.position, self.buf.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Indexes a whole buffer in chunks of `chunk` bytes cut into parts of at least `part`.
+    fn index_in_parts(text: &[u8], chunk: usize, part: usize) -> Vec<(usize, usize, Terminator)> {
+        let mut indexer = Indexer {
+            buf: Arc::new(Bytes::Owned(text.to_vec())),
+            position: 0,
+            delimiter: b',',
+            quote: b'"',
+        };
+        let mut records = Vec::new();
+        loop {
+            let chunk = indexer.next_chunk_in_parts(chunk, part);
+            records.extend(chunk.records.iter().map(|record| match record.get() {
+                RecordRef::Original { start, end, term } => (start, end, term),
+                RecordRef::Modified(_) => unreachable!(),
+            }));
+            if chunk.done {
+                return records;
+            }
+        }
+    }
+
+    #[test]
+    fn indexing_in_parallel_parts_matches_one_scan() {
+        // Values in quotes over several lines, doubled quotes, quotes inside unquoted values,
+        // CRLF and a final record without a line break, so cuts land everywhere.
+        let mut text = String::new();
+        for i in 0..400 {
+            match i % 5 {
+                0 => text.push_str(&format!("{i},\"multi\nline\nvalue {i}\",x\n")),
+                1 => text.push_str(&format!("{i},5\" disk,\"say \"\"hi\"\"\"\r\n")),
+                2 => text.push_str(&format!("{i},\"a,b\n\n\nc\",\n")),
+                3 => text.push_str(&format!("{i},plain,row\n")),
+                _ => text.push('\n'),
+            }
+        }
+        text.push_str("last,\"open quote\nnever closed");
+        let bytes = text.as_bytes();
+        let one_scan: Vec<_> = parser::scan(bytes, 0, b',', b'"', None)
+            .records
+            .iter()
+            .map(|r| (r.start, r.end, r.term))
+            .collect();
+        for (chunk, part) in [(usize::MAX, 1), (97, 1), (1000, 7), (4096, 50), (333, 333)] {
+            assert_eq!(index_in_parts(bytes, chunk, part), one_scan, "chunk {chunk}, part {part}");
+        }
+    }
+
+    #[test]
+    fn a_record_takes_16_bytes() {
+        assert_eq!(std::mem::size_of::<Record>(), 16);
+    }
+
+    #[test]
+    fn a_record_longer_than_4_gb_keeps_its_span() {
+        let record = Record::original(10, 10 + (5 << 30), Terminator::Lf);
+        assert!(matches!(record, Record::Long(_)));
+        assert!(matches!(record.get(), RecordRef::Original { start: 10, end, term: Terminator::Lf } if end == 10 + (5 << 30)));
+        assert!(Record::original(7, 7, Terminator::None).is_blank());
     }
 }

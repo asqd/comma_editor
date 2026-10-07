@@ -144,7 +144,7 @@ impl Document {
     pub fn fix_garbled_text(&mut self, range: Option<CellRange>) -> Result<usize> {
         if let Some(range) = range {
             self.check_range(&range)?;
-            return Ok(self.edit_range(Vec::new(), range.rows(), range.columns(), false, |_, _, value| fix_garbled(value)));
+            return Ok(self.edit_range_parallel(range.rows(), range.columns(), |_, _, value| fix_garbled(value)));
         }
         let mut changed = 0;
         let mut updates = Vec::new();
