@@ -1,10 +1,13 @@
 //! Find and replace over the visible rows, in the order they are shown.
 
+use std::ops::Range;
+
 use regex::{NoExpand, Regex, RegexBuilder};
 
 use crate::document::{Document, Field, Record};
 use crate::error::{Error, Result};
 use crate::history::Splice;
+use crate::range::CellRange;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SearchQuery {
@@ -16,6 +19,15 @@ pub struct SearchQuery {
     pub regex: bool,
     /// Search one column only.
     pub column: Option<usize>,
+    /// Search these cells only (visible rows); combines with `column`.
+    pub range: Option<CellRange>,
+}
+
+/// What a query looks at: the matcher, the visible rows and the columns.
+struct Scope {
+    matcher: Matcher,
+    rows: Range<usize>,
+    columns: Vec<usize>,
 }
 
 struct Matcher {
@@ -67,14 +79,16 @@ impl Document {
         from: Option<(usize, usize)>,
         forward: bool,
     ) -> Result<Option<(usize, usize)>> {
-        let Some((matcher, columns)) = self.prepare(query)? else {
+        let Some(Scope { matcher, rows: scope, columns }) = self.prepare(query)? else {
             return Ok(None);
         };
-        let rows = self.visible_row_count();
+        // Rows are counted from the start of the scope, so wrapping stays inside it.
+        let (first, rows) = (scope.start, scope.len());
         if rows == 0 {
             return Ok(None);
         }
         let scan = |row: usize, accept: &dyn Fn(usize) -> bool| -> Option<(usize, usize)> {
+            let row = first + row;
             let record = self.visible_record(row)?;
             let hit = |&column: &usize| accept(column) && matcher.is_match(&self.value_at(record, column));
             let column = if forward {
@@ -87,7 +101,7 @@ impl Document {
 
         // The starting row is split: cells after `from` come first, cells up to it last.
         let (start, column) = match from {
-            Some((row, column)) if row < rows => (row, column as i64),
+            Some((row, column)) if scope.contains(&row) => (row - first, column as i64),
             _ if forward => (rows - 1, i64::MAX),
             _ => (0, -1),
         };
@@ -110,10 +124,10 @@ impl Document {
 
     /// Number of matching cells in the visible rows.
     pub fn count_matches(&self, query: &SearchQuery) -> Result<usize> {
-        let Some((matcher, columns)) = self.prepare(query)? else {
+        let Some(Scope { matcher, rows, columns }) = self.prepare(query)? else {
             return Ok(0);
         };
-        Ok((0..self.visible_row_count())
+        Ok(rows
             .filter_map(|row| self.visible_record(row))
             .map(|record| {
                 columns
@@ -132,7 +146,7 @@ impl Document {
         query: &SearchQuery,
         replacement: &str,
     ) -> Result<bool> {
-        let Some((matcher, _)) = self.prepare(query)? else {
+        let Some(Scope { matcher, .. }) = self.prepare(query)? else {
             return Ok(false);
         };
         let record = self.visible_record_checked(row)?;
@@ -147,12 +161,12 @@ impl Document {
     /// Replaces every match in the visible rows as one undoable step.
     /// Returns the number of cells that changed.
     pub fn replace_all(&mut self, query: &SearchQuery, replacement: &str) -> Result<usize> {
-        let Some((matcher, columns)) = self.prepare(query)? else {
+        let Some(Scope { matcher, rows, columns }) = self.prepare(query)? else {
             return Ok(0);
         };
         let mut splices = Vec::new();
         let mut changed = 0;
-        for row in 0..self.visible_row_count() {
+        for row in rows {
             let Some(record) = self.visible_record(row) else { continue };
             let mut fields: Option<Vec<Field>> = None;
             for &column in &columns {
@@ -182,17 +196,25 @@ impl Document {
         Ok(changed)
     }
 
-    /// The matcher and the columns to search, or `None` when there is nothing to look for.
-    fn prepare(&self, query: &SearchQuery) -> Result<Option<(Matcher, Vec<usize>)>> {
+    /// What to search, or `None` when there is nothing to look for. A range that reaches past
+    /// the table is cut to it.
+    fn prepare(&self, query: &SearchQuery) -> Result<Option<Scope>> {
         if query.text.is_empty() && !query.whole_cell {
             return Ok(None);
         }
         let matcher = Matcher::new(query)?;
-        let columns = match query.column {
-            Some(column) if column < self.column_count() => vec![column],
-            Some(_) => return Ok(None),
-            None => (0..self.column_count()).collect(),
+        let (mut rows, mut columns) = (0..self.visible_row_count(), 0..self.column_count());
+        if let Some(range) = &query.range {
+            rows = range.top..(range.bottom + 1).min(rows.end);
+            columns = range.left..(range.right + 1).min(columns.end);
+        }
+        let columns: Vec<usize> = match query.column {
+            Some(column) => columns.filter(|&c| c == column).collect(),
+            None => columns.collect(),
         };
-        Ok(Some((matcher, columns)))
+        if columns.is_empty() || rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Scope { matcher, rows, columns }))
     }
 }

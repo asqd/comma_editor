@@ -378,6 +378,8 @@ pub struct SearchQuery {
     pub whole_cell: bool,
     pub regex: bool,
     pub column: Option<u64>,
+    /// Search these visible cells only.
+    pub range: Option<CellRange>,
 }
 
 /// Visible rows `top..=bottom` and columns `left..=right`.
@@ -643,6 +645,7 @@ impl From<SearchQuery> for core::SearchQuery {
             whole_cell: query.whole_cell,
             regex: query.regex,
             column: query.column.map(|column| column as usize),
+            range: query.range.map(Into::into),
         }
     }
 }

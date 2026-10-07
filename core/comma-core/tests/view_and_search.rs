@@ -255,3 +255,31 @@ fn replace_all_respects_filters() {
     assert_eq!(document.replace_all(&query("london"), "Paris").unwrap(), 1);
     assert_eq!(document.cell(3, 1).unwrap(), "london");
 }
+
+#[test]
+fn search_inside_a_range() {
+    let mut document = Document::from_bytes(b"a,b,c\nx,x,x\nx,x,x\nx,x,x\nx,x,x\n".to_vec());
+    // Visible rows 1..=2, columns 1..=2: four cells.
+    let range = comma_core::CellRange { top: 1, left: 1, bottom: 2, right: 2 };
+    let scoped = SearchQuery { range: Some(range), ..query("x") };
+    assert_eq!(document.count_matches(&scoped).unwrap(), 4);
+    assert_eq!(document.count_matches(&SearchQuery { column: Some(2), ..scoped.clone() }).unwrap(), 2);
+    assert_eq!(document.count_matches(&SearchQuery { column: Some(0), ..scoped.clone() }).unwrap(), 0);
+
+    // Finding wraps around inside the range, and starts there from a cell outside it.
+    assert_eq!(document.find(&scoped, None, true).unwrap(), Some((1, 1)));
+    assert_eq!(document.find(&scoped, Some((1, 1)), true).unwrap(), Some((1, 2)));
+    assert_eq!(document.find(&scoped, Some((2, 2)), true).unwrap(), Some((1, 1)));
+    assert_eq!(document.find(&scoped, Some((1, 1)), false).unwrap(), Some((2, 2)));
+    assert_eq!(document.find(&scoped, Some((0, 0)), true).unwrap(), Some((1, 1)));
+
+    assert_eq!(document.replace_all(&scoped, "y").unwrap(), 4);
+    assert_eq!(
+        String::from_utf8(document.to_bytes().unwrap()).unwrap(),
+        "a,b,c\nx,x,x\nx,y,y\nx,y,y\nx,x,x\n"
+    );
+
+    // A range past the table is cut to it.
+    let past = comma_core::CellRange { top: 3, left: 0, bottom: 99, right: 99 };
+    assert_eq!(document.count_matches(&SearchQuery { range: Some(past), ..query("x") }).unwrap(), 3);
+}

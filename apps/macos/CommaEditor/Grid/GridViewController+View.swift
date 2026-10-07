@@ -128,6 +128,10 @@ extension GridViewController {
         if let field = documentToolbar?.searchField, !field.stringValue.isEmpty {
             findBar.searchField.stringValue = field.stringValue
         }
+        // With several cells selected, find and replace work inside them.
+        if let selection, !selection.isSingleCell {
+            findBar.setSelectionScope(selection.range)
+        }
         findContainer.isHidden = false
         updateStatus()
         findBar.isReplaceVisible = replace

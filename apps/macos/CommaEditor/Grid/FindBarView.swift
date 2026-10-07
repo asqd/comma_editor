@@ -23,6 +23,14 @@ final class FindBarView: NSView, NSSearchFieldDelegate {
     private let resultLabel = NSTextField(labelWithString: "")
     private let replaceRow = NSStackView()
     private var debounce: Timer?
+    /// The cells "In Selection" searches: the selection when that scope was chosen.
+    private(set) var selectionScope: CellRange?
+    /// Supplies the current selection when "In Selection" is chosen.
+    var currentSelection: (() -> CellRange?)?
+
+    /// Menu layout: All Columns, In Selection, a separator, then the columns.
+    private static let selectionItem = 1
+    private static let firstColumnItem = 3
 
     var isReplaceVisible: Bool {
         get { !replaceRow.isHidden }
@@ -30,14 +38,33 @@ final class FindBarView: NSView, NSSearchFieldDelegate {
     }
 
     var query: SearchQuery {
-        let column = columnPopUp.indexOfSelectedItem
+        let item = columnPopUp.indexOfSelectedItem
         return SearchQuery(
             text: searchField.stringValue,
             caseSensitive: caseSensitive.state == .on,
             wholeCell: wholeCell.state == .on,
             regex: regex.state == .on,
-            column: column >= 2 ? UInt64(column - 2) : nil
+            column: item >= Self.firstColumnItem ? UInt64(item - Self.firstColumnItem) : nil,
+            range: item == Self.selectionItem ? selectionScope : nil
         )
+    }
+
+    /// Searches only `range`, or everywhere again with `nil`.
+    func setSelectionScope(_ range: CellRange?) {
+        selectionScope = range
+        updateSelectionItem()
+        columnPopUp.selectItem(at: range == nil ? 0 : Self.selectionItem)
+    }
+
+    private func updateSelectionItem() {
+        guard let item = columnPopUp.item(at: Self.selectionItem) else { return }
+        if let range = selectionScope {
+            let rows = GridViewController.format(Int(range.bottom - range.top) + 1)
+            let columns = GridViewController.format(Int(range.right - range.left) + 1)
+            item.title = L("In Selection (%@ × %@)", rows, columns)
+        } else {
+            item.title = L("In Selection")
+        }
     }
 
     override init(frame: NSRect) {
@@ -122,12 +149,15 @@ final class FindBarView: NSView, NSSearchFieldDelegate {
         let selected = columnPopUp.indexOfSelectedItem
         columnPopUp.removeAllItems()
         columnPopUp.addItem(withTitle: L("All Columns"))
+        columnPopUp.addItem(withTitle: L("In Selection"))
         columnPopUp.menu?.addItem(.separator())
         for title in titles {
             columnPopUp.addItem(withTitle: title)
         }
-        // The separator takes index 1; columns start at 2. `query` maps them back.
-        columnPopUp.selectItem(at: selected > 1 && selected < columnPopUp.numberOfItems ? selected : 0)
+        updateSelectionItem()
+        // `query` maps the items back to a scope.
+        let keep = selected == Self.selectionItem || (selected >= Self.firstColumnItem && selected < columnPopUp.numberOfItems)
+        columnPopUp.selectItem(at: keep ? selected : 0)
     }
 
     func showResult(_ text: String, isError: Bool = false) {
@@ -144,6 +174,16 @@ final class FindBarView: NSView, NSSearchFieldDelegate {
     }
 
     @objc private func optionsChanged(_ sender: Any?) {
+        if sender as? NSPopUpButton === columnPopUp, columnPopUp.indexOfSelectedItem == Self.selectionItem {
+            // The cells selected now; finding moves the cursor and changes the selection.
+            guard let range = currentSelection?() else {
+                NSSound.beep()
+                setSelectionScope(nil)
+                delegate?.findBarQueryDidChange(self)
+                return
+            }
+            setSelectionScope(range)
+        }
         delegate?.findBarQueryDidChange(self)
     }
 

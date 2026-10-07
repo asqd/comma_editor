@@ -248,6 +248,9 @@ final class GridViewController: NSViewController {
         syncVerticalScrolling()
         configureMenus()
         findBar.delegate = self
+        findBar.currentSelection = { [weak self] in
+            self?.selection.flatMap { $0.isSingleCell ? nil : $0.range }
+        }
         filterBar.delegate = self
         rebuildColumns()
         updateStatus()

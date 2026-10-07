@@ -426,3 +426,7 @@
 "Fix in the Whole File" = "Исправить во всём файле";
 "Fix Garbled Text" = "Исправить кракозябры";
 "Garbled Text Fix" = "Исправление кракозябр";
+
+/* Search in selection */
+"In Selection" = "В выделении";
+"In Selection (%@ × %@)" = "В выделении (%@ × %@)";
