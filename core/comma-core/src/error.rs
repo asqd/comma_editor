@@ -27,6 +27,9 @@ pub enum Error {
 
     #[error("{0}")]
     Export(String),
+
+    #[error("{0}")]
+    Formula(crate::formula::FormulaError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

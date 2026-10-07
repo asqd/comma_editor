@@ -28,6 +28,8 @@ pub enum CoreError {
     InvalidDelimiter { message: String },
     #[error("{message}")]
     Export { message: String },
+    #[error("{problem:?}")]
+    Formula { problem: FormulaProblem },
 }
 
 impl From<core::Error> for CoreError {
@@ -56,8 +58,87 @@ impl From<core::Error> for CoreError {
                 message: error.to_string(),
             },
             core::Error::Export(message) => Self::Export { message },
+            core::Error::Formula(error) => Self::Formula { problem: error.into() },
         }
     }
+}
+
+#[derive(Debug, uniffi::Enum)]
+pub enum FormulaErrorKind {
+    UnexpectedEnd,
+    UnexpectedText,
+    UnclosedText,
+    UnclosedColumn,
+    UnknownColumn,
+    UnknownFunction,
+    WrongArgumentCount,
+    NotANumber,
+    NotADate,
+    DivisionByZero,
+}
+
+/// What is wrong with a formula or with its value in one row. `position` is a character
+/// offset in the formula, for syntax errors.
+#[derive(Debug, uniffi::Record)]
+pub struct FormulaProblem {
+    pub kind: FormulaErrorKind,
+    pub position: u64,
+    pub detail: String,
+}
+
+impl From<core::FormulaError> for FormulaProblem {
+    fn from(error: core::FormulaError) -> Self {
+        Self {
+            kind: match error.kind {
+                core::FormulaErrorKind::UnexpectedEnd => FormulaErrorKind::UnexpectedEnd,
+                core::FormulaErrorKind::UnexpectedText => FormulaErrorKind::UnexpectedText,
+                core::FormulaErrorKind::UnclosedText => FormulaErrorKind::UnclosedText,
+                core::FormulaErrorKind::UnclosedColumn => FormulaErrorKind::UnclosedColumn,
+                core::FormulaErrorKind::UnknownColumn => FormulaErrorKind::UnknownColumn,
+                core::FormulaErrorKind::UnknownFunction => FormulaErrorKind::UnknownFunction,
+                core::FormulaErrorKind::WrongArgumentCount => FormulaErrorKind::WrongArgumentCount,
+                core::FormulaErrorKind::NotANumber => FormulaErrorKind::NotANumber,
+                core::FormulaErrorKind::NotADate => FormulaErrorKind::NotADate,
+                core::FormulaErrorKind::DivisionByZero => FormulaErrorKind::DivisionByZero,
+            },
+            position: error.position as u64,
+            detail: error.detail,
+        }
+    }
+}
+
+/// The value of a formula in one row, or why it failed.
+#[derive(uniffi::Record)]
+pub struct FormulaOutcome {
+    pub value: Option<String>,
+    pub problem: Option<FormulaProblem>,
+}
+
+#[derive(uniffi::Record)]
+pub struct FormulaReport {
+    pub rows: u64,
+    pub errors: u64,
+    /// The first failing row of the file, and why.
+    pub first_error_row: Option<u64>,
+    pub first_error: Option<FormulaProblem>,
+}
+
+impl From<core::FormulaReport> for FormulaReport {
+    fn from(report: core::FormulaReport) -> Self {
+        let (row, problem) = report.first_error.map(|(row, error)| (row as u64, error.into())).unzip();
+        Self {
+            rows: report.rows as u64,
+            errors: report.errors as u64,
+            first_error_row: row,
+            first_error: problem,
+        }
+    }
+}
+
+/// Names of the functions formulas can call.
+#[uniffi::export]
+pub fn formula_functions() -> Vec<String> {
+    core::FUNCTIONS.iter().map(|(name, ..)| (*name).to_owned()).collect()
 }
 
 #[derive(uniffi::Enum)]
@@ -885,6 +966,32 @@ impl CoreDocument {
     /// The row as written in the file, cut to `max_chars` characters.
     pub fn raw_text(&self, row: u64, max_chars: u64) -> Result<String, CoreError> {
         Ok(self.lock().raw_text(row as usize, max_chars as usize)?)
+    }
+
+    // Formulas.
+
+    /// Values of a formula for visible rows `start..start + count`.
+    pub fn preview_formula(&self, formula: String, start: u64, count: u64) -> Result<Vec<FormulaOutcome>, CoreError> {
+        let start = start as usize;
+        Ok(self
+            .lock()
+            .preview_formula(&formula, start..start + count as usize)?
+            .into_iter()
+            .map(|outcome| match outcome {
+                Ok(value) => FormulaOutcome { value: Some(value), problem: None },
+                Err(error) => FormulaOutcome { value: None, problem: Some(error.into()) },
+            })
+            .collect())
+    }
+
+    /// Inserts a column computed by the formula before column `at`.
+    pub fn add_formula_column(&self, formula: String, name: String, at: u64) -> Result<FormulaReport, CoreError> {
+        Ok(self.lock().add_formula_column(&formula, &name, at as usize)?.into())
+    }
+
+    /// Writes the formula's value into a column of every visible row.
+    pub fn fill_column_with_formula(&self, formula: String, column: u64) -> Result<FormulaReport, CoreError> {
+        Ok(self.lock().fill_column_with_formula(&formula, column as usize)?.into())
     }
 
     // Column operations.

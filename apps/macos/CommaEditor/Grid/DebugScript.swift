@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import SwiftUI
 
 /// Debug builds only: applies UI steps from `COMMA_DEBUG_SCRIPT` to the first window, so the
 /// sort, filter and find UI can be checked from the command line. Steps are separated by `;`:
@@ -7,7 +8,8 @@ import AppKit
 /// `select=<row>,<column>:<row>,<column>`, `paste=<text>`, `filldown`, `action=<selector>`,
 /// `exportas=<0 JSON…4 XLSX>`, `fixall=<0 unclosed quote…3 extra fields>`, `save`,
 /// `cardedit=<column>:<value>` (types into the record card and leaves the field),
-/// `lines=<n>` (text wrapping), `endedit`, `dump` (logs the geometry of the tables).
+/// `lines=<n>` (text wrapping), `endedit`, `dump` (logs the geometry of the tables),
+/// `formula=<text>` and `formulaapply` (the computed column sheet).
 /// Example: `open --env COMMA_DEBUG_SCRIPT='sort=2:d;find=lon' -a CommaEditor file.csv`
 @MainActor
 enum DebugScript {
@@ -72,6 +74,14 @@ enum DebugScript {
             case "endedit":
                 // Leaves the cell being edited, as clicking elsewhere does.
                 grid.view.window?.makeFirstResponder(grid.tableView)
+            case "formula", "formulaapply":
+                // Types into the computed column sheet, or applies it.
+                let sheet = grid.presentedViewControllers?.compactMap { $0 as? NSHostingController<FormulaView> }.first
+                if name == "formula" {
+                    sheet?.rootView.model.formula = argument
+                } else {
+                    sheet?.rootView.model.onApply?()
+                }
             case "dump":
                 // Geometry of both tables, for layout problems.
                 for table in grid.tables {

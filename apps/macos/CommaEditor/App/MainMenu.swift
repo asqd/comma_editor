@@ -176,6 +176,7 @@ enum MainMenu {
             .separator(),
             item(L("Split Column…"), #selector(GridViewController.splitColumn(_:))),
             item(L("Merge Columns…"), #selector(GridViewController.mergeColumns(_:))),
+            item(L("Computed Column…"), #selector(GridViewController.computedColumn(_:)), "=", [.command, .option]),
             .separator(),
             item(L("Remove Duplicate Rows…"), #selector(GridViewController.removeDuplicateRows(_:))),
         ])

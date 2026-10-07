@@ -376,6 +376,8 @@ extension GridViewController: NSMenuItemValidation {
              #selector(makeLowercase(_:)), #selector(capitalizeWords(_:)), #selector(fillEmptyFromAbove(_:)),
              #selector(fillEmptyWithValue(_:)), #selector(splitColumn(_:)), #selector(removeDuplicateRows(_:)):
             return selection != nil
+        case #selector(computedColumn(_:)):
+            return columnCount > 0
         case #selector(mergeColumns(_:)):
             return (selection?.columns.count ?? 0) > 1
         case #selector(toggleProfilePanel(_:)):

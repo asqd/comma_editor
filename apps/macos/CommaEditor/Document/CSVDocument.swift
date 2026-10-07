@@ -296,6 +296,28 @@ final class CSVDocument: NSDocument {
         return Int(removed)
     }
 
+    // MARK: Formulas
+
+    /// Inserts a column computed by the formula before column `at`.
+    func addFormulaColumn(_ formula: String, name: String, at column: Int) -> FormulaReport? {
+        var report: FormulaReport?
+        perform(L("Computed Column"), .structure) {
+            report = try $0.addFormulaColumn(formula: formula, name: name, at: UInt64(column))
+            return true
+        }
+        return report
+    }
+
+    /// Writes the formula's value into a column of every visible row.
+    func fillColumn(_ column: Int, formula: String) -> FormulaReport? {
+        var report: FormulaReport?
+        perform(L("Computed Column"), .structure) {
+            report = try $0.fillColumnWithFormula(formula: formula, column: UInt64(column))
+            return true
+        }
+        return report
+    }
+
     // MARK: Repair
 
     /// Fixes the broken row `row` of the file (the header row counted).
@@ -398,6 +420,8 @@ final class CSVDocument: NSDocument {
             userInfo[NSLocalizedDescriptionKey] = L("The last column cannot be deleted.")
         case .InvalidDelimiter(let message), .Export(let message):
             userInfo[NSLocalizedDescriptionKey] = message
+        case .Formula(let problem):
+            userInfo[NSLocalizedDescriptionKey] = FormulaHelp.describe(problem)
         case .InvalidPattern(let message):
             userInfo[NSLocalizedDescriptionKey] = L("The regular expression is not valid.")
             userInfo[NSLocalizedRecoverySuggestionErrorKey] = message
