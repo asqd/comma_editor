@@ -5,7 +5,8 @@ import AppKit
 /// sort, filter and find UI can be checked from the command line. Steps are separated by `;`:
 /// `sort=<column>:a|d`, `filter=<column|*>:<op>:<value>`, `find=<text>`, `replace`, `exportexcel`,
 /// `select=<row>,<column>:<row>,<column>`, `paste=<text>`, `filldown`, `action=<selector>`,
-/// `exportas=<0 JSON…4 XLSX>`, `fixall=<0 unclosed quote…3 extra fields>`, `save`.
+/// `exportas=<0 JSON…4 XLSX>`, `fixall=<0 unclosed quote…3 extra fields>`, `save`,
+/// `cardedit=<column>:<value>` (types into the record card and leaves the field).
 /// Example: `open --env COMMA_DEBUG_SCRIPT='sort=2:d;find=lon' -a CommaEditor file.csv`
 @MainActor
 enum DebugScript {
@@ -59,6 +60,10 @@ enum DebugScript {
             case "fixall":
                 let kinds: [ProblemKind] = [.unclosedQuote, .strayQuote, .missingFields, .extraFields]
                 grid.document.fixAll(kinds[min(Int(argument) ?? 0, kinds.count - 1)])
+            case "cardedit" where parts.count == 2:
+                if let field = grid.cardModel.fields.first(where: { $0.column == Int(parts[0]) }) {
+                    grid.cardModel.draftChanged(field, to: parts[1])
+                }
             case "save":
                 grid.document.save(nil)
             case "exportexcel":

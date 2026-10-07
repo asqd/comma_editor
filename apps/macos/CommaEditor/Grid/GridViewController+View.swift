@@ -372,6 +372,13 @@ extension GridViewController: NSMenuItemValidation {
         case #selector(toggleRepairPanel(_:)):
             menuItem.title = isRepairVisible ? L("Hide File Repair") : L("Show File Repair")
             return true
+        case #selector(toggleRecordCard(_:)):
+            menuItem.title = isCardVisible ? L("Hide Record Card") : L("Show Record Card")
+            return columnCount > 0
+        case #selector(previousRecord(_:)):
+            return (activeRow ?? 0) > 0
+        case #selector(nextRecord(_:)):
+            return activeRow.map { $0 < dataRowCount - 1 } ?? false
         case #selector(copyAs(_:)):
             return selection != nil
         case #selector(exportAs(_:)):

@@ -296,3 +296,17 @@
 "Keeps each quote as an ordinary character" = "Оставляет каждую кавычку обычным символом";
 "Joins rows split by a line break, deletes blank lines, adds empty fields to the rest" = "Склеивает строки, разорванные переносом, удаляет пустые строки, остальные дополняет пустыми полями";
 "Removes empty fields at the end or merges extra fields into the column where they fit" = "Удаляет пустые поля в конце или объединяет лишние поля в колонке, куда они подходят по типу";
+
+/* Record card */
+"Card" = "Карточка";
+"Show Record Card" = "Показать карточку записи";
+"Hide Record Card" = "Скрыть карточку записи";
+"Previous Record" = "Предыдущая запись";
+"Next Record" = "Следующая запись";
+"The active row as a form (⌥⌘I)" = "Текущая строка в виде формы (⌥⌘I)";
+"Previous record (⌘[)" = "Предыдущая запись (⌘[)";
+"Next record (⌘])" = "Следующая запись (⌘])";
+"%@ of %@" = "%@ из %@";
+"Find a field" = "Найти поле";
+"Hide empty" = "Скрыть пустые";
+"No rows" = "Нет строк";

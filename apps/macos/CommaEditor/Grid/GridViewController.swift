@@ -33,8 +33,9 @@ final class GridViewController: NSViewController {
     weak var documentToolbar: DocumentToolbar?
     /// Result of the last search, shown in the status bar.
     var searchSummary: String?
-    /// The panel at the right of the table: the column profile or the file repair.
+    /// The panel at the right of the table: the column profile, the file repair or the record card.
     let sidePanel = NSView()
+    var shownSidePanel: SidePanel?
     /// 0 while the panel is hidden.
     lazy var sidePanelWidth = sidePanel.widthAnchor.constraint(equalToConstant: 0)
     let profileModel = ColumnProfileModel()
@@ -44,6 +45,8 @@ final class GridViewController: NSViewController {
     var profileGeneration = 0
     let repairModel = RepairModel()
     lazy var repairHost = NSHostingView(rootView: RepairView(model: repairModel))
+    let cardModel = RecordCardModel()
+    lazy var cardHost = NSHostingView(rootView: RecordCardView(model: cardModel))
     /// Broken rows by file row, marked on the row numbers.
     var problemRows: [Int: ProblemKind] = [:]
     /// The pending check for broken rows, and a counter that drops stale results.
@@ -135,7 +138,7 @@ final class GridViewController: NSViewController {
 
         let sideSeparator = NSBox()
         sideSeparator.boxType = .separator
-        for subview in [sideSeparator, profileHost, repairHost] as [NSView] {
+        for subview in [sideSeparator, profileHost, repairHost, cardHost] as [NSView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             sidePanel.addSubview(subview)
         }
@@ -145,7 +148,7 @@ final class GridViewController: NSViewController {
             sideSeparator.leadingAnchor.constraint(equalTo: sidePanel.leadingAnchor),
             sideSeparator.widthAnchor.constraint(equalToConstant: 1),
         ])
-        for host in [profileHost, repairHost] as [NSView] {
+        for host in [profileHost, repairHost, cardHost] as [NSView] {
             NSLayoutConstraint.activate([
                 host.topAnchor.constraint(equalTo: sidePanel.topAnchor),
                 host.bottomAnchor.constraint(equalTo: sidePanel.bottomAnchor),
@@ -208,6 +211,7 @@ final class GridViewController: NSViewController {
         rebuildColumns()
         updateStatus()
         configureRepairActions()
+        configureCardActions()
         scheduleProblemCheck(after: 0)
         changeObserver = NotificationCenter.default.addObserver(
             forName: CSVDocument.didChangeNotification,
@@ -420,6 +424,7 @@ final class GridViewController: NSViewController {
         }
         updateStatus()
         refreshProfile()
+        refreshCard()
         scheduleProblemCheck()
     }
 
@@ -489,6 +494,7 @@ final class GridViewController: NSViewController {
                 refreshProfile()
             }
             repairCursorMoved()
+            refreshCard()
         }
         if scroll, let cursor = clamped?.cursor {
             tableView.scrollRowToVisible(cursor.row)

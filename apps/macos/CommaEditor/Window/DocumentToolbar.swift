@@ -11,6 +11,7 @@ extension NSToolbarItem.Identifier {
     static let search = Self("search")
     static let profile = Self("profile")
     static let repair = Self("repair")
+    static let card = Self("card")
 }
 
 /// The window toolbar: row and column commands, sort, filter, data operations, export and
@@ -60,11 +61,11 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate, NSSearchFieldDelegate 
     // MARK: NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.insertRow, .insertColumn, .deleteRows, .space, .sort, .filter, .data, .export, .profile, .repair, .flexibleSpace, .search]
+        [.insertRow, .insertColumn, .deleteRows, .space, .sort, .filter, .data, .export, .profile, .card, .repair, .flexibleSpace, .search]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.insertRow, .insertColumn, .deleteRows, .sort, .filter, .data, .export, .profile, .repair, .search, .space, .flexibleSpace]
+        [.insertRow, .insertColumn, .deleteRows, .sort, .filter, .data, .export, .profile, .card, .repair, .search, .space, .flexibleSpace]
     }
 
     func toolbar(
@@ -102,6 +103,9 @@ final class DocumentToolbar: NSObject, NSToolbarDelegate, NSSearchFieldDelegate 
         case .profile:
             return button(identifier, L("Profile"), "chart.bar.xaxis",
                           #selector(GridViewController.toggleProfilePanel(_:)), tip: L("Column profile: type, statistics, problems (⌥⌘P)"))
+        case .card:
+            return button(identifier, L("Card"), "list.bullet.rectangle",
+                          #selector(GridViewController.toggleRecordCard(_:)), tip: L("The active row as a form (⌥⌘I)"))
         case .repair:
             return button(identifier, L("Repair"), "bandage",
                           #selector(GridViewController.toggleRepairPanel(_:)), tip: L("Find and fix broken rows (⌥⌘R)"))

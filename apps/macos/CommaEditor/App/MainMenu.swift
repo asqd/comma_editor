@@ -181,6 +181,9 @@ enum MainMenu {
         menu([
             item(L("Show Column Profile"), #selector(GridViewController.toggleProfilePanel(_:)), "p", [.command, .option]),
             item(L("Show File Repair"), #selector(GridViewController.toggleRepairPanel(_:)), "r", [.command, .option]),
+            item(L("Show Record Card"), #selector(GridViewController.toggleRecordCard(_:)), "i", [.command, .option]),
+            item(L("Previous Record"), #selector(GridViewController.previousRecord(_:)), "["),
+            item(L("Next Record"), #selector(GridViewController.nextRecord(_:)), "]"),
             .separator(),
             item(L("Show Toolbar"), #selector(NSWindow.toggleToolbarShown(_:)), "t", [.command, .option]),
             item(L("Customize Toolbar…"), #selector(NSWindow.runToolbarCustomizationPalette(_:))),
