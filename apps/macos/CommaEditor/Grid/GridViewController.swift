@@ -28,6 +28,8 @@ final class GridViewController: NSViewController {
     var pendingColumnWidths: [Int: CGFloat]?
     /// Lines of text each row shows; more than one wraps long values.
     var linesPerRow = 1
+    /// Spaces at the ends, tabs, no-break spaces and empty values are marked.
+    var showsInvisibles = false
     /// The area of both tables, which hosts the row move indicator.
     let tableArea = NSView()
     let moveIndicator = NSBox()
@@ -641,6 +643,11 @@ final class GridViewController: NSViewController {
         guard let (table, index) = location(ofDataColumn: activeColumn) else { return }
         scrollToCell(row: row, column: activeColumn)
         table.editColumn(index, row: row, with: nil, select: true)
+        // The editor starts from the real value, not from the marks of invisible characters.
+        if let editor = view.window?.firstResponder as? NSTextView, editor.isFieldEditor {
+            editor.string = value(row: row, column: activeColumn)
+            editor.selectAll(nil)
+        }
         if let text, let editor = view.window?.firstResponder as? NSTextView {
             editor.insertText(text, replacementRange: editor.selectedRange())
         }
@@ -856,9 +863,20 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         }
         guard let column = dataColumn(of: tableColumn) else { return nil }
         let cell = reusableCell(.dataCell, in: tableView)
-        let value = value(row: row, column: column)
+        let values = values(forRow: row)
+        let value = column < values.count ? values[column] : ""
+        // The row has no such field at all: shorter than others, or a blank line.
+        let isMissing = showsInvisibles && column >= values.count
         let wraps = linesPerRow > 1
-        cell.textField?.stringValue = wraps ? value : Self.singleLine(value)
+        if showsInvisibles, !isMissing {
+            cell.textField?.attributedStringValue = InvisibleText.render(
+                value,
+                wraps: wraps,
+                font: cell.textField?.font ?? .systemFont(ofSize: NSFont.systemFontSize)
+            )
+        } else {
+            cell.textField?.stringValue = wraps ? value : Self.singleLine(value)
+        }
         cell.textField?.maximumNumberOfLines = linesPerRow
         cell.textField?.cell?.usesSingleLineMode = !wraps
         cell.textField?.cell?.wraps = wraps
@@ -875,11 +893,13 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         cell.layer?.borderWidth = isCursor ? 2 : 0
         cell.layer?.borderColor = NSColor.controlAccentColor.cgColor
         let issue = profileIssue(of: value, column: column)
-        cell.toolTip = issue
+        cell.toolTip = issue ?? (isMissing ? L("This row has no such field") : nil)
         if isSelected {
             cell.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
         } else if issue != nil {
             cell.layer?.backgroundColor = NSColor.systemOrange.withAlphaComponent(0.22).cgColor
+        } else if isMissing {
+            cell.layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.12).cgColor
         } else {
             cell.layer?.backgroundColor = nil
         }
@@ -950,6 +970,8 @@ extension GridViewController: NSTextFieldDelegate {
         let newValue = field.stringValue
         if newValue != value(row: row, column: column) {
             document.setCell(visibleRow: row, column: column, value: newValue)
+        } else if showsInvisibles {
+            reloadRows(IndexSet(integer: row))
         }
 
         let movement = (notification.userInfo?[NSText.movementUserInfoKey] as? Int)
@@ -976,6 +998,9 @@ extension GridViewController: NSTextFieldDelegate {
             let row = table.row(for: field)
             field.abortEditing()
             field.stringValue = Self.singleLine(value(row: row, column: column))
+            if showsInvisibles {
+                reloadRows(IndexSet(integer: row))
+            }
         }
         view.window?.makeFirstResponder(tableView)
         return true

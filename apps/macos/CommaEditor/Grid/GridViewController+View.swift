@@ -397,6 +397,9 @@ extension GridViewController: NSMenuItemValidation {
             return !hiddenColumns.isEmpty
         case #selector(autofitColumns(_:)):
             return columnCount > 0
+        case #selector(toggleInvisibles(_:)):
+            menuItem.state = showsInvisibles ? .on : .off
+            return true
         case #selector(setLinesPerRow(_:)):
             menuItem.state = menuItem.tag == linesPerRow ? .on : .off
             return true

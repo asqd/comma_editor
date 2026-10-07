@@ -330,3 +330,7 @@
 "Up to 3 Lines" = "До 3 строк";
 "Up to 5 Lines" = "До 5 строк";
 "Hidden columns: %@" = "Скрыто колонок: %@";
+
+/* Invisible characters */
+"Show Invisible Characters" = "Показывать невидимые символы";
+"This row has no such field" = "В этой строке нет такого поля";

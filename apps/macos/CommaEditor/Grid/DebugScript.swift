@@ -7,7 +7,7 @@ import AppKit
 /// `select=<row>,<column>:<row>,<column>`, `paste=<text>`, `filldown`, `action=<selector>`,
 /// `exportas=<0 JSON…4 XLSX>`, `fixall=<0 unclosed quote…3 extra fields>`, `save`,
 /// `cardedit=<column>:<value>` (types into the record card and leaves the field),
-/// `lines=<n>` (text wrapping), `dump` (logs the geometry of the tables).
+/// `lines=<n>` (text wrapping), `endedit`, `dump` (logs the geometry of the tables).
 /// Example: `open --env COMMA_DEBUG_SCRIPT='sort=2:d;find=lon' -a CommaEditor file.csv`
 @MainActor
 enum DebugScript {
@@ -69,6 +69,9 @@ enum DebugScript {
                 let item = NSMenuItem()
                 item.tag = Int(argument) ?? 1
                 grid.setLinesPerRow(item)
+            case "endedit":
+                // Leaves the cell being edited, as clicking elsewhere does.
+                grid.view.window?.makeFirstResponder(grid.tableView)
             case "dump":
                 // Geometry of both tables, for layout problems.
                 for table in grid.tables {

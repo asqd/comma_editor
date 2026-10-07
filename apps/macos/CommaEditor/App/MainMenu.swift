@@ -194,6 +194,7 @@ enum MainMenu {
             item(L("Hide Column"), #selector(GridViewController.hideColumns(_:))),
             item(L("Show All Columns"), #selector(GridViewController.showAllColumns(_:))),
             item(L("Fit Column Width"), #selector(GridViewController.autofitColumns(_:)), "0", [.command, .option]),
+            item(L("Show Invisible Characters"), #selector(GridViewController.toggleInvisibles(_:)), "i", [.command, .shift]),
             submenuItem(L("Text Wrapping"), [
                 tagged(item(L("One Line"), #selector(GridViewController.setLinesPerRow(_:))), 1),
                 tagged(item(L("Up to 2 Lines"), #selector(GridViewController.setLinesPerRow(_:))), 2),

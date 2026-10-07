@@ -197,6 +197,13 @@ extension GridViewController {
         return min(max(width.rounded(.up), tableColumn.minWidth), 480)
     }
 
+    // MARK: Invisible characters
+
+    @objc func toggleInvisibles(_ sender: Any?) {
+        showsInvisibles.toggle()
+        reloadTables()
+    }
+
     // MARK: Text wrapping
 
     /// View ▸ Text Wrapping: the menu item's tag is the number of lines per row.
