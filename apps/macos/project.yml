@@ -69,3 +69,56 @@ targets:
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.files.user-selected.read-write: true
+    dependencies:
+      - target: CommaQuickLook
+
+  # Quick Look preview in Finder, embedded in the app. It links the same Rust core; it builds
+  # before the app, so it builds the core too (a no-op the second time).
+  CommaQuickLook:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: QuickLook
+      - path: CommaCore/Sources
+        group: CommaCore
+    preBuildScripts:
+      - name: Build Rust core
+        script: '"$SRCROOT/../../scripts/build-core.sh"'
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_NAME: CommaQuickLook
+        PRODUCT_BUNDLE_IDENTIFIER: app.commaeditor.CommaEditor.QuickLook
+        MARKETING_VERSION: "0.6.0"
+        CURRENT_PROJECT_VERSION: "1"
+        DEAD_CODE_STRIPPING: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
+        SWIFT_INCLUDE_PATHS: $(SRCROOT)/CommaCore/include
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/CommaCore/lib
+        OTHER_LDFLAGS: -lcomma_ffi
+    info:
+      path: QuickLook/Info.plist
+      properties:
+        CFBundleDisplayName: CommaEditor
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, ru]
+        NSHumanReadableCopyright: "© 2026 CommaEditor"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.quicklook.preview
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PreviewProvider
+          NSExtensionAttributes:
+            QLIsDataBasedPreview: true
+            QLSupportsSearchableItems: false
+            QLSupportedContentTypes:
+              - public.comma-separated-values-text
+              - public.tab-separated-values-text
+              - public.utf8-tab-separated-values-text
+              - public.delimited-values-text
+    entitlements:
+      path: QuickLook/QuickLook.entitlements
+      properties:
+        com.apple.security.app-sandbox: true

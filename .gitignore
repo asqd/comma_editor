@@ -5,6 +5,8 @@
 /apps/macos/CommaEditor.xcodeproj
 /apps/macos/CommaEditor/Info.plist
 /apps/macos/CommaEditor/CommaEditor.entitlements
+/apps/macos/QuickLook/Info.plist
+/apps/macos/QuickLook/QuickLook.entitlements
 /apps/macos/CommaCore
 
 .DS_Store
