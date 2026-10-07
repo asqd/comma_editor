@@ -523,6 +523,71 @@ impl Document {
         Ok(())
     }
 
+    /// Moves `rows` so that they stand before row `to` (an index before the move;
+    /// `to == row_count` moves them to the end), keeping their order, as one undoable step.
+    /// Returns `false` if nothing moves.
+    pub fn move_rows(&mut self, rows: &[usize], to: usize) -> Result<bool> {
+        let mut rows = rows.to_vec();
+        rows.sort_unstable();
+        rows.dedup();
+        let Some(&last) = rows.last() else {
+            return Ok(false);
+        };
+        self.check_row(last)?;
+        if to > self.records.len() {
+            return Err(Error::RowOutOfRange {
+                row: to,
+                rows: self.records.len(),
+            });
+        }
+        let target = to - rows.iter().filter(|&&row| row < to).count();
+        let contiguous = rows.windows(2).all(|pair| pair[1] == pair[0] + 1);
+        if contiguous && target == rows[0] {
+            return Ok(false);
+        }
+        let moved: Vec<Record> = rows.iter().map(|&row| self.records[row].clone()).collect();
+        // Remove from the end so that earlier indices stay valid, then insert the block.
+        let mut splices: Vec<Splice> = rows
+            .iter()
+            .rev()
+            .map(|&row| Splice::apply(&mut self.records, row, 1, Vec::new()))
+            .collect();
+        splices.push(Splice::apply(&mut self.records, target, 0, moved));
+        self.commit(splices, self.column_count, true);
+        self.refresh_view();
+        Ok(true)
+    }
+
+    /// Moves column `from` to index `to` of the resulting columns. Rows too short to have
+    /// either column stay untouched; others get empty fields as needed. Resets the view.
+    pub fn move_column(&mut self, from: usize, to: usize) -> Result<bool> {
+        self.check_column(from)?;
+        self.check_column(to)?;
+        if from == to {
+            return Ok(false);
+        }
+        let reach = from.max(to);
+        let updated = self
+            .records
+            .iter()
+            .map(|record| {
+                let mut fields = self.fields(record);
+                if record.is_blank() || fields.len() <= from.min(to) {
+                    return record.clone();
+                }
+                if fields.len() <= reach {
+                    fields.resize(reach + 1, Field::Text(String::new()));
+                }
+                let field = fields.remove(from);
+                fields.insert(to, field);
+                Record::modified(fields, record.term())
+            })
+            .collect();
+        self.replace_records(updated, self.column_count, false);
+        self.reset_view();
+        Ok(true)
+    }
+
     pub fn can_undo(&self) -> bool {
         self.history.can_undo()
     }

@@ -645,6 +645,17 @@ impl CoreDocument {
         Ok(self.lock().delete_rows(&rows)?)
     }
 
+    /// Moves rows to stand before row `to` (an index before the move), keeping their order.
+    pub fn move_rows(&self, rows: Vec<u64>, to: u64) -> Result<bool, CoreError> {
+        let rows: Vec<usize> = rows.into_iter().map(|row| row as usize).collect();
+        Ok(self.lock().move_rows(&rows, to as usize)?)
+    }
+
+    /// Moves column `from` to index `to` of the resulting columns. Resets the view.
+    pub fn move_column(&self, from: u64, to: u64) -> Result<bool, CoreError> {
+        Ok(self.lock().move_column(from as usize, to as usize)?)
+    }
+
     pub fn insert_column(&self, at: u64) -> Result<(), CoreError> {
         Ok(self.lock().insert_column(at as usize)?)
     }
