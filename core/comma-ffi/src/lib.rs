@@ -158,6 +158,86 @@ pub enum TextEncoding {
     Windows1252,
 }
 
+impl From<core::TextEncoding> for TextEncoding {
+    fn from(encoding: core::TextEncoding) -> Self {
+        match encoding {
+            core::TextEncoding::Utf8 => Self::Utf8,
+            core::TextEncoding::Utf16Le => Self::Utf16Le,
+            core::TextEncoding::Utf16Be => Self::Utf16Be,
+            core::TextEncoding::Windows1251 => Self::Windows1251,
+            core::TextEncoding::Koi8R => Self::Koi8R,
+            core::TextEncoding::Windows1252 => Self::Windows1252,
+        }
+    }
+}
+
+impl From<TextEncoding> for core::TextEncoding {
+    fn from(encoding: TextEncoding) -> Self {
+        match encoding {
+            TextEncoding::Utf8 => Self::Utf8,
+            TextEncoding::Utf16Le => Self::Utf16Le,
+            TextEncoding::Utf16Be => Self::Utf16Be,
+            TextEncoding::Windows1251 => Self::Windows1251,
+            TextEncoding::Koi8R => Self::Koi8R,
+            TextEncoding::Windows1252 => Self::Windows1252,
+        }
+    }
+}
+
+/// One ASCII character as a delimiter byte.
+fn delimiter_byte(delimiter: &str) -> Result<u8, CoreError> {
+    let mut chars = delimiter.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_ascii() && c != '"' && c != '\n' && c != '\r' => Ok(c as u8),
+        _ => Err(CoreError::InvalidDelimiter {
+            message: format!("“{delimiter}” cannot be used as a delimiter"),
+        }),
+    }
+}
+
+fn open_options(encoding: Option<TextEncoding>, delimiter: Option<String>) -> Result<core::OpenOptions, CoreError> {
+    Ok(core::OpenOptions {
+        encoding: encoding.map(Into::into),
+        delimiter: delimiter.as_deref().map(delimiter_byte).transpose()?,
+    })
+}
+
+/// The first rows of a file as they would open with some options.
+#[derive(uniffi::Record)]
+pub struct FilePreview {
+    pub encoding: TextEncoding,
+    pub delimiter: String,
+    pub has_header: bool,
+    pub rows: Vec<Vec<String>>,
+    pub column_count: u64,
+    pub detection_confident: bool,
+}
+
+/// How the start of a file opens with the given encoding and delimiter (`None` detects them).
+#[uniffi::export]
+pub fn preview_file(
+    path: String,
+    encoding: Option<TextEncoding>,
+    delimiter: Option<String>,
+    rows: u64,
+) -> Result<FilePreview, CoreError> {
+    let preview = core::Document::preview_file(path, &open_options(encoding, delimiter)?, rows as usize, 1 << 20)?;
+    Ok(FilePreview {
+        encoding: preview.encoding.into(),
+        delimiter: (preview.delimiter as char).to_string(),
+        has_header: preview.has_header,
+        rows: preview.rows,
+        column_count: preview.column_count as u64,
+        detection_confident: preview.detection_confident,
+    })
+}
+
+/// The text read in the right encoding, if it looks garbled.
+#[uniffi::export]
+pub fn fix_garbled(text: String) -> Option<String> {
+    core::fix_garbled(&text)
+}
+
 /// Encoding, BOM, delimiter and line endings a file is written with.
 #[derive(uniffi::Record)]
 pub struct SaveFormat {
@@ -250,6 +330,9 @@ pub struct DocumentInfo {
     /// Data rows shown by the current sort and filters.
     pub visible_row_count: u64,
     pub unterminated_quote: bool,
+    pub text_encoding: TextEncoding,
+    /// The encoding and delimiter were detected with certainty, or chosen when opening.
+    pub detection_confident: bool,
 }
 
 #[derive(uniffi::Record)]
@@ -449,6 +532,8 @@ pub struct RepairReport {
     pub problems: Vec<Problem>,
     /// All problems of each kind.
     pub counts: Vec<ProblemCount>,
+    /// Values in the first rows that look like text read in the wrong encoding.
+    pub garbled_sample: u64,
 }
 
 #[derive(uniffi::Enum)]
@@ -665,6 +750,12 @@ impl CoreDocument {
         Ok(Self::wrap(core::Document::open(path)?))
     }
 
+    /// Opens a file with the given encoding and delimiter instead of detecting them.
+    #[uniffi::constructor]
+    pub fn open_with(path: String, encoding: Option<TextEncoding>, delimiter: Option<String>) -> Result<Arc<Self>, CoreError> {
+        Ok(Self::wrap(core::Document::open_with(path, &open_options(encoding, delimiter)?)?))
+    }
+
     #[uniffi::constructor]
     pub fn from_bytes(data: Vec<u8>) -> Arc<Self> {
         Self::wrap(core::Document::from_bytes(data))
@@ -687,6 +778,8 @@ impl CoreDocument {
             column_count: info.column_count as u64,
             visible_row_count: info.visible_row_count as u64,
             unterminated_quote: info.unterminated_quote,
+            text_encoding: info.encoding.into(),
+            detection_confident: info.detection_confident,
         }
     }
 
@@ -937,6 +1030,7 @@ impl CoreDocument {
                 .into_iter()
                 .map(|(kind, count)| ProblemCount { kind: kind.into(), count: count as u64 })
                 .collect(),
+            garbled_sample: report.garbled_sample as u64,
         }
     }
 
@@ -961,6 +1055,11 @@ impl CoreDocument {
     /// Applies the recommended fix to every problem of one kind; returns the rows fixed.
     pub fn fix_all(&self, kind: ProblemKind) -> u64 {
         self.lock().fix_all(kind.into()) as u64
+    }
+
+    /// Fixes text read in the wrong encoding in a range, or in the whole file with the header.
+    pub fn fix_garbled_text(&self, range: Option<CellRange>) -> Result<u64, CoreError> {
+        Ok(self.lock().fix_garbled_text(range.map(Into::into))? as u64)
     }
 
     /// The row as written in the file, cut to `max_chars` characters.

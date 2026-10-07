@@ -65,6 +65,26 @@ pub struct Info {
     /// Rows shown by the current view: data rows that pass the filters.
     pub visible_row_count: usize,
     pub unterminated_quote: bool,
+    /// The encoding and delimiter were detected with certainty, or chosen when opening.
+    pub detection_confident: bool,
+}
+
+/// What to assume when opening a file instead of detecting it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OpenOptions {
+    pub encoding: Option<TextEncoding>,
+    pub delimiter: Option<u8>,
+}
+
+/// The first rows of a file as they would open with some options.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilePreview {
+    pub encoding: TextEncoding,
+    pub delimiter: u8,
+    pub has_header: bool,
+    pub rows: Vec<Vec<String>>,
+    pub column_count: usize,
+    pub detection_confident: bool,
 }
 
 /// Sorting and filtering of the data rows. `rows` holds the record indices to show, in order;
@@ -91,6 +111,7 @@ pub struct Document {
     has_header: bool,
     column_count: usize,
     unterminated_quote: bool,
+    detection_confident: bool,
     history: History,
     view: View,
     /// Format to save in; the detected one unless "Save As" chose another.
@@ -115,6 +136,7 @@ impl Document {
             has_header: false,
             column_count: columns,
             unterminated_quote: false,
+            detection_confident: true,
             history: History::default(),
             view: View::default(),
             format: SaveFormat {
@@ -130,11 +152,52 @@ impl Document {
         Ok(Self::from_bytes(std::fs::read(path)?))
     }
 
+    pub fn open_with(path: impl AsRef<Path>, options: &OpenOptions) -> Result<Self> {
+        Ok(Self::from_bytes_with(std::fs::read(path)?, options))
+    }
+
     /// Detects the encoding and dialect, then indexes the records.
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
-        let prepared = encoding::prepare(bytes);
-        let dialect = dialect::sniff(&prepared.buffer, prepared.content_start);
-        Self::parse(prepared, dialect)
+        Self::from_bytes_with(bytes, &OpenOptions::default())
+    }
+
+    /// Like `from_bytes`, with the encoding or delimiter given instead of detected.
+    pub fn from_bytes_with(bytes: Vec<u8>, options: &OpenOptions) -> Self {
+        let prepared = match options.encoding {
+            Some(encoding) => encoding::prepare_as(bytes, encoding),
+            None => encoding::prepare(bytes),
+        };
+        let (dialect, dialect_confident) =
+            dialect::sniff_with(&prepared.buffer, prepared.content_start, options.delimiter);
+        let confident = prepared.confident && dialect_confident;
+        let mut document = Self::parse(prepared, dialect);
+        document.detection_confident = confident;
+        document
+    }
+
+    /// How the start of a file opens with `options`: up to `rows` rows read from at most the
+    /// first `bytes` bytes, cut at a line break.
+    pub fn preview_file(path: impl AsRef<Path>, options: &OpenOptions, rows: usize, bytes: usize) -> Result<FilePreview> {
+        use std::io::Read;
+        let mut data = Vec::new();
+        std::fs::File::open(path)?.take(bytes as u64).read_to_end(&mut data)?;
+        if data.len() == bytes
+            && let Some(end) = data.iter().rposition(|&b| b == b'\n')
+        {
+            data.truncate(end + 1);
+        }
+        let document = Self::from_bytes_with(data, options);
+        let rows: Vec<Vec<String>> = (0..document.row_count().min(rows))
+            .filter_map(|row| document.row(row).ok())
+            .collect();
+        Ok(FilePreview {
+            encoding: document.encoding,
+            delimiter: document.dialect.delimiter,
+            has_header: document.has_header,
+            column_count: rows.iter().map(Vec::len).max().unwrap_or(0),
+            rows,
+            detection_confident: document.detection_confident,
+        })
     }
 
     fn parse(prepared: Prepared, dialect: Dialect) -> Self {
@@ -169,6 +232,7 @@ impl Document {
             has_header: false,
             column_count: scan.max_fields,
             unterminated_quote: scan.unterminated_quote,
+            detection_confident: true,
             history: History::default(),
             view: View::default(),
             format: SaveFormat {
@@ -200,6 +264,7 @@ impl Document {
             column_count: self.column_count,
             visible_row_count: self.visible_row_count(),
             unterminated_quote: self.unterminated_quote,
+            detection_confident: self.detection_confident,
         }
     }
 

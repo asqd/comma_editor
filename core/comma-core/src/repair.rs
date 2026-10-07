@@ -45,6 +45,8 @@ pub struct RepairReport {
     pub problems: Vec<Problem>,
     /// Number of problems of each kind, all of them, in the order of `ProblemKind`.
     pub counts: Vec<(ProblemKind, usize)>,
+    /// Values in the first rows that look like text read in the wrong encoding.
+    pub garbled_sample: usize,
 }
 
 impl RepairReport {
@@ -123,6 +125,7 @@ impl Document {
             expected_fields: survey.expected,
             problems,
             counts,
+            garbled_sample: self.garbled_in_sample(),
         }
     }
 

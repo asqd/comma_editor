@@ -70,6 +70,8 @@ pub(crate) struct Prepared {
     pub has_bom: bool,
     pub buffer: Vec<u8>,
     pub content_start: usize,
+    /// The encoding is certain (a BOM, valid UTF-8, clear letter statistics) or was chosen.
+    pub confident: bool,
 }
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
@@ -82,6 +84,7 @@ pub(crate) fn prepare(bytes: Vec<u8>) -> Prepared {
             has_bom: true,
             buffer: bytes,
             content_start: UTF8_BOM.len(),
+            confident: true,
         };
     }
 
@@ -98,16 +101,51 @@ pub(crate) fn prepare(bytes: Vec<u8>) -> Prepared {
                 has_bom,
                 buffer: text.into_bytes(),
                 content_start: 0,
+                confident: true,
             };
         }
     }
 
-    let encoding = guess_ascii_compatible(&bytes);
+    let (encoding, confident) = guess_ascii_compatible(&bytes);
     Prepared {
         encoding,
         has_bom: false,
         buffer: bytes,
         content_start: 0,
+        confident,
+    }
+}
+
+/// Reads the bytes in `encoding`, chosen by the user. A BOM that matches is kept as one;
+/// UTF-16 that does not decode falls back to detection.
+pub(crate) fn prepare_as(bytes: Vec<u8>, encoding: TextEncoding) -> Prepared {
+    match encoding {
+        TextEncoding::Utf16Le | TextEncoding::Utf16Be => {
+            let little_endian = encoding == TextEncoding::Utf16Le;
+            let bom: &[u8] = if little_endian { &[0xFF, 0xFE] } else { &[0xFE, 0xFF] };
+            let has_bom = bytes.starts_with(bom);
+            let body = if has_bom { &bytes[2..] } else { &bytes[..] };
+            match decode_utf16(body, little_endian) {
+                Some(text) => Prepared {
+                    encoding,
+                    has_bom,
+                    buffer: text.into_bytes(),
+                    content_start: 0,
+                    confident: true,
+                },
+                None => prepare(bytes),
+            }
+        }
+        _ => {
+            let has_bom = encoding == TextEncoding::Utf8 && bytes.starts_with(&UTF8_BOM);
+            Prepared {
+                encoding,
+                has_bom,
+                content_start: if has_bom { UTF8_BOM.len() } else { 0 },
+                buffer: bytes,
+                confident: true,
+            }
+        }
     }
 }
 
@@ -160,12 +198,17 @@ fn sniff_utf16_without_bom(bytes: &[u8]) -> Option<TextEncoding> {
     }
 }
 
-fn guess_ascii_compatible(bytes: &[u8]) -> TextEncoding {
+/// The encoding, and whether the guess is sure: valid UTF-8 is, UTF-8 with broken bytes
+/// is not, a single-byte encoding is when its letter statistics are clear.
+fn guess_ascii_compatible(bytes: &[u8]) -> (TextEncoding, bool) {
     let sample = &bytes[..bytes.len().min(DETECTION_SAMPLE)];
     let truncated = sample.len() < bytes.len();
     let (multibyte, invalid) = utf8_stats(sample, truncated);
-    if invalid == 0 || (multibyte > 0 && invalid * 10 < multibyte) {
-        return TextEncoding::Utf8;
+    if invalid == 0 {
+        return (TextEncoding::Utf8, true);
+    }
+    if multibyte > 0 && invalid * 10 < multibyte {
+        return (TextEncoding::Utf8, false);
     }
     guess_single_byte(sample)
 }
@@ -205,7 +248,7 @@ fn utf8_stats(mut sample: &[u8], truncated: bool) -> (usize, usize) {
 
 /// Tells Russian text in Windows-1251 or KOI8-R from Western text in Windows-1252
 /// by the most frequent lowercase Russian letters (о е а и н т с р в).
-fn guess_single_byte(sample: &[u8]) -> TextEncoding {
+fn guess_single_byte(sample: &[u8]) -> (TextEncoding, bool) {
     let mut high = 0usize;
     let mut ascii_letters = 0usize;
     let mut cp1251 = 0usize;
@@ -224,16 +267,17 @@ fn guess_single_byte(sample: &[u8]) -> TextEncoding {
             _ => {}
         }
     }
-    let mostly_non_latin = high as f64 / (high + ascii_letters).max(1) as f64 > 0.3;
-    let russian_letters = (cp1251 + koi8) as f64 / high.max(1) as f64 > 0.25;
-    if mostly_non_latin && russian_letters {
-        if cp1251 >= koi8 {
-            TextEncoding::Windows1251
-        } else {
-            TextEncoding::Koi8R
-        }
+    let high_share = high as f64 / (high + ascii_letters).max(1) as f64;
+    let russian_share = (cp1251 + koi8) as f64 / high.max(1) as f64;
+    if high_share > 0.3 && russian_share > 0.25 {
+        // Sure when the letters are clearly Russian and one encoding clearly wins.
+        let sure = russian_share > 0.4 && cp1251.max(koi8) >= 3 * cp1251.min(koi8).max(1);
+        let encoding = if cp1251 >= koi8 { TextEncoding::Windows1251 } else { TextEncoding::Koi8R };
+        (encoding, sure)
     } else {
-        TextEncoding::Windows1252
+        // Western text has a few accented letters among plain ones; many high bytes without
+        // Russian statistics may be another language altogether.
+        (TextEncoding::Windows1252, high_share < 0.15)
     }
 }
 

@@ -51,18 +51,33 @@ const CANDIDATES: [u8; 4] = [b',', b';', b'\t', b'|'];
 const SAMPLE_BYTES: usize = 256 * 1024;
 const SAMPLE_RECORDS: usize = 1000;
 
+#[cfg(test)]
 pub(crate) fn sniff(buf: &[u8], start: usize) -> Dialect {
+    sniff_with(buf, start, None).0
+}
+
+/// The dialect, with `delimiter` when the user chose one, and whether the delimiter is sure:
+/// most records split into the same number of fields, or no candidate occurs at all.
+pub(crate) fn sniff_with(buf: &[u8], start: usize, delimiter: Option<u8>) -> (Dialect, bool) {
     let end = buf.len().min(start + SAMPLE_BYTES);
     let sample = &buf[start..end];
     let truncated = end < buf.len();
-    let delimiter = sniff_delimiter(sample, truncated);
+    let (delimiter, confident) = match delimiter {
+        Some(delimiter) => (delimiter, true),
+        None => {
+            let (delimiter, consistency, fields) = sniff_delimiter(sample, truncated);
+            let none_present = !sample.iter().any(|b| CANDIDATES.contains(b));
+            (delimiter, none_present || (fields >= 2 && consistency >= 0.8))
+        }
+    };
     let records = sample_records(sample, delimiter, truncated);
-    Dialect {
+    let dialect = Dialect {
         delimiter,
         quote: b'"',
         line_ending: sniff_line_ending(sample),
         quote_style: sniff_quote_style(sample, &records, delimiter),
-    }
+    };
+    (dialect, confident)
 }
 
 /// Non-blank records of the sample; the last one is dropped when the sample cut it short.
@@ -76,8 +91,9 @@ fn sample_records(sample: &[u8], delimiter: u8, truncated: bool) -> Vec<RecordSp
 }
 
 /// Picks the candidate that splits most records into the same number of fields (at least two);
-/// more fields win a tie, then the order of `CANDIDATES`.
-fn sniff_delimiter(sample: &[u8], truncated: bool) -> u8 {
+/// more fields win a tie, then the order of `CANDIDATES`. Returns the delimiter, the share of
+/// records with the usual number of fields, and that number.
+fn sniff_delimiter(sample: &[u8], truncated: bool) -> (u8, f64, u32) {
     let mut best = (b',', 0.0f64, 0u32);
     for delimiter in CANDIDATES {
         let records = sample_records(sample, delimiter, truncated);
@@ -100,7 +116,7 @@ fn sniff_delimiter(sample: &[u8], truncated: bool) -> u8 {
             best = (delimiter, consistency, mode);
         }
     }
-    best.0
+    best
 }
 
 fn sniff_line_ending(sample: &[u8]) -> LineEnding {
