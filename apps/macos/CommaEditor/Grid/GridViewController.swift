@@ -75,6 +75,10 @@ final class GridViewController: NSViewController {
     var problemGeneration = 0
     /// Opens the repair panel from the status bar; hidden while the file has no broken rows.
     let problemsButton = NSButton()
+    /// Shows that a large file is being read or sorted, with a way to cancel sorting.
+    let busyIndicator = NSProgressIndicator()
+    let busyLabel = NSTextField(labelWithString: "")
+    let busyCancel = NSButton()
     private var changeObserver: NSObjectProtocol?
 
     private struct CachedRow {
@@ -144,7 +148,8 @@ final class GridViewController: NSViewController {
         statusLabel.setContentHuggingPriority(.required, for: .vertical)
         let statusBar = NSView()
         configureProblemsButton()
-        for subview in [statusLabel, problemsButton] as [NSView] {
+        let busy = configureBusyViews()
+        for subview in [statusLabel, busy, problemsButton] as [NSView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             statusBar.addSubview(subview)
         }
@@ -152,7 +157,9 @@ final class GridViewController: NSViewController {
             statusLabel.topAnchor.constraint(equalTo: statusBar.topAnchor, constant: 5),
             statusLabel.bottomAnchor.constraint(equalTo: statusBar.bottomAnchor, constant: -6),
             statusLabel.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 10),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: problemsButton.leadingAnchor, constant: -10),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: busy.leadingAnchor, constant: -10),
+            busy.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
+            busy.trailingAnchor.constraint(equalTo: problemsButton.leadingAnchor, constant: -12),
             problemsButton.centerYAnchor.constraint(equalTo: statusLabel.centerYAnchor),
             problemsButton.trailingAnchor.constraint(equalTo: statusBar.trailingAnchor, constant: -10),
         ])
@@ -410,7 +417,7 @@ final class GridViewController: NSViewController {
         }
     }
 
-    private func updateRowNumberWidth() {
+    func updateRowNumberWidth() {
         let digits = max(3, String(Int(info.rowCount)).count)
         frozenTable.tableColumn(withIdentifier: .rowNumberColumn)?.width = CGFloat(digits) * 8 + 14
         updateFrozenWidth()
@@ -463,6 +470,10 @@ final class GridViewController: NSViewController {
         let previous = info
         info = core.info()
         let change = notification.userInfo?[CSVDocument.changeKey] as? CSVDocument.Change
+        if case .progress? = change {
+            rowsAdded(since: previous)
+            return
+        }
         let sameShape = previous.rowCount == info.rowCount
             && previous.visibleRowCount == info.visibleRowCount
             && previous.columnCount == info.columnCount
@@ -535,6 +546,7 @@ final class GridViewController: NSViewController {
             parts.insert(searchSummary, at: 0)
         }
         documentToolbar?.update(sortActive: !spec.sort.isEmpty, filterActive: !spec.filters.isEmpty)
+        updateBusyState()
         statusLabel.stringValue = parts.joined(separator: "   ·   ")
         filterBar.setSummary(
             spec.filters.isEmpty ? "" : L("Showing %@ of %@", Self.format(dataRowCount), Self.format(totalDataRowCount))
@@ -642,6 +654,10 @@ final class GridViewController: NSViewController {
     /// Values with line breaks open in a sheet instead.
     private func editActiveCell(typing text: String? = nil) {
         guard let row = activeRow, columnCount > 0 else { return }
+        guard !document.isIndexing else {
+            NSSound.beep()
+            return
+        }
         if Self.isMultiline(value(row: row, column: activeColumn)) {
             presentCellEditor(row: row, column: activeColumn)
             return

@@ -1,5 +1,6 @@
 //! Find and replace over the visible rows, in the order they are shown.
 
+use std::sync::Arc;
 use std::ops::Range;
 
 use regex::{NoExpand, Regex, RegexBuilder};
@@ -187,7 +188,7 @@ impl Document {
             }
             if let Some(fields) = fields {
                 let updated = Record::modified(fields, self.records[record].term());
-                splices.push(Splice::apply(&mut self.records, record, 1, vec![updated]));
+                splices.push(Splice::apply(Arc::make_mut(&mut self.records), record, 1, vec![updated]));
             }
         }
         if !splices.is_empty() {

@@ -3,6 +3,7 @@
 //! Windows-1252. The text is turned back into the bytes it came from and read correctly;
 //! a fix is kept only when the result reads more naturally.
 
+use std::sync::Arc;
 use encoding_rs::{Encoding, KOI8_R, WINDOWS_1251, WINDOWS_1252};
 
 use crate::document::{Document, Field, Record};
@@ -169,7 +170,7 @@ impl Document {
         }
         let splices: Vec<Splice> = updates
             .into_iter()
-            .map(|(row, record)| Splice::apply(&mut self.records, row, 1, vec![record]))
+            .map(|(row, record)| Splice::apply(Arc::make_mut(&mut self.records), row, 1, vec![record]))
             .collect();
         if !splices.is_empty() {
             self.commit(splices, self.column_count(), false);

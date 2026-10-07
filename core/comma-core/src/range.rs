@@ -1,5 +1,6 @@
 //! Rectangular ranges of visible cells: copy, paste, fill and clear, each one undoable step.
 
+use std::sync::Arc;
 use std::ops::Range;
 
 use crate::document::{Document, Field, Record};
@@ -139,7 +140,7 @@ impl Document {
                 .map(|_| Record::modified(vec![Field::Text(String::new()); columns], term))
                 .collect();
             let at = self.records.len();
-            splices.push(Splice::apply(&mut self.records, at, 0, rows));
+            splices.push(Splice::apply(Arc::make_mut(&mut self.records), at, 0, rows));
             bottom = top + height;
         }
         if bottom == top {
@@ -190,7 +191,7 @@ impl Document {
             }
             if let Some(fields) = fields {
                 let updated = Record::modified(fields, self.records[record].term());
-                splices.push(Splice::apply(&mut self.records, record, 1, vec![updated]));
+                splices.push(Splice::apply(Arc::make_mut(&mut self.records), record, 1, vec![updated]));
             }
         }
         if !splices.is_empty() {

@@ -2,6 +2,8 @@ use std::borrow::Cow;
 
 use encoding_rs::{Encoding, KOI8_R, WINDOWS_1251, WINDOWS_1252};
 
+use crate::bytes::Bytes;
+
 /// Text encoding of a file on disk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextEncoding {
@@ -68,7 +70,7 @@ impl TextEncoding {
 pub(crate) struct Prepared {
     pub encoding: TextEncoding,
     pub has_bom: bool,
-    pub buffer: Vec<u8>,
+    pub buffer: Bytes,
     pub content_start: usize,
     /// The encoding is certain (a BOM, valid UTF-8, clear letter statistics) or was chosen.
     pub confident: bool,
@@ -77,7 +79,7 @@ pub(crate) struct Prepared {
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 const DETECTION_SAMPLE: usize = 1 << 20;
 
-pub(crate) fn prepare(bytes: Vec<u8>) -> Prepared {
+pub(crate) fn prepare(bytes: Bytes) -> Prepared {
     if bytes.starts_with(&UTF8_BOM) {
         return Prepared {
             encoding: TextEncoding::Utf8,
@@ -99,7 +101,7 @@ pub(crate) fn prepare(bytes: Vec<u8>) -> Prepared {
             return Prepared {
                 encoding,
                 has_bom,
-                buffer: text.into_bytes(),
+                buffer: text.into_bytes().into(),
                 content_start: 0,
                 confident: true,
             };
@@ -118,7 +120,7 @@ pub(crate) fn prepare(bytes: Vec<u8>) -> Prepared {
 
 /// Reads the bytes in `encoding`, chosen by the user. A BOM that matches is kept as one;
 /// UTF-16 that does not decode falls back to detection.
-pub(crate) fn prepare_as(bytes: Vec<u8>, encoding: TextEncoding) -> Prepared {
+pub(crate) fn prepare_as(bytes: Bytes, encoding: TextEncoding) -> Prepared {
     match encoding {
         TextEncoding::Utf16Le | TextEncoding::Utf16Be => {
             let little_endian = encoding == TextEncoding::Utf16Le;
@@ -129,7 +131,7 @@ pub(crate) fn prepare_as(bytes: Vec<u8>, encoding: TextEncoding) -> Prepared {
                 Some(text) => Prepared {
                     encoding,
                     has_bom,
-                    buffer: text.into_bytes(),
+                    buffer: text.into_bytes().into(),
                     content_start: 0,
                     confident: true,
                 },
@@ -287,7 +289,7 @@ mod tests {
 
     #[test]
     fn detects_utf8_bom() {
-        let prepared = prepare(b"\xEF\xBB\xBFa,b\n".to_vec());
+        let prepared = prepare(b"\xEF\xBB\xBFa,b\n".to_vec().into());
         assert_eq!(prepared.encoding, TextEncoding::Utf8);
         assert!(prepared.has_bom);
         assert_eq!(prepared.content_start, 3);
@@ -296,34 +298,34 @@ mod tests {
     #[test]
     fn detects_windows_1251() {
         let (bytes, _, _) = WINDOWS_1251.encode("Имя;Город\nИван;Москва\nОльга;Новосибирск\n");
-        assert_eq!(prepare(bytes.into_owned()).encoding, TextEncoding::Windows1251);
+        assert_eq!(prepare(bytes.into_owned().into()).encoding, TextEncoding::Windows1251);
     }
 
     #[test]
     fn detects_koi8_r() {
         let (bytes, _, _) = KOI8_R.encode("имя,город\nиван,москва\nольга,новосибирск\n");
-        assert_eq!(prepare(bytes.into_owned()).encoding, TextEncoding::Koi8R);
+        assert_eq!(prepare(bytes.into_owned().into()).encoding, TextEncoding::Koi8R);
     }
 
     #[test]
     fn detects_windows_1252() {
         let (bytes, _, _) = WINDOWS_1252.encode("name,city\nJosé,São Paulo\nFrançois,Genève\n");
-        assert_eq!(prepare(bytes.into_owned()).encoding, TextEncoding::Windows1252);
+        assert_eq!(prepare(bytes.into_owned().into()).encoding, TextEncoding::Windows1252);
     }
 
     #[test]
     fn detects_utf16_without_bom() {
         let bytes = encode_utf16("a,b\nc,d\n", true, false);
-        let prepared = prepare(bytes);
+        let prepared = prepare(bytes.into());
         assert_eq!(prepared.encoding, TextEncoding::Utf16Le);
         assert!(!prepared.has_bom);
-        assert_eq!(prepared.buffer, b"a,b\nc,d\n");
+        assert_eq!(&prepared.buffer[..], b"a,b\nc,d\n");
     }
 
     #[test]
     fn invalid_utf16_falls_back_to_raw_bytes() {
         // BOM followed by an odd number of bytes.
-        let prepared = prepare(vec![0xFF, 0xFE, b'a', 0, b'b']);
+        let prepared = prepare(vec![0xFF, 0xFE, b'a', 0, b'b'].into());
         assert!(!prepared.encoding.is_utf16());
         assert_eq!(prepared.buffer.len(), 5);
     }

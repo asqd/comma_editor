@@ -11,7 +11,21 @@ final class CSVDocument: NSDocument {
         case header
         /// Rows, columns, the view or the header setting changed.
         case structure
+        /// More rows of a large file were indexed, or background sorting started or stopped.
+        case progress
     }
+
+    /// Tables from this many rows on are sorted and filtered off the main thread.
+    private static let backgroundViewRows: UInt64 = 200_000
+    /// Bytes indexed per step of a large file.
+    private static let indexingStep: UInt64 = 64 << 20
+
+    /// Share of a large file indexed so far, while it is being indexed.
+    private(set) var indexingFraction: Double?
+    var isIndexing: Bool { indexingFraction != nil }
+    /// Sorting or filtering running off the main thread.
+    private var viewJob: ViewJob?
+    var isUpdatingView: Bool { viewJob != nil }
 
     static let didChangeNotification = Notification.Name("CSVDocumentDidChange")
     static let changeKey = "change"
@@ -53,6 +67,33 @@ final class CSVDocument: NSDocument {
         } catch {
             throw Self.userFacingError(error)
         }
+        startIndexing()
+    }
+
+    /// A large file opens with its first part; the rest is indexed off the main thread. Until
+    /// that ends the document cannot be edited or saved.
+    private func startIndexing() {
+        let core = core
+        guard core.isIndexing() else {
+            indexingFraction = nil
+            return
+        }
+        indexingFraction = 0
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var done = false
+            while !done {
+                let progress = core.continueIndexing(bytes: Self.indexingStep)
+                done = progress.done
+                DispatchQueue.main.async {
+                    // A reopened document has another core; the old one finishes on its own.
+                    guard let self, self.core === core else { return }
+                    self.indexingFraction = done
+                        ? nil
+                        : Double(progress.indexedBytes) / Double(max(progress.totalBytes, 1))
+                    self.post(done ? .structure : .progress)
+                }
+            }
+        }
     }
 
     /// Reads the file again with an encoding and delimiter (`nil` detects them). Unsaved
@@ -71,6 +112,9 @@ final class CSVDocument: NSDocument {
         }
         undoManager?.removeAllActions()
         updateChangeCount(.changeCleared)
+        viewJob?.cancel()
+        viewJob = nil
+        startIndexing()
         post(.structure)
     }
 
@@ -444,9 +488,44 @@ final class CSVDocument: NSDocument {
 
     /// Sorting and filtering change what is shown, not the file, so they are not undoable.
     /// Throws on an invalid regular expression; callers show the error where it was typed.
-    func setView(_ spec: ViewSpec) throws {
-        try core.setView(spec: spec)
-        post(.structure)
+    /// Large tables are sorted and filtered off the main thread: `shown` runs once the new view
+    /// is in place, and a newer request cancels an older one.
+    func setView(_ spec: ViewSpec, shown: @escaping () -> Void = {}) throws {
+        viewJob?.cancel()
+        viewJob = nil
+        if core.rowCount() < Self.backgroundViewRows {
+            try core.setView(spec: spec)
+            post(.structure)
+            shown()
+            return
+        }
+        let job = try core.beginView(spec: spec)
+        viewJob = job
+        post(.progress)
+        let core = core
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let finished = job.run()
+            DispatchQueue.main.async {
+                guard let self, self.viewJob === job else { return }
+                self.viewJob = nil
+                if finished, core.finishView(job: job) {
+                    self.post(.structure)
+                    shown()
+                } else if finished {
+                    // The rows changed while sorting: sort again.
+                    try? self.setView(spec, shown: shown)
+                } else {
+                    self.post(.progress)
+                }
+            }
+        }
+    }
+
+    /// Stops background sorting or filtering; the previous view stays.
+    func cancelViewUpdate() {
+        viewJob?.cancel()
+        viewJob = nil
+        post(.progress)
     }
 
     /// Display setting only: the file does not change.
@@ -523,6 +602,9 @@ final class CSVDocument: NSDocument {
             )
         case .LastColumn:
             userInfo[NSLocalizedDescriptionKey] = L("The last column cannot be deleted.")
+        case .Busy:
+            userInfo[NSLocalizedDescriptionKey] = L("The file is still being read.")
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Changes and saving are possible once the whole file is read; the progress is in the status bar.")
         case .InvalidDelimiter(let message), .Export(let message):
             userInfo[NSLocalizedDescriptionKey] = message
         case .Formula(let problem):

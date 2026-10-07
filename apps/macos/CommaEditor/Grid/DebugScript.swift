@@ -9,7 +9,7 @@ import SwiftUI
 /// `exportas=<0 JSON…4 XLSX>`, `fixall=<0 unclosed quote…3 extra fields>`, `save`,
 /// `cardedit=<column>:<value>` (types into the record card and leaves the field),
 /// `lines=<n>` (text wrapping), `endedit`, `dump` (logs the geometry of the tables),
-/// `formula=<text>` and `formulaapply` (the computed column sheet).
+/// `formula=<text>` and `formulaapply` (the computed column sheet), `wait=<seconds>`.
 /// Example: `open --env COMMA_DEBUG_SCRIPT='sort=2:d;find=lon' -a CommaEditor file.csv`
 @MainActor
 enum DebugScript {
@@ -18,12 +18,24 @@ enum DebugScript {
     static func run(on grid: GridViewController) {
         guard !done, let script = ProcessInfo.processInfo.environment["COMMA_DEBUG_SCRIPT"] else { return }
         done = true
+        run(script.split(separator: ";").map(String.init)[...], on: grid)
+    }
+
+    /// Runs steps in order; `wait=<seconds>` runs the rest later.
+    private static func run(_ steps: ArraySlice<String>, on grid: GridViewController) {
         let ops: [String: FilterOp] = [
             "contains": .contains, "equals": .equals, "notequals": .notEquals,
             "greater": .greaterThan, "less": .lessThan, "empty": .isEmpty, "regex": .matches,
         ]
-        for step in script.split(separator: ";") {
+        for (index, step) in zip(steps.indices, steps) {
             let (name, argument) = step.split(separator: "=", maxSplits: 1).map(String.init).pair
+            if name == "wait" {
+                let rest = steps[(index + 1)...]
+                DispatchQueue.main.asyncAfter(deadline: .now() + (Double(argument) ?? 1)) { [weak grid] in
+                    if let grid { run(rest, on: grid) }
+                }
+                return
+            }
             let parts = argument.split(separator: ":", maxSplits: 2).map(String.init)
             switch name {
             case "sort" where parts.count == 2:

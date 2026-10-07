@@ -27,6 +27,8 @@ extension GridViewController {
     /// Looks for broken rows off the main thread, a moment after the last change.
     func scheduleProblemCheck(after delay: TimeInterval = 0.3) {
         problemCheck?.cancel()
+        // A file being read is checked once it is read whole.
+        guard !document.isIndexing else { return }
         let check = DispatchWorkItem { [weak self] in self?.checkProblems() }
         problemCheck = check
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: check)

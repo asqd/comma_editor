@@ -1,5 +1,11 @@
 use std::borrow::Cow;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use rayon::prelude::*;
+
+use crate::bytes::{self, Bytes};
 
 use crate::dialect::{self, Dialect};
 use crate::encoding::{self, Prepared, TextEncoding};
@@ -89,7 +95,7 @@ pub struct FilePreview {
 
 /// Sorting and filtering of the data rows. `rows` holds the record indices to show, in order;
 /// `None` means every data row in file order.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct View {
     spec: ViewSpec,
     filters: Vec<CompiledFilter>,
@@ -101,17 +107,23 @@ struct View {
 /// *Rows* are records of the file, the header row included. *Visible rows* are the data rows
 /// shown by the current view: without the header, filtered and sorted.
 pub struct Document {
-    pub(crate) buf: Vec<u8>,
+    /// The file's bytes, shared with background work such as sorting.
+    pub(crate) buf: Arc<Bytes>,
     pub(crate) content_start: usize,
     pub(crate) encoding: TextEncoding,
     pub(crate) has_bom: bool,
     pub(crate) dialect: Dialect,
     pub(crate) trailing_newline: bool,
-    pub(crate) records: Vec<Record>,
+    /// Shared with snapshots; copied only when changed while a snapshot is alive.
+    pub(crate) records: Arc<Vec<Record>>,
     has_header: bool,
     column_count: usize,
     unterminated_quote: bool,
     detection_confident: bool,
+    /// Counts changes to the rows, so work done on a snapshot knows whether it is still current.
+    generation: u64,
+    /// Rows past the first part of a large file are still being indexed; see `open_partially`.
+    indexing: bool,
     history: History,
     view: View,
     /// Format to save in; the detected one unless "Save As" chose another.
@@ -123,20 +135,22 @@ impl Document {
     pub fn new_empty() -> Self {
         let columns = 3;
         Self {
-            buf: Vec::new(),
+            buf: Arc::new(Bytes::Owned(Vec::new())),
             content_start: 0,
             encoding: TextEncoding::Utf8,
             has_bom: false,
             dialect: Dialect::default(),
             trailing_newline: true,
-            records: vec![Record::modified(
+            records: Arc::new(vec![Record::modified(
                 vec![Field::Text(String::new()); columns],
                 Terminator::Lf,
-            )],
+            )]),
             has_header: false,
             column_count: columns,
             unterminated_quote: false,
             detection_confident: true,
+            generation: 0,
+            indexing: false,
             history: History::default(),
             view: View::default(),
             format: SaveFormat {
@@ -148,12 +162,13 @@ impl Document {
         }
     }
 
+    /// Opens a file; large files are mapped from disk rather than read.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Ok(Self::from_bytes(std::fs::read(path)?))
+        Self::open_with(path, &OpenOptions::default())
     }
 
     pub fn open_with(path: impl AsRef<Path>, options: &OpenOptions) -> Result<Self> {
-        Ok(Self::from_bytes_with(std::fs::read(path)?, options))
+        Ok(Self::from_buffer(bytes::read_file(path.as_ref())?, options))
     }
 
     /// Detects the encoding and dialect, then indexes the records.
@@ -163,6 +178,25 @@ impl Document {
 
     /// Like `from_bytes`, with the encoding or delimiter given instead of detected.
     pub fn from_bytes_with(bytes: Vec<u8>, options: &OpenOptions) -> Self {
+        Self::from_buffer(bytes.into(), options)
+    }
+
+    fn from_buffer(bytes: Bytes, options: &OpenOptions) -> Self {
+        Self::from_buffer_partially(bytes, options, usize::MAX).0
+    }
+
+    /// Opens a file with only the rows in about its first `first_bytes` bytes indexed, so a
+    /// large file shows at once. The rest is indexed with the returned `Indexer` and added with
+    /// `append_index`; until then the document must not be edited or saved.
+    pub fn open_partially(
+        path: impl AsRef<Path>,
+        options: &OpenOptions,
+        first_bytes: usize,
+    ) -> Result<(Self, Option<Indexer>)> {
+        Ok(Self::from_buffer_partially(bytes::read_file(path.as_ref())?, options, first_bytes))
+    }
+
+    fn from_buffer_partially(bytes: Bytes, options: &OpenOptions, first_bytes: usize) -> (Self, Option<Indexer>) {
         let prepared = match options.encoding {
             Some(encoding) => encoding::prepare_as(bytes, encoding),
             None => encoding::prepare(bytes),
@@ -170,9 +204,36 @@ impl Document {
         let (dialect, dialect_confident) =
             dialect::sniff_with(&prepared.buffer, prepared.content_start, options.delimiter);
         let confident = prepared.confident && dialect_confident;
-        let mut document = Self::parse(prepared, dialect);
+        let stop = prepared.content_start.saturating_add(first_bytes);
+        let (mut document, next) = Self::parse(prepared, dialect, stop);
         document.detection_confident = confident;
-        document
+        let indexer = (next < document.buf.len()).then(|| {
+            document.indexing = true;
+            Indexer {
+                buf: Arc::clone(&document.buf),
+                position: next,
+                delimiter: dialect.delimiter,
+                quote: dialect.quote,
+            }
+        });
+        (document, indexer)
+    }
+
+    /// Whether rows of a large file are still being indexed.
+    pub fn is_indexing(&self) -> bool {
+        self.indexing
+    }
+
+    /// Adds rows indexed in the background.
+    pub fn append_index(&mut self, chunk: IndexChunk) {
+        self.column_count = self.column_count.max(chunk.max_fields);
+        self.unterminated_quote |= chunk.unterminated_quote;
+        Arc::make_mut(&mut self.records).extend(chunk.records);
+        if chunk.done {
+            self.indexing = false;
+            self.trailing_newline = self.records.last().is_some_and(|record| record.term() != Terminator::None);
+        }
+        self.generation += 1;
     }
 
     /// How the start of a file opens with `options`: up to `rows` rows read from at most the
@@ -200,19 +261,21 @@ impl Document {
         })
     }
 
-    fn parse(prepared: Prepared, dialect: Dialect) -> Self {
-        let scan = parser::scan(
+    /// Indexes the records that start before `stop`; returns where indexing stopped.
+    fn parse(prepared: Prepared, dialect: Dialect, stop: usize) -> (Self, usize) {
+        let scan = parser::scan_until(
             &prepared.buffer,
             prepared.content_start,
             dialect.delimiter,
             dialect.quote,
-            None,
+            stop,
         );
+        let next = scan.next;
         let trailing_newline = scan
             .records
             .last()
             .is_some_and(|record| record.term != Terminator::None);
-        let records = scan
+        let records: Vec<Record> = scan
             .records
             .into_iter()
             .map(|r| Record::Original {
@@ -221,8 +284,9 @@ impl Document {
                 term: r.term,
             })
             .collect();
+        let records = Arc::new(records);
         let mut document = Self {
-            buf: prepared.buffer,
+            buf: Arc::new(prepared.buffer),
             content_start: prepared.content_start,
             encoding: prepared.encoding,
             has_bom: prepared.has_bom,
@@ -233,6 +297,8 @@ impl Document {
             column_count: scan.max_fields,
             unterminated_quote: scan.unterminated_quote,
             detection_confident: true,
+            generation: 0,
+            indexing: false,
             history: History::default(),
             view: View::default(),
             format: SaveFormat {
@@ -246,7 +312,7 @@ impl Document {
             && document
                 .row(0)
                 .is_ok_and(|row| dialect::sniff_header(&row));
-        document
+        (document, next)
     }
 
     pub fn info(&self) -> Info {
@@ -304,6 +370,7 @@ impl Document {
     /// Whether the first row holds column names. Does not change the file.
     pub fn set_has_header(&mut self, has_header: bool) {
         self.has_header = has_header;
+        self.generation += 1;
         self.refresh_view();
     }
 
@@ -331,6 +398,16 @@ impl Document {
 
     /// Sorts and filters the visible rows. Fails on an invalid regular expression or column.
     pub fn set_view(&mut self, spec: ViewSpec) -> Result<()> {
+        self.view = View {
+            filters: self.compile_view(&spec)?,
+            spec,
+            rows: None,
+        };
+        self.refresh_view();
+        Ok(())
+    }
+
+    fn compile_view(&self, spec: &ViewSpec) -> Result<Vec<CompiledFilter>> {
         let columns = spec
             .sort
             .iter()
@@ -339,18 +416,51 @@ impl Document {
         for column in columns.flatten() {
             self.check_column(column)?;
         }
-        let filters = spec
-            .filters
-            .iter()
-            .map(CompiledFilter::new)
-            .collect::<Result<Vec<_>>>()?;
-        self.view = View {
-            spec,
-            filters,
-            rows: None,
-        };
-        self.refresh_view();
-        Ok(())
+        spec.filters.iter().map(CompiledFilter::new).collect()
+    }
+
+    /// Prepares sorting and filtering to run off this document, on a snapshot of its rows, so a
+    /// large file stays responsive. Fails at once on an invalid regular expression or column.
+    pub fn begin_view(&self, spec: ViewSpec) -> Result<ViewTask> {
+        let filters = self.compile_view(&spec)?;
+        Ok(ViewTask {
+            view: View { spec, filters, rows: None },
+            snapshot: self.snapshot(),
+            generation: self.generation,
+            done: false,
+        })
+    }
+
+    /// Shows the result of a view task. Returns `false` if the task did not finish or the rows
+    /// changed since it began; the view stays as it was.
+    pub fn finish_view(&mut self, task: ViewTask) -> bool {
+        if !task.done || task.generation != self.generation {
+            return false;
+        }
+        self.view = task.view;
+        true
+    }
+
+    /// The rows and settings without the edit history or the view, sharing the file's bytes.
+    fn snapshot(&self) -> Document {
+        Document {
+            buf: Arc::clone(&self.buf),
+            content_start: self.content_start,
+            encoding: self.encoding,
+            has_bom: self.has_bom,
+            dialect: self.dialect,
+            trailing_newline: self.trailing_newline,
+            records: Arc::clone(&self.records),
+            has_header: self.has_header,
+            column_count: self.column_count,
+            unterminated_quote: self.unterminated_quote,
+            detection_confident: self.detection_confident,
+            generation: self.generation,
+            indexing: self.indexing,
+            history: History::default(),
+            view: View::default(),
+            format: self.format,
+        }
     }
 
     pub fn visible_row_count(&self) -> usize {
@@ -420,20 +530,30 @@ impl Document {
     }
 
     pub(crate) fn refresh_view(&mut self) {
-        if self.view.spec.is_empty() {
-            self.view.rows = None;
-            return;
+        let rows = self.view_rows(&self.view, &AtomicBool::new(false));
+        self.view.rows = rows.expect("not cancelled");
+    }
+
+    /// The rows a view shows, `None` for all of them; `None` outside when cancelled.
+    fn view_rows(&self, view: &View, cancel: &AtomicBool) -> Option<Option<Vec<usize>>> {
+        if view.spec.is_empty() {
+            return Some(None);
         }
-        let filters = &self.view.filters;
+        // Rows are checked on all cores, in chunks that stop early when cancelled.
         let mut rows: Vec<usize> = (self.header_offset()..self.records.len())
-            .filter(|&row| self.passes(row, filters))
+            .into_par_iter()
+            .with_min_len(view::CANCEL_CHECK / 16)
+            .filter(|&row| !cancel.load(Ordering::Relaxed) && self.passes(row, &view.filters))
             .collect();
-        if !self.view.spec.sort.is_empty() {
-            view::sort_rows(&mut rows, &self.view.spec.sort, |row, column| {
-                self.value_at(row, column)
-            });
+        if cancel.load(Ordering::Relaxed) {
+            return None;
         }
-        self.view.rows = Some(rows);
+        if !view.spec.sort.is_empty()
+            && !view::sort_rows(&mut rows, &view.spec.sort, |row, column| self.value_at(row, column), cancel)
+        {
+            return None;
+        }
+        Some(Some(rows))
     }
 
     fn passes(&self, row: usize, filters: &[CompiledFilter]) -> bool {
@@ -479,7 +599,7 @@ impl Document {
         }
         fields[column] = Field::Text(value.to_owned());
         let updated = Record::modified(fields, record.term());
-        let splice = Splice::apply(&mut self.records, row, 1, vec![updated]);
+        let splice = Splice::apply(Arc::make_mut(&mut self.records), row, 1, vec![updated]);
         self.commit(vec![splice], self.column_count, false);
         Ok(true)
     }
@@ -500,7 +620,7 @@ impl Document {
         let rows = (0..count)
             .map(|_| Record::modified(vec![Field::Text(String::new()); columns], term))
             .collect();
-        let splice = Splice::apply(&mut self.records, at, 0, rows);
+        let splice = Splice::apply(Arc::make_mut(&mut self.records), at, 0, rows);
         self.commit(vec![splice], columns, true);
         self.refresh_view();
         Ok(())
@@ -524,7 +644,7 @@ impl Document {
                 start -= 1;
             }
             splices.push(Splice::apply(
-                &mut self.records,
+                Arc::make_mut(&mut self.records),
                 rows[start],
                 end - start,
                 Vec::new(),
@@ -615,9 +735,9 @@ impl Document {
         let mut splices: Vec<Splice> = rows
             .iter()
             .rev()
-            .map(|&row| Splice::apply(&mut self.records, row, 1, Vec::new()))
+            .map(|&row| Splice::apply(Arc::make_mut(&mut self.records), row, 1, Vec::new()))
             .collect();
-        splices.push(Splice::apply(&mut self.records, target, 0, moved));
+        splices.push(Splice::apply(Arc::make_mut(&mut self.records), target, 0, moved));
         self.commit(splices, self.column_count, true);
         self.refresh_view();
         Ok(true)
@@ -662,7 +782,7 @@ impl Document {
     }
 
     pub fn undo(&mut self) -> bool {
-        match self.history.undo(&mut self.records) {
+        match self.history.undo(Arc::make_mut(&mut self.records)) {
             Some(reverted) => {
                 self.trailing_newline = reverted.trailing_newline;
                 self.after_history(reverted.columns, reverted.structural);
@@ -673,7 +793,7 @@ impl Document {
     }
 
     pub fn redo(&mut self) -> bool {
-        match self.history.redo(&mut self.records) {
+        match self.history.redo(Arc::make_mut(&mut self.records)) {
             Some(reverted) => {
                 self.trailing_newline = reverted.trailing_newline;
                 self.after_history(reverted.columns, reverted.structural);
@@ -684,6 +804,7 @@ impl Document {
     }
 
     fn after_history(&mut self, columns: usize, structural: bool) {
+        self.generation += 1;
         if columns != self.column_count {
             self.column_count = columns;
             self.reset_view();
@@ -704,6 +825,7 @@ impl Document {
         structural: bool,
         trailing_after: bool,
     ) {
+        self.generation += 1;
         self.history.record(Transaction {
             splices,
             columns_before: self.column_count,
@@ -718,7 +840,7 @@ impl Document {
 
     pub(crate) fn replace_records(&mut self, records: Vec<Record>, columns_after: usize, structural: bool) {
         let len = self.records.len();
-        let splice = Splice::apply(&mut self.records, 0, len, records);
+        let splice = Splice::apply(Arc::make_mut(&mut self.records), 0, len, records);
         self.commit(vec![splice], columns_after, structural);
     }
 
@@ -821,5 +943,77 @@ impl Document {
                 columns: self.column_count,
             })
         }
+    }
+}
+
+/// Sorting and filtering computed off the document; see `Document::begin_view`.
+pub struct ViewTask {
+    view: View,
+    snapshot: Document,
+    generation: u64,
+    done: bool,
+}
+
+impl ViewTask {
+    /// Computes the rows to show. Returns `false` when `cancel` was set before it finished.
+    pub fn run(&mut self, cancel: &AtomicBool) -> bool {
+        match self.snapshot.view_rows(&self.view, cancel) {
+            Some(rows) => {
+                self.view.rows = rows;
+                self.done = true;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Indexes the rest of a large file in steps, off the document; see `Document::open_partially`.
+pub struct Indexer {
+    buf: Arc<Bytes>,
+    position: usize,
+    delimiter: u8,
+    quote: u8,
+}
+
+/// Rows indexed in one step, for `Document::append_index`.
+pub struct IndexChunk {
+    records: Vec<Record>,
+    max_fields: usize,
+    unterminated_quote: bool,
+    done: bool,
+}
+
+impl IndexChunk {
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+}
+
+impl Indexer {
+    /// Indexes the records that start in the next `bytes` bytes.
+    pub fn next_chunk(&mut self, bytes: usize) -> IndexChunk {
+        let stop = self.position.saturating_add(bytes);
+        let scan = parser::scan_until(&self.buf, self.position, self.delimiter, self.quote, stop);
+        self.position = scan.next;
+        IndexChunk {
+            records: scan
+                .records
+                .into_iter()
+                .map(|r| Record::Original {
+                    start: r.start,
+                    end: r.end,
+                    term: r.term,
+                })
+                .collect(),
+            max_fields: scan.max_fields,
+            unterminated_quote: scan.unterminated_quote,
+            done: self.position >= self.buf.len(),
+        }
+    }
+
+    /// Bytes indexed so far, and the size of the file.
+    pub fn progress(&self) -> (usize, usize) {
+        (self.position, self.buf.len())
     }
 }

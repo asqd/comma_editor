@@ -14,14 +14,19 @@ extension GridViewController {
     /// Changes the view and keeps the active row selected if it is still shown.
     @discardableResult
     func applyView(_ spec: ViewSpec) -> Bool {
+        guard !document.isIndexing else {
+            NSSound.beep()
+            return false
+        }
         let fileRow = activeFileRow
         do {
-            try document.setView(spec)
+            try document.setView(spec) { [weak self] in
+                self?.reselect(fileRow: fileRow)
+            }
         } catch {
             _ = presentError(CSVDocument.userFacingError(error))
             return false
         }
-        reselect(fileRow: fileRow)
         return true
     }
 
@@ -335,14 +340,18 @@ extension GridViewController: FilterBarDelegate {
         var spec = core.viewSpec()
         guard spec.filters != bar.rules else { return }
         spec.filters = bar.rules
-        let fileRow = activeFileRow
-        do {
-            try document.setView(spec)
-        } catch {
-            bar.setSummary(L("Invalid regular expression"))
+        guard !document.isIndexing else {
+            bar.setSummary(L("The file is still being read"))
             return
         }
-        reselect(fileRow: fileRow)
+        let fileRow = activeFileRow
+        do {
+            try document.setView(spec) { [weak self] in
+                self?.reselect(fileRow: fileRow)
+            }
+        } catch {
+            bar.setSummary(L("Invalid regular expression"))
+        }
     }
 
     func filterBarClose(_ bar: FilterBarView) {
@@ -372,6 +381,9 @@ extension GridViewController: NSToolbarItemValidation {
 
 extension GridViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if document.isIndexing, let action = menuItem.action, Self.changingActions.contains(action) {
+            return false
+        }
         let spec = core.viewSpec()
         switch menuItem.action {
         case #selector(deleteRows(_:)), #selector(delete(_:)), #selector(copy(_:)), #selector(cut(_:)):

@@ -43,6 +43,8 @@ pub(crate) struct Scan {
     pub records: Vec<RecordSpan>,
     pub max_fields: usize,
     pub unterminated_quote: bool,
+    /// Where scanning stopped: the end of the buffer, or the start of the next record.
+    pub next: usize,
 }
 
 /// Splits `buf[start..]` into records. Stops after `limit` records when given.
@@ -53,13 +55,18 @@ pub(crate) fn scan(
     quote: u8,
     limit: Option<usize>,
 ) -> Scan {
-    scan_with(buf, start, delimiter, quote, limit, None)
+    scan_with(buf, start, delimiter, quote, limit, None, usize::MAX)
+}
+
+/// Like `scan`, but stops at the first record that starts at or after `stop`.
+pub(crate) fn scan_until(buf: &[u8], start: usize, delimiter: u8, quote: u8, stop: usize) -> Scan {
+    scan_with(buf, start, delimiter, quote, None, None, stop)
 }
 
 /// Splits `buf[start..]` into records like `scan`, but reads the quote at position `literal`
 /// as an ordinary character: the repair of a quote that swallowed line breaks.
 pub(crate) fn scan_literal(buf: &[u8], start: usize, delimiter: u8, quote: u8, literal: usize) -> Vec<RecordSpan> {
-    scan_with(buf, start, delimiter, quote, None, Some(literal)).records
+    scan_with(buf, start, delimiter, quote, None, Some(literal), usize::MAX).records
 }
 
 fn scan_with(
@@ -69,6 +76,7 @@ fn scan_with(
     quote: u8,
     limit: Option<usize>,
     literal: Option<usize>,
+    stop: usize,
 ) -> Scan {
     let n = buf.len();
     let mut records = Vec::new();
@@ -76,7 +84,7 @@ fn scan_with(
     let mut unterminated_quote = false;
     let mut i = start;
 
-    while i < n && limit.is_none_or(|limit| records.len() < limit) {
+    while i < n && i < stop && limit.is_none_or(|limit| records.len() < limit) {
         let record_start = i;
         let mut fields: u32 = 1;
         let (end, term) = loop {
@@ -126,6 +134,7 @@ fn scan_with(
         records,
         max_fields,
         unterminated_quote,
+        next: i,
     }
 }
 

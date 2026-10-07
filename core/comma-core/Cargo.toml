@@ -8,6 +8,8 @@ rust-version.workspace = true
 [dependencies]
 encoding_rs.workspace = true
 memchr.workspace = true
+memmap2.workspace = true
+rayon.workspace = true
 regex.workspace = true
 rust_xlsxwriter.workspace = true
 thiserror.workspace = true

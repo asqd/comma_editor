@@ -2,6 +2,7 @@
 //!
 //! Indices cross the boundary as `u64`; rows include the header row, if there is one.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use comma_core as core;
@@ -30,6 +31,9 @@ pub enum CoreError {
     Export { message: String },
     #[error("{problem:?}")]
     Formula { problem: FormulaProblem },
+    /// The file is still being indexed; it cannot be changed or saved yet.
+    #[error("the file is still being read")]
+    Busy,
 }
 
 impl From<core::Error> for CoreError {
@@ -727,17 +731,64 @@ impl From<&core::ViewSpec> for ViewSpec {
 #[derive(uniffi::Object)]
 pub struct CoreDocument {
     inner: Mutex<core::Document>,
+    /// Indexes the rest of a large file; a separate lock, so indexing does not block reading.
+    indexer: Mutex<Option<core::Indexer>>,
 }
+
+/// How far indexing of a large file has come.
+#[derive(uniffi::Record)]
+pub struct IndexProgress {
+    pub done: bool,
+    pub indexed_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// Sorting and filtering computed off the document; see `CoreDocument::begin_view`.
+#[derive(uniffi::Object)]
+pub struct ViewJob {
+    task: Mutex<Option<core::ViewTask>>,
+    cancel: AtomicBool,
+}
+
+#[uniffi::export]
+impl ViewJob {
+    /// Computes the rows to show; call off the main thread. Returns `false` when cancelled.
+    pub fn run(&self) -> bool {
+        let mut task = self.task.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        task.as_mut().is_some_and(|task| task.run(&self.cancel))
+    }
+
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The first part of a file indexed when it opens; the rest follows with `continue_indexing`.
+const FIRST_PART: usize = 32 << 20;
 
 impl CoreDocument {
     fn wrap(document: core::Document) -> Arc<Self> {
+        Self::wrap_indexing(document, None)
+    }
+
+    fn wrap_indexing(document: core::Document, indexer: Option<core::Indexer>) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(document),
+            indexer: Mutex::new(indexer),
         })
     }
 
     fn lock(&self) -> MutexGuard<'_, core::Document> {
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The document for a change or a save, which must wait until indexing is done.
+    fn edit(&self) -> Result<MutexGuard<'_, core::Document>, CoreError> {
+        let document = self.lock();
+        if document.is_indexing() {
+            return Err(CoreError::Busy);
+        }
+        Ok(document)
     }
 }
 
@@ -754,9 +805,45 @@ impl CoreDocument {
     }
 
     /// Opens a file with the given encoding and delimiter instead of detecting them.
+    ///
+    /// A large file opens with its first part indexed; index the rest with `continue_indexing`.
     #[uniffi::constructor]
     pub fn open_with(path: String, encoding: Option<TextEncoding>, delimiter: Option<String>) -> Result<Arc<Self>, CoreError> {
-        Ok(Self::wrap(core::Document::open_with(path, &open_options(encoding, delimiter)?)?))
+        let (document, indexer) = core::Document::open_partially(path, &open_options(encoding, delimiter)?, FIRST_PART)?;
+        Ok(Self::wrap_indexing(document, indexer))
+    }
+
+    /// Indexes about `bytes` more bytes of a large file; call off the main thread until done.
+    pub fn continue_indexing(&self, bytes: u64) -> IndexProgress {
+        let mut indexer = self.indexer.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(active) = indexer.as_mut() else {
+            return IndexProgress { done: true, indexed_bytes: 0, total_bytes: 0 };
+        };
+        // Scanning holds only the indexer; the document is locked just to add the rows.
+        let chunk = active.next_chunk(bytes as usize);
+        let done = chunk.is_done();
+        let (indexed, total) = active.progress();
+        self.lock().append_index(chunk);
+        if done {
+            *indexer = None;
+        }
+        IndexProgress { done, indexed_bytes: indexed as u64, total_bytes: total as u64 }
+    }
+
+    pub fn is_indexing(&self) -> bool {
+        self.lock().is_indexing()
+    }
+
+    /// Prepares sorting and filtering to run with `ViewJob::run` off the main thread.
+    pub fn begin_view(&self, spec: ViewSpec) -> Result<Arc<ViewJob>, CoreError> {
+        let task = self.edit()?.begin_view(spec.into())?;
+        Ok(Arc::new(ViewJob { task: Mutex::new(Some(task)), cancel: AtomicBool::new(false) }))
+    }
+
+    /// Shows the result of a job. `false` if it was cancelled or the rows changed meanwhile.
+    pub fn finish_view(&self, job: Arc<ViewJob>) -> bool {
+        let task = job.task.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        task.is_some_and(|task| self.lock().finish_view(task))
     }
 
     #[uniffi::constructor]
@@ -810,35 +897,35 @@ impl CoreDocument {
 
     /// Returns `false` if the cell already held `value` and nothing was recorded.
     pub fn set_cell(&self, row: u64, column: u64, value: String) -> Result<bool, CoreError> {
-        Ok(self.lock().set_cell(row as usize, column as usize, &value)?)
+        Ok(self.edit()?.set_cell(row as usize, column as usize, &value)?)
     }
 
     pub fn insert_rows(&self, at: u64, count: u64) -> Result<(), CoreError> {
-        Ok(self.lock().insert_rows(at as usize, count as usize)?)
+        Ok(self.edit()?.insert_rows(at as usize, count as usize)?)
     }
 
     pub fn delete_rows(&self, rows: Vec<u64>) -> Result<(), CoreError> {
         let rows: Vec<usize> = rows.into_iter().map(|row| row as usize).collect();
-        Ok(self.lock().delete_rows(&rows)?)
+        Ok(self.edit()?.delete_rows(&rows)?)
     }
 
     /// Moves rows to stand before row `to` (an index before the move), keeping their order.
     pub fn move_rows(&self, rows: Vec<u64>, to: u64) -> Result<bool, CoreError> {
         let rows: Vec<usize> = rows.into_iter().map(|row| row as usize).collect();
-        Ok(self.lock().move_rows(&rows, to as usize)?)
+        Ok(self.edit()?.move_rows(&rows, to as usize)?)
     }
 
     /// Moves column `from` to index `to` of the resulting columns. Resets the view.
     pub fn move_column(&self, from: u64, to: u64) -> Result<bool, CoreError> {
-        Ok(self.lock().move_column(from as usize, to as usize)?)
+        Ok(self.edit()?.move_column(from as usize, to as usize)?)
     }
 
     pub fn insert_column(&self, at: u64) -> Result<(), CoreError> {
-        Ok(self.lock().insert_column(at as usize)?)
+        Ok(self.edit()?.insert_column(at as usize)?)
     }
 
     pub fn delete_column(&self, at: u64) -> Result<(), CoreError> {
-        Ok(self.lock().delete_column(at as usize)?)
+        Ok(self.edit()?.delete_column(at as usize)?)
     }
 
     // Visible rows: data rows as the current sort and filters show them.
@@ -848,7 +935,7 @@ impl CoreDocument {
     }
 
     pub fn set_view(&self, spec: ViewSpec) -> Result<(), CoreError> {
-        Ok(self.lock().set_view(spec.into())?)
+        Ok(self.edit()?.set_view(spec.into())?)
     }
 
     /// Up to `count` visible rows starting at `start`.
@@ -882,7 +969,7 @@ impl CoreDocument {
 
     /// Reorders the file by the current sort; returns `false` if there was nothing to apply.
     pub fn apply_sort(&self) -> Result<bool, CoreError> {
-        Ok(self.lock().apply_sort()?)
+        Ok(self.edit()?.apply_sort()?)
     }
 
     pub fn find(
@@ -911,7 +998,7 @@ impl CoreDocument {
         query: SearchQuery,
         replacement: String,
     ) -> Result<bool, CoreError> {
-        Ok(self.lock().replace_in_cell(
+        Ok(self.edit()?.replace_in_cell(
             visible_row as usize,
             column as usize,
             &query.into(),
@@ -921,7 +1008,7 @@ impl CoreDocument {
 
     /// Replaces every match in the visible rows; returns the number of changed cells.
     pub fn replace_all(&self, query: SearchQuery, replacement: String) -> Result<u64, CoreError> {
-        Ok(self.lock().replace_all(&query.into(), &replacement)? as u64)
+        Ok(self.edit()?.replace_all(&query.into(), &replacement)? as u64)
     }
 
     // Ranges of visible cells.
@@ -942,11 +1029,11 @@ impl CoreDocument {
 
     /// Sets every cell of the range; returns the number of changed cells.
     pub fn fill_range(&self, range: CellRange, value: String) -> Result<u64, CoreError> {
-        Ok(self.lock().fill_range(range.into(), &value)? as u64)
+        Ok(self.edit()?.fill_range(range.into(), &value)? as u64)
     }
 
     pub fn fill_down(&self, range: CellRange) -> Result<u64, CoreError> {
-        Ok(self.lock().fill_down(range.into())? as u64)
+        Ok(self.edit()?.fill_down(range.into())? as u64)
     }
 
     /// Writes `grid` from (`top`, `left`); returns the range written.
@@ -973,7 +1060,7 @@ impl CoreDocument {
             ExportFormat::Sql => core::ExportFormat::Sql,
             ExportFormat::Xlsx => core::ExportFormat::Xlsx,
         };
-        Ok(self.lock().export(format, range.map(Into::into), &name, fragment)?)
+        Ok(self.edit()?.export(format, range.map(Into::into), &name, fragment)?)
     }
 
     pub fn profile_column(&self, column: u64) -> Result<ColumnProfile, CoreError> {
@@ -1052,17 +1139,17 @@ impl CoreDocument {
     }
 
     pub fn apply_fix(&self, row: u64, fix: RepairFix) -> Result<bool, CoreError> {
-        Ok(self.lock().apply_fix(row as usize, fix.into())?)
+        Ok(self.edit()?.apply_fix(row as usize, fix.into())?)
     }
 
     /// Applies the recommended fix to every problem of one kind; returns the rows fixed.
     pub fn fix_all(&self, kind: ProblemKind) -> u64 {
-        self.lock().fix_all(kind.into()) as u64
+        self.edit().map_or(0, |mut document| document.fix_all(kind.into()) as u64)
     }
 
     /// Fixes text read in the wrong encoding in a range, or in the whole file with the header.
     pub fn fix_garbled_text(&self, range: Option<CellRange>) -> Result<u64, CoreError> {
-        Ok(self.lock().fix_garbled_text(range.map(Into::into))? as u64)
+        Ok(self.edit()?.fix_garbled_text(range.map(Into::into))? as u64)
     }
 
     /// The row as written in the file, cut to `max_chars` characters.
@@ -1088,12 +1175,12 @@ impl CoreDocument {
 
     /// Inserts a column computed by the formula before column `at`.
     pub fn add_formula_column(&self, formula: String, name: String, at: u64) -> Result<FormulaReport, CoreError> {
-        Ok(self.lock().add_formula_column(&formula, &name, at as usize)?.into())
+        Ok(self.edit()?.add_formula_column(&formula, &name, at as usize)?.into())
     }
 
     /// Writes the formula's value into a column of every visible row.
     pub fn fill_column_with_formula(&self, formula: String, column: u64) -> Result<FormulaReport, CoreError> {
-        Ok(self.lock().fill_column_with_formula(&formula, column as usize)?.into())
+        Ok(self.edit()?.fill_column_with_formula(&formula, column as usize)?.into())
     }
 
     // Column operations.
@@ -1107,41 +1194,43 @@ impl CoreDocument {
             TextTransform::Lowercase => core::TextTransform::Lowercase,
             TextTransform::Capitalize => core::TextTransform::Capitalize,
         };
-        Ok(self.lock().transform_range(range.into(), transform)? as u64)
+        Ok(self.edit()?.transform_range(range.into(), transform)? as u64)
     }
 
     /// Fills empty cells with the value above them or with `value`.
     pub fn fill_empty(&self, range: CellRange, from_above: bool, value: String) -> Result<u64, CoreError> {
-        Ok(self.lock().fill_empty(range.into(), from_above, &value)? as u64)
+        Ok(self.edit()?.fill_empty(range.into(), from_above, &value)? as u64)
     }
 
     /// Splits a column into new columns after it; returns how many were added.
     pub fn split_column(&self, column: u64, separator: String, regex: bool) -> Result<u64, CoreError> {
-        Ok(self.lock().split_column(column as usize, &separator, regex)? as u64)
+        Ok(self.edit()?.split_column(column as usize, &separator, regex)? as u64)
     }
 
     /// Joins columns into a new column after the last of them.
     pub fn merge_columns(&self, columns: Vec<u64>, separator: String) -> Result<(), CoreError> {
         let columns: Vec<usize> = columns.into_iter().map(|column| column as usize).collect();
-        Ok(self.lock().merge_columns(&columns, &separator)?)
+        Ok(self.edit()?.merge_columns(&columns, &separator)?)
     }
 
     /// Deletes repeated visible rows; returns how many were removed.
     pub fn remove_duplicates(&self, columns: Vec<u64>, normalize: bool) -> Result<u64, CoreError> {
         let columns: Vec<usize> = columns.into_iter().map(|column| column as usize).collect();
-        Ok(self.lock().remove_duplicates(&columns, normalize)? as u64)
+        Ok(self.edit()?.remove_duplicates(&columns, normalize)? as u64)
     }
 
     pub fn set_has_header(&self, has_header: bool) {
-        self.lock().set_has_header(has_header);
+        if let Ok(mut document) = self.edit() {
+            document.set_has_header(has_header);
+        }
     }
 
     pub fn undo(&self) -> bool {
-        self.lock().undo()
+        self.edit().is_ok_and(|mut document| document.undo())
     }
 
     pub fn redo(&self) -> bool {
-        self.lock().redo()
+        self.edit().is_ok_and(|mut document| document.redo())
     }
 
     /// The format the file had when it was opened.
@@ -1160,14 +1249,14 @@ impl CoreDocument {
 
     /// Writes a copy in `format`; the document keeps its own format (for "Export").
     pub fn save_with(&self, path: String, format: SaveFormat) -> Result<(), CoreError> {
-        Ok(self.lock().save_with(path, &format.try_into()?)?)
+        Ok(self.edit()?.save_with(path, &format.try_into()?)?)
     }
 
     pub fn save(&self, path: String) -> Result<(), CoreError> {
-        Ok(self.lock().save(path)?)
+        Ok(self.edit()?.save(path)?)
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, CoreError> {
-        Ok(self.lock().to_bytes()?)
+        Ok(self.edit()?.to_bytes()?)
     }
 }

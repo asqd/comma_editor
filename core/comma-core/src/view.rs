@@ -3,7 +3,9 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
+use rayon::prelude::*;
 use regex::{Regex, RegexBuilder};
 
 use crate::error::{Error, Result};
@@ -53,6 +55,7 @@ impl ViewSpec {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct CompiledFilter {
     filter: Filter,
     needle: String,
@@ -144,23 +147,33 @@ enum Key {
 
 /// Stable sort of `rows` (record indices) by `keys`. Each column is compared as numbers if all
 /// its values are numbers, as dates if all are dates, and as text otherwise. Empty values go last
-/// in both directions.
+/// in both directions. Returns `false`, leaving `rows` as they were, when `cancel` is set
+/// while the values are read. Values are read and sorted on all cores.
 pub(crate) fn sort_rows<'a>(
     rows: &mut Vec<usize>,
     keys: &[SortKey],
-    value: impl Fn(usize, usize) -> Cow<'a, str>,
-) {
-    let columns: Vec<(Vec<Key>, bool)> = keys
-        .iter()
-        .map(|key| {
-            let values: Vec<Cow<str>> = rows.iter().map(|&row| value(row, key.column)).collect();
-            let kind = infer_kind(values.iter().map(|v| v.as_ref()));
-            let keys = values.iter().map(|v| make_key(v, kind)).collect();
-            (keys, key.ascending)
-        })
-        .collect();
+    value: impl Fn(usize, usize) -> Cow<'a, str> + Sync,
+    cancel: &AtomicBool,
+) -> bool {
+    let value = &value;
+    let mut columns: Vec<(Vec<Key>, bool)> = Vec::with_capacity(keys.len());
+    for key in keys {
+        let values: Vec<Cow<str>> = rows
+            .par_chunks(CANCEL_CHECK)
+            .flat_map_iter(|chunk| {
+                let cancelled = cancel.load(AtomicOrdering::Relaxed);
+                chunk.iter().map(move |&row| if cancelled { Cow::Borrowed("") } else { value(row, key.column) })
+            })
+            .collect();
+        if cancel.load(AtomicOrdering::Relaxed) {
+            return false;
+        }
+        let kind = infer_kind(&values);
+        let keys = values.par_iter().map(|v| make_key(v, kind)).collect();
+        columns.push((keys, key.ascending));
+    }
     let mut order: Vec<usize> = (0..rows.len()).collect();
-    order.sort_by(|&a, &b| {
+    order.par_sort_by(|&a, &b| {
         columns
             .iter()
             .map(|(keys, ascending)| compare_keys(&keys[a], &keys[b], *ascending))
@@ -168,16 +181,20 @@ pub(crate) fn sort_rows<'a>(
             .unwrap_or(Ordering::Equal)
     });
     *rows = order.into_iter().map(|index| rows[index]).collect();
+    true
 }
 
-fn infer_kind<'a>(values: impl Iterator<Item = &'a str> + Clone) -> Kind {
-    let mut non_empty = values.filter(|v| !v.trim().is_empty()).peekable();
-    if non_empty.peek().is_none() {
+/// How many rows long work goes between looks at its cancel flag.
+pub(crate) const CANCEL_CHECK: usize = 1 << 16;
+
+fn infer_kind(values: &[Cow<'_, str>]) -> Kind {
+    let filled = |v: &&Cow<'_, str>| !v.trim().is_empty();
+    if !values.par_iter().any(|v| filled(&v)) {
         return Kind::Text;
     }
-    if non_empty.clone().all(|v| parse_number(v).is_some()) {
+    if values.par_iter().filter(filled).all(|v| parse_number(v).is_some()) {
         Kind::Number
-    } else if non_empty.all(|v| parse_date(v).is_some()) {
+    } else if values.par_iter().filter(filled).all(|v| parse_date(v).is_some()) {
         Kind::Date
     } else {
         Kind::Text
@@ -359,9 +376,12 @@ mod tests {
 
     fn sorted(values: &[&str], ascending: bool) -> Vec<String> {
         let mut rows: Vec<usize> = (0..values.len()).collect();
-        sort_rows(&mut rows, &[SortKey { column: 0, ascending }], |row, _| {
-            Cow::Borrowed(values[row])
-        });
+        sort_rows(
+            &mut rows,
+            &[SortKey { column: 0, ascending }],
+            |row, _| Cow::Borrowed(values[row]),
+            &AtomicBool::new(false),
+        );
         rows.into_iter().map(|row| values[row].to_owned()).collect()
     }
 

@@ -4,6 +4,7 @@
 //! so `open → save` without edits reproduces the file exactly, and an edit changes only the
 //! fields that were edited.
 
+mod bytes;
 mod columns;
 mod dialect;
 mod document;
@@ -23,7 +24,7 @@ mod writer;
 
 pub use columns::TextTransform;
 pub use dialect::{Dialect, LineEnding, QuoteStyle};
-pub use document::{Document, FilePreview, Info, OpenOptions};
+pub use document::{Document, FilePreview, IndexChunk, Indexer, Info, OpenOptions, ViewTask};
 pub use encoding::TextEncoding;
 pub use export::ExportFormat;
 pub use garbled::fix_garbled;

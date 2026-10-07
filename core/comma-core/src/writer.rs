@@ -35,6 +35,28 @@ impl SaveFormat {
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
+/// Writes a temporary file in the same folder, then renames it to `path`. An existing file's
+/// permissions carry over.
+fn write_atomically(path: &Path, write: impl FnOnce(&mut BufWriter<std::fs::File>) -> Result<()>) -> Result<()> {
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let temporary = path.with_file_name(format!(".{name}.{}.saving", std::process::id()));
+    let result = (|| {
+        let mut out = BufWriter::with_capacity(1 << 20, std::fs::File::create(&temporary)?);
+        write(&mut out)?;
+        out.flush()?;
+        out.get_ref().sync_all()?;
+        if let Ok(metadata) = std::fs::metadata(path) {
+            std::fs::set_permissions(&temporary, metadata.permissions())?;
+        }
+        std::fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
+}
+
 impl Document {
     /// Writes the document to `path` in its save format. Nothing is written if a value cannot be
     /// represented in the file's encoding.
@@ -43,17 +65,18 @@ impl Document {
     }
 
     /// Writes the document to `path` in `format`, leaving the document's own format unchanged.
+    ///
+    /// The file is written next to `path` and then renamed over it, so a failed save leaves the
+    /// old file whole, and a file mapped from disk is never overwritten while it is read.
     pub fn save_with(&self, path: impl AsRef<Path>, format: &SaveFormat) -> Result<()> {
         format.validate(self.dialect.quote)?;
         if *format == self.source_format() {
             self.check_encodable()?;
-            let mut out = BufWriter::with_capacity(1 << 20, std::fs::File::create(path)?);
-            self.write_unchanged_format(&mut out)?;
-            out.flush()?;
+            write_atomically(path.as_ref(), |out| self.write_unchanged_format(out))
         } else {
-            std::fs::write(path, self.convert(format)?)?;
+            let bytes = self.convert(format)?;
+            write_atomically(path.as_ref(), |out| Ok(out.write_all(&bytes)?))
         }
-        Ok(())
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>> {

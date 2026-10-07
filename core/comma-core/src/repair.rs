@@ -5,6 +5,7 @@
 //! The expected number of fields is the most common one. Problems are reported by row of the
 //! file, the header row included.
 
+use std::sync::Arc;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -507,7 +508,7 @@ impl Document {
         let splices: Vec<Splice> = planned
             .into_iter()
             .rev()
-            .map(|(row, remove, records)| Splice::apply(&mut self.records, row, remove, records))
+            .map(|(row, remove, records)| Splice::apply(Arc::make_mut(&mut self.records), row, remove, records))
             .collect();
         let columns_before = self.column_count();
         let columns = self.widest_record().max(1);
