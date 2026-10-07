@@ -71,7 +71,23 @@ enum MainMenu {
             item(L("Export for Excel…"), #selector(CSVDocument.exportForExcel(_:)), "e", [.command, .shift]),
             submenuItem(L("Export As"), exportAsItems()),
             item(L("Revert To Saved"), #selector(NSDocument.revertToSaved(_:))),
+            .separator(),
+            submenuItem(L("Reopen with Encoding"), reopenItems(
+                CSVDocument.encodings.map(CSVDocument.encodingName),
+                #selector(CSVDocument.reopenWithEncoding(_:))
+            )),
+            submenuItem(L("Reopen with Delimiter"), reopenItems(
+                CSVDocument.delimiters.map(CSVDocument.delimiterName),
+                #selector(CSVDocument.reopenWithDelimiter(_:))
+            )),
+            item(L("Check Encoding and Delimiter…"), #selector(GridViewController.showOpenOptions(_:))),
         ])
+    }
+
+    /// "Detect Automatically" (tag -1), then one item per choice (its index as the tag).
+    private static func reopenItems(_ titles: [String], _ action: Selector) -> [NSMenuItem] {
+        [tagged(item(L("Detect Automatically"), action), -1), .separator()]
+            + titles.enumerated().map { tagged(item($0.element, action), $0.offset) }
     }
 
     private static func makeEditMenu() -> NSMenu {
@@ -177,6 +193,8 @@ enum MainMenu {
             item(L("Split Column…"), #selector(GridViewController.splitColumn(_:))),
             item(L("Merge Columns…"), #selector(GridViewController.mergeColumns(_:))),
             item(L("Computed Column…"), #selector(GridViewController.computedColumn(_:)), "=", [.command, .option]),
+            .separator(),
+            item(L("Fix Garbled Text"), #selector(GridViewController.fixGarbledText(_:))),
             .separator(),
             item(L("Remove Duplicate Rows…"), #selector(GridViewController.removeDuplicateRows(_:))),
         ])

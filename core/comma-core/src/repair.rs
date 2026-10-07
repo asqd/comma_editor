@@ -125,7 +125,9 @@ impl Document {
             expected_fields: survey.expected,
             problems,
             counts,
-            garbled_sample: self.garbled_in_sample(),
+            // When the file's own encoding is a guess, odd text means a wrong guess, which
+            // reopening fixes; reading values in yet another encoding would only make it worse.
+            garbled_sample: if self.info().detection_confident { self.garbled_in_sample() } else { 0 },
         }
     }
 

@@ -52,14 +52,35 @@ extension GridViewController {
         repairModel.report = report
         problemRows = Dictionary(report.problems.map { (Int($0.row), $0.kind) }, uniquingKeysWith: { first, _ in first })
         let total = report.counts.reduce(0) { $0 + Int($1.count) }
-        problemsButton.title = L("Problems: %@", Self.format(total))
-        problemsButton.isHidden = total == 0
+        problemsButton.title = total > 0 ? L("Problems: %@", Self.format(total)) : L("Garbled text")
+        problemsButton.isHidden = total == 0 && report.garbledSample == 0
+        repairModel.garbledExample = report.garbledSample > 0 ? garbledExample() : nil
         redrawRowNumbers()
-        // A file that opens with broken rows shows them right away.
-        if firstCheck, total > 0, shownSidePanel == nil {
+        // A file that opens with broken rows or garbled text shows them right away.
+        if firstCheck, total > 0 || report.garbledSample > 0, shownSidePanel == nil {
             showSidePanel(.repair)
         }
         reselectProblem()
+    }
+
+    /// The first garbled value among the header and the first rows, and how it reads fixed.
+    private func garbledExample() -> (garbled: String, fixed: String)? {
+        let header = info.hasHeader ? ((try? core.row(index: 0)) ?? []) : []
+        let rows = [header] + (0..<min(dataRowCount, 300)).map(values(forRow:))
+        for value in rows.joined() {
+            if let fixed = fixGarbled(text: value) {
+                return (value, fixed)
+            }
+        }
+        return nil
+    }
+
+    /// Data ▸ Fix Garbled Text: the selected cells, or the whole file with the header.
+    @objc func fixGarbledText(_ sender: Any?) {
+        let range = selection.flatMap { $0.isSingleCell ? nil : $0.range }
+        if document.fixGarbledText(range) == 0 {
+            NSSound.beep()
+        }
     }
 
     func configureRepairActions() {
@@ -79,6 +100,9 @@ extension GridViewController {
             self.repairModel.pendingIndex = self.repairModel.report?.problems.firstIndex { $0.row == row }
             self.repairModel.selectedRow = nil
             self.document.applyFix(row: Int(row), fix: fix)
+        }
+        repairModel.onFixGarbled = { [weak self] in
+            self?.document.fixGarbledText(nil)
         }
         repairModel.onFixAll = { [weak self] kind in
             guard let self else { return }

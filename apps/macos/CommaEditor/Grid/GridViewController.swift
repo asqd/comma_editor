@@ -34,6 +34,8 @@ final class GridViewController: NSViewController {
     let tableArea = NSView()
     let moveIndicator = NSBox()
     var scrollObservers: [NSObjectProtocol] = []
+    /// The encoding and delimiter sheet already opened by itself once.
+    var askedAboutDetection = false
     let findBar = FindBarView()
     let filterBar = FilterBarView()
     let findContainer: NSView
@@ -274,6 +276,7 @@ final class GridViewController: NSViewController {
         if selection == nil {
             selectCell(row: 0, column: 0)
         }
+        checkDetection()
         #if DEBUG
         DebugScript.run(on: self)
         #endif

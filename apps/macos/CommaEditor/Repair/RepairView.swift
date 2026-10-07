@@ -19,6 +19,9 @@ final class RepairModel: ObservableObject {
     var onSelect: ((Problem) -> Void)?
     var onApply: ((UInt64, RepairFix) -> Void)?
     var onFixAll: ((ProblemKind) -> Void)?
+    /// A garbled value of the first rows and how it reads fixed.
+    @Published var garbledExample: (garbled: String, fixed: String)?
+    var onFixGarbled: (() -> Void)?
 }
 
 /// Broken rows of the file grouped by kind, and fixes with a preview for the selected one.
@@ -51,10 +54,15 @@ struct RepairView: View {
 
     @ViewBuilder
     private func content(_ report: RepairReport) -> some View {
+        if report.garbledSample > 0 {
+            garbledGroup(count: report.garbledSample)
+        }
         if report.counts.isEmpty {
-            Label(L("No problems found"), systemImage: "checkmark.circle")
-                .foregroundStyle(.secondary)
-                .font(.callout)
+            if report.garbledSample == 0 {
+                Label(L("No problems found"), systemImage: "checkmark.circle")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            }
         } else {
             Text(L("Most rows have %@ fields.", number(report.expectedFields)))
                 .font(.callout)
@@ -78,6 +86,26 @@ struct RepairView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func garbledGroup(count: UInt64) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(L("Garbled text: %@", number(count)), systemImage: "exclamationmark.triangle.fill")
+                .symbolRenderingMode(.multicolor)
+                .font(.callout.weight(.medium))
+            Text(L("Some values look like text read in the wrong encoding and saved that way. Counted in the first rows."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let example = model.garbledExample {
+                Text("\(example.garbled) → \(example.fixed)")
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            }
+            Button(L("Fix in the Whole File")) { model.onFixGarbled?() }
+                .controlSize(.small)
         }
     }
 

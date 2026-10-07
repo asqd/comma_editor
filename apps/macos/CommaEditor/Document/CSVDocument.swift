@@ -17,6 +17,14 @@ final class CSVDocument: NSDocument {
     static let changeKey = "change"
 
     private(set) var core: CoreDocument
+    /// Encoding and delimiter chosen with File ▸ Reopen; `nil` detects them.
+    private(set) var chosenEncoding: TextEncoding?
+    private(set) var chosenDelimiter: String?
+
+    /// Encodings a file can be reopened in, in menu order.
+    static let encodings: [TextEncoding] = [.utf8, .utf16Le, .utf16Be, .windows1251, .koi8R, .windows1252]
+    /// Delimiters a file can be reopened with, in menu order.
+    static let delimiters = [",", ";", "\t", "|"]
 
     /// The format controls of the save panel being shown.
     private var formatAccessory: SaveFormatAccessoryView?
@@ -41,9 +49,95 @@ final class CSVDocument: NSDocument {
 
     override func read(from url: URL, ofType typeName: String) throws {
         do {
-            core = try CoreDocument.open(path: url.path)
+            core = try CoreDocument.openWith(path: url.path, encoding: chosenEncoding, delimiter: chosenDelimiter)
         } catch {
             throw Self.userFacingError(error)
+        }
+    }
+
+    /// Reads the file again with an encoding and delimiter (`nil` detects them). Unsaved
+    /// changes and the undo history are dropped; callers ask first.
+    func reopen(encoding: TextEncoding?, delimiter: String?) {
+        guard let url = fileURL else { return }
+        let previous = (chosenEncoding, chosenDelimiter)
+        chosenEncoding = encoding
+        chosenDelimiter = delimiter
+        do {
+            core = try CoreDocument.openWith(path: url.path, encoding: encoding, delimiter: delimiter)
+        } catch {
+            (chosenEncoding, chosenDelimiter) = previous
+            presentEditError(error)
+            return
+        }
+        undoManager?.removeAllActions()
+        updateChangeCount(.changeCleared)
+        post(.structure)
+    }
+
+    // MARK: File ▸ Reopen
+
+    @objc func reopenWithEncoding(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem else { return }
+        let encoding = item.tag < 0 ? nil : Self.encodings[item.tag]
+        confirmReopen { $0.reopen(encoding: encoding, delimiter: $0.chosenDelimiter) }
+    }
+
+    @objc func reopenWithDelimiter(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem else { return }
+        let delimiter = item.tag < 0 ? nil : Self.delimiters[item.tag]
+        confirmReopen { $0.reopen(encoding: $0.chosenEncoding, delimiter: delimiter) }
+    }
+
+    /// Reopening drops unsaved changes, so it asks first when there are some.
+    func confirmReopen(_ reopen: @escaping (CSVDocument) -> Void) {
+        guard isDocumentEdited, let window = windowForSheet else {
+            reopen(self)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = L("Reopen the file and lose unsaved changes?")
+        alert.informativeText = L("The file is read again from disk; changes made since the last save are lost.")
+        alert.addButton(withTitle: L("Reopen"))
+        alert.addButton(withTitle: L("Cancel"))
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            reopen(self)
+        }
+    }
+
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(reopenWithEncoding(_:)):
+            let current = chosenEncoding.map { Self.encodings.firstIndex(of: $0) ?? -2 } ?? -1
+            menuItem.state = menuItem.tag == current ? .on : .off
+            return fileURL != nil
+        case #selector(reopenWithDelimiter(_:)):
+            let current = chosenDelimiter.map { Self.delimiters.firstIndex(of: $0) ?? -2 } ?? -1
+            menuItem.state = menuItem.tag == current ? .on : .off
+            return fileURL != nil
+        default:
+            return super.validateMenuItem(menuItem)
+        }
+    }
+
+    static func encodingName(_ encoding: TextEncoding) -> String {
+        switch encoding {
+        case .utf8: "UTF-8"
+        case .utf16Le: "UTF-16LE"
+        case .utf16Be: "UTF-16BE"
+        case .windows1251: "Windows-1251"
+        case .koi8R: "KOI8-R"
+        case .windows1252: "Windows-1252"
+        }
+    }
+
+    static func delimiterName(_ delimiter: String) -> String {
+        switch delimiter {
+        case ",": L("Comma ( , )")
+        case ";": L("Semicolon ( ; )")
+        case "\t": L("Tab ( ⇥ )")
+        case "|": L("Vertical Bar ( | )")
+        default: delimiter
         }
     }
 
@@ -318,6 +412,17 @@ final class CSVDocument: NSDocument {
         return report
     }
 
+    /// Fixes text read in the wrong encoding in a range, or in the whole file.
+    @discardableResult
+    func fixGarbledText(_ range: CellRange?) -> Int {
+        var fixed: UInt64 = 0
+        perform(L("Garbled Text Fix"), .structure) {
+            fixed = try $0.fixGarbledText(range: range)
+            return fixed > 0
+        }
+        return Int(fixed)
+    }
+
     // MARK: Repair
 
     /// Fixes the broken row `row` of the file (the header row counted).
@@ -393,7 +498,7 @@ final class CSVDocument: NSDocument {
 
     // MARK: Errors
 
-    private func presentEditError(_ error: Error) {
+    func presentEditError(_ error: Error) {
         let error = Self.userFacingError(error)
         if let window = windowForSheet {
             presentError(error, modalFor: window, delegate: nil, didPresent: nil, contextInfo: nil)

@@ -402,3 +402,27 @@
 "The formula failed in %@ of %@ rows." = "Формула не сработала в %@ из %@ строк.";
 "These cells were left empty. Undo with ⌘Z." = "Эти ячейки оставлены пустыми. Отменить — ⌘Z.";
 "First: row %@, %@." = "Первая: строка %@, %@.";
+
+/* Encodings */
+"Reopen with Encoding" = "Открыть заново в кодировке";
+"Reopen with Delimiter" = "Открыть заново с разделителем";
+"Check Encoding and Delimiter…" = "Проверить кодировку и разделитель…";
+"Detect Automatically" = "Определить автоматически";
+"Comma ( , )" = "Запятая ( , )";
+"Semicolon ( ; )" = "Точка с запятой ( ; )";
+"Tab ( ⇥ )" = "Табуляция ( ⇥ )";
+"Vertical Bar ( | )" = "Вертикальная черта ( | )";
+"Reopen the file and lose unsaved changes?" = "Открыть файл заново и потерять несохранённые изменения?";
+"The file is read again from disk; changes made since the last save are lost." = "Файл будет прочитан с диска заново; изменения после последнего сохранения пропадут.";
+"Reopen" = "Открыть заново";
+"Check the Encoding and Delimiter" = "Проверьте кодировку и разделитель";
+"Encoding and Delimiter" = "Кодировка и разделитель";
+"CommaEditor is not sure how to read this file. Choose the encoding and delimiter with which the text reads correctly." = "CommaEditor не уверен, как читать этот файл. Выберите кодировку и разделитель, при которых текст читается правильно.";
+"Keep As Is" = "Оставить как есть";
+"…and %@ more columns" = "…и ещё колонок: %@";
+"Garbled text" = "Кракозябры";
+"Garbled text: %@" = "Кракозябры: %@";
+"Some values look like text read in the wrong encoding and saved that way. Counted in the first rows." = "Похоже, часть текста когда-то прочитали не в той кодировке и так сохранили. Подсчитано в первых строках.";
+"Fix in the Whole File" = "Исправить во всём файле";
+"Fix Garbled Text" = "Исправить кракозябры";
+"Garbled Text Fix" = "Исправление кракозябр";
