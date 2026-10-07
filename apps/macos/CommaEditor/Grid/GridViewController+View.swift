@@ -206,8 +206,10 @@ extension GridViewController {
     func configureMenus() {
         headerMenu.delegate = self
         cellMenu.delegate = self
-        tableView.headerView?.menu = headerMenu
-        tableView.menu = cellMenu
+        for table in tables {
+            table.headerView?.menu = headerMenu
+            table.menu = cellMenu
+        }
 
         let items: [(String, Selector?)] = [
             (L("Sort Ascending"), #selector(sortAscending(_:))),
@@ -218,6 +220,12 @@ extension GridViewController {
             (L("Insert Column Left"), #selector(insertColumnLeft(_:))),
             (L("Insert Column Right"), #selector(insertColumnRight(_:))),
             (L("Delete Column"), #selector(deleteColumn(_:))),
+            ("", nil),
+            (L("Fit Column Width"), #selector(autofitColumns(_:))),
+            (L("Hide Column"), #selector(hideColumns(_:))),
+            (L("Show All Columns"), #selector(showAllColumns(_:))),
+            (L("Freeze Columns Through This One"), #selector(freezeColumns(_:))),
+            (L("Unfreeze Columns"), #selector(unfreezeColumns(_:))),
         ]
         for (title, action) in items {
             headerMenu.addItem(action == nil ? .separator() : menuItem(title, action))
@@ -237,17 +245,21 @@ extension GridViewController {
 extension GridViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === headerMenu {
-            guard let headerView = tableView.headerView, let event = NSApp.currentEvent else { return }
-            let point = headerView.convert(event.locationInWindow, from: nil)
-            if let column = dataColumn(atTableColumn: headerView.column(at: point)) {
-                selectCell(row: activeRow ?? 0, column: column)
+            guard let event = NSApp.currentEvent else { return }
+            for table in tables {
+                guard let headerView = table.headerView else { continue }
+                let point = headerView.convert(event.locationInWindow, from: nil)
+                if headerView.bounds.contains(point), let column = dataColumn(in: table, at: headerView.column(at: point)) {
+                    selectCell(row: activeRow ?? 0, column: column)
+                }
             }
             return
         }
 
         menu.removeAllItems()
-        let row = tableView.clickedRow
-        guard row >= 0, let column = dataColumn(atTableColumn: tableView.clickedColumn) else { return }
+        guard let table = tables.first(where: { $0.clickedRow >= 0 }),
+              let column = dataColumn(in: table, at: table.clickedColumn) else { return }
+        let row = table.clickedRow
         if selection?.contains(row: row, column: column) != true {
             select(GridSelection(GridCell(row: row, column: column)), scroll: false)
         }
@@ -338,7 +350,7 @@ extension GridViewController: FilterBarDelegate {
 
 extension GridViewController: GridHeaderViewDelegate {
     func gridHeaderView(_ headerView: GridHeaderView, didClickFilterOf tableColumn: Int) {
-        guard let column = dataColumn(atTableColumn: tableColumn) else { return }
+        guard let table = headerView.tableView, let column = dataColumn(in: table, at: tableColumn) else { return }
         filterContainer.isHidden = false
         filterBar.beginRule(column: column)
         updateStatus()
@@ -372,6 +384,30 @@ extension GridViewController: NSMenuItemValidation {
         case #selector(toggleRepairPanel(_:)):
             menuItem.title = isRepairVisible ? L("Hide File Repair") : L("Show File Repair")
             return true
+        case #selector(freezeColumns(_:)):
+            return columnCount > 1
+        case #selector(unfreezeColumns(_:)):
+            return frozenColumnCount > 0
+        case #selector(hideColumns(_:)):
+            return columnCount - hiddenColumns.count > (selection?.columns.count ?? 1)
+        case #selector(showAllColumns(_:)):
+            menuItem.title = hiddenColumns.isEmpty
+                ? L("Show All Columns")
+                : L("Show All Columns (%@ hidden)", Self.format(hiddenColumns.count))
+            return !hiddenColumns.isEmpty
+        case #selector(autofitColumns(_:)):
+            return columnCount > 0
+        case #selector(setLinesPerRow(_:)):
+            menuItem.state = menuItem.tag == linesPerRow ? .on : .off
+            return true
+        case #selector(moveRowsUp(_:)):
+            return canMoveRows && (selection?.rows.lowerBound ?? 0) > 0
+        case #selector(moveRowsDown(_:)):
+            return canMoveRows && selection.map { $0.rows.upperBound < dataRowCount - 1 } ?? false
+        case #selector(moveColumnLeft(_:)):
+            return activeColumn > 0
+        case #selector(moveColumnRight(_:)):
+            return activeColumn < columnCount - 1
         case #selector(toggleRecordCard(_:)):
             menuItem.title = isCardVisible ? L("Hide Record Card") : L("Show Record Card")
             return columnCount > 0

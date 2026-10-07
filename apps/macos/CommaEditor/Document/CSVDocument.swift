@@ -172,6 +172,22 @@ final class CSVDocument: NSDocument {
         }
     }
 
+    /// Moves visible rows to stand before a visible row (or after the last one).
+    @discardableResult
+    func moveRows(visibleRows: [Int], beforeVisibleRow target: Int) -> Bool {
+        perform(L("Row Move"), .structure) { core in
+            let rows = visibleRows.compactMap { core.visibleRecord(visibleRow: UInt64($0)) }
+            return try core.moveRows(rows: rows, to: core.insertionRow(visibleRow: UInt64(target)))
+        }
+    }
+
+    @discardableResult
+    func moveColumn(_ column: Int, to target: Int) -> Bool {
+        perform(L("Column Move"), .structure) {
+            try $0.moveColumn(from: UInt64(column), to: UInt64(target))
+        }
+    }
+
     @discardableResult
     func insertColumn(at column: Int) -> Bool {
         perform(L("Column Insertion"), .structure) {

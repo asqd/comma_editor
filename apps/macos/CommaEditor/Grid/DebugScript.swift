@@ -6,7 +6,8 @@ import AppKit
 /// `sort=<column>:a|d`, `filter=<column|*>:<op>:<value>`, `find=<text>`, `replace`, `exportexcel`,
 /// `select=<row>,<column>:<row>,<column>`, `paste=<text>`, `filldown`, `action=<selector>`,
 /// `exportas=<0 JSON…4 XLSX>`, `fixall=<0 unclosed quote…3 extra fields>`, `save`,
-/// `cardedit=<column>:<value>` (types into the record card and leaves the field).
+/// `cardedit=<column>:<value>` (types into the record card and leaves the field),
+/// `lines=<n>` (text wrapping), `dump` (logs the geometry of the tables).
 /// Example: `open --env COMMA_DEBUG_SCRIPT='sort=2:d;find=lon' -a CommaEditor file.csv`
 @MainActor
 enum DebugScript {
@@ -63,6 +64,16 @@ enum DebugScript {
             case "cardedit" where parts.count == 2:
                 if let field = grid.cardModel.fields.first(where: { $0.column == Int(parts[0]) }) {
                     grid.cardModel.draftChanged(field, to: parts[1])
+                }
+            case "lines":
+                let item = NSMenuItem()
+                item.tag = Int(argument) ?? 1
+                grid.setLinesPerRow(item)
+            case "dump":
+                // Geometry of both tables, for layout problems.
+                for table in grid.tables {
+                    let widths = table.tableColumns.map { "\($0.identifier.rawValue)=\(Int($0.width))" }
+                    NSLog("COMMA table frame=\(table.frame) clip=\(table.enclosingScrollView?.frame ?? .zero) \(widths)")
                 }
             case "save":
                 grid.document.save(nil)

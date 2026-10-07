@@ -131,9 +131,9 @@ extension GridViewController {
     }
 
     private func redrawRowNumbers() {
-        let visible = tableView.rows(in: tableView.visibleRect)
-        guard visible.length > 0, tableView.numberOfColumns > 0 else { return }
-        tableView.reloadData(
+        let visible = frozenTable.rows(in: frozenTable.visibleRect)
+        guard visible.length > 0, frozenTable.numberOfColumns > 0 else { return }
+        frozenTable.reloadData(
             forRowIndexes: IndexSet(integersIn: visible.location..<NSMaxRange(visible)),
             columnIndexes: IndexSet(integer: 0)
         )

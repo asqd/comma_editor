@@ -29,12 +29,12 @@ extension GridViewController {
         // The table got narrower or wider: keep the active cell in view.
         view.layoutSubtreeIfNeeded()
         if let cursor = selection?.cursor {
-            tableView.scrollColumnToVisible(cursor.column + 1)
+            scrollToCell(row: cursor.row, column: cursor.column)
         }
         if previous == .profile {
             profiledColumn = nil
             profileModel.profile = nil
-            tableView.reloadData()
+            reloadTables()
         }
         switch panel {
         case .profile?:

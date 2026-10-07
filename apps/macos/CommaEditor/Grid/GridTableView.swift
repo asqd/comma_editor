@@ -4,15 +4,29 @@ import AppKit
 protocol GridTableViewInteraction: AnyObject {
     /// Returns `true` if the key press was handled.
     func gridTableView(_ tableView: GridTableView, handleKeyDown event: NSEvent) -> Bool
-    /// `tableColumn` is the index in `tableColumns`; 0 is the row number column.
-    func gridTableView(_ tableView: GridTableView, mouseDownAtRow row: Int, tableColumn: Int, extend: Bool, clickCount: Int)
-    func gridTableView(_ tableView: GridTableView, mouseDraggedToRow row: Int, tableColumn: Int)
+    /// `tableColumn` is the index in `tableColumns`. Returns what dragging from here does.
+    func gridTableView(
+        _ tableView: GridTableView,
+        mouseDownAtRow row: Int,
+        tableColumn: Int,
+        extend: Bool,
+        clickCount: Int
+    ) -> GridTableView.DragKind
+    /// The pointer moved while selecting; the event may be over the other table.
+    func gridTableView(_ tableView: GridTableView, mouseDraggedWith event: NSEvent)
+    func gridTableView(_ tableView: GridTableView, rowMoveDraggedWith event: NSEvent)
+    func gridTableView(_ tableView: GridTableView, rowMoveEndedWith event: NSEvent)
     func gridTableViewSelectAll(_ tableView: GridTableView)
 }
 
 /// NSTableView that draws and virtualizes the cells while the grid controller owns selection:
 /// clicks, drags and keys are forwarded instead of selecting rows.
 final class GridTableView: NSTableView {
+    enum DragKind {
+        case select
+        case moveRows
+    }
+
     weak var interaction: GridTableViewInteraction?
 
     override func keyDown(with event: NSEvent) {
@@ -29,7 +43,7 @@ final class GridTableView: NSTableView {
         let row = row(at: point)
         let column = column(at: point)
         guard row >= 0, column >= 0 else { return }
-        interaction.gridTableView(
+        let kind = interaction.gridTableView(
             self,
             mouseDownAtRow: row,
             tableColumn: column,
@@ -38,12 +52,18 @@ final class GridTableView: NSTableView {
         )
         guard event.clickCount == 1 else { return }
 
-        // Drag to extend the selection, scrolling when the pointer leaves the view.
-        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]),
-              next.type == .leftMouseDragged {
-            autoscroll(with: next)
-            let point = convert(next.locationInWindow, from: nil)
-            interaction.gridTableView(self, mouseDraggedToRow: nearestRow(to: point), tableColumn: nearestColumn(to: point))
+        // Drag to extend the selection or to move rows; the grid scrolls the table.
+        var last = event
+        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            last = next
+            guard next.type == .leftMouseDragged else { break }
+            switch kind {
+            case .select: interaction.gridTableView(self, mouseDraggedWith: next)
+            case .moveRows: interaction.gridTableView(self, rowMoveDraggedWith: next)
+            }
+        }
+        if kind == .moveRows {
+            interaction.gridTableView(self, rowMoveEndedWith: last)
         }
     }
 
@@ -60,13 +80,13 @@ final class GridTableView: NSTableView {
         return super.validateProposedFirstResponder(responder, for: event)
     }
 
-    private func nearestRow(to point: NSPoint) -> Int {
+    func nearestRow(to point: NSPoint) -> Int {
         let row = row(at: point)
         if row >= 0 { return row }
         return point.y < 0 ? 0 : max(0, numberOfRows - 1)
     }
 
-    private func nearestColumn(to point: NSPoint) -> Int {
+    func nearestColumn(to point: NSPoint) -> Int {
         let column = column(at: point)
         if column >= 0 { return column }
         return point.x < 0 ? 0 : max(0, numberOfColumns - 1)

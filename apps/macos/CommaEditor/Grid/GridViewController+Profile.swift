@@ -47,12 +47,7 @@ extension GridViewController {
     }
 
     private func redrawProfiledColumn() {
-        let visible = tableView.rows(in: tableView.visibleRect)
-        guard visible.length > 0 else { return }
-        tableView.reloadData(
-            forRowIndexes: IndexSet(integersIn: visible.location..<NSMaxRange(visible)),
-            columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
-        )
+        redrawVisibleRows()
     }
 
     func configureProfileActions() {

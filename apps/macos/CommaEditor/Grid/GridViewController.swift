@@ -14,7 +14,24 @@ private extension NSUserInterfaceItemIdentifier {
 /// rectangle of cells whose cursor is the active cell; NSTableView only draws.
 final class GridViewController: NSViewController {
     let document: CSVDocument
+    /// The scrolling table of data columns.
     let tableView = GridTableView()
+    /// Row numbers and frozen columns at the left; scrolls vertically with `tableView`.
+    let frozenTable = GridTableView()
+    let frozenScrollView = NSScrollView()
+    lazy var frozenWidth = frozenScrollView.widthAnchor.constraint(equalToConstant: 0)
+    /// Data columns kept at the left while the table scrolls sideways.
+    var frozenColumnCount = 0
+    /// Data columns hidden from view; the file keeps them.
+    var hiddenColumns: Set<Int> = []
+    /// Column widths to use at the next rebuild, by data column, after columns moved.
+    var pendingColumnWidths: [Int: CGFloat]?
+    /// Lines of text each row shows; more than one wraps long values.
+    var linesPerRow = 1
+    /// The area of both tables, which hosts the row move indicator.
+    let tableArea = NSView()
+    let moveIndicator = NSBox()
+    var scrollObservers: [NSObjectProtocol] = []
     let findBar = FindBarView()
     let filterBar = FilterBarView()
     let findContainer: NSView
@@ -24,11 +41,11 @@ final class GridViewController: NSViewController {
     private(set) var selection: GridSelection?
     private(set) var info: DocumentInfo
 
-    private let scrollView = NSScrollView()
+    let scrollView = NSScrollView()
     private let statusLabel = NSTextField(labelWithString: "")
     private var rowCache: [Int: CachedRow] = [:]
     /// The current drag started on row numbers and selects whole rows.
-    private var selectingRows = false
+    var selectingRows = false
     /// The window's toolbar, for its search field and sort and filter state.
     weak var documentToolbar: DocumentToolbar?
     /// Result of the last search, shown in the status bar.
@@ -64,7 +81,9 @@ final class GridViewController: NSViewController {
 
     private static let cacheBlock = 128
     private static let cacheLimit = 8_192
-    private static let defaultColumnWidth: CGFloat = 140
+    static let defaultColumnWidth: CGFloat = 140
+    static let baseRowHeight: CGFloat = 22
+    static let lineHeight: CGFloat = 16
     private static let decimalFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
@@ -157,15 +176,30 @@ final class GridViewController: NSViewController {
             ])
         }
         sidePanel.isHidden = true
-        let content = NSView()
-        for subview in [scrollView, sidePanel] as [NSView] {
+        configureFrozenScrollView()
+        let content = tableArea
+        // Marks where the frozen part ends.
+        let frozenEdge = NSBox()
+        frozenEdge.boxType = .custom
+        frozenEdge.borderWidth = 0
+        frozenEdge.fillColor = .gridColor
+        for subview in [frozenScrollView, frozenEdge, scrollView, sidePanel, moveIndicator] as [NSView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(subview)
         }
+        moveIndicator.translatesAutoresizingMaskIntoConstraints = true
         NSLayoutConstraint.activate([
+            frozenScrollView.topAnchor.constraint(equalTo: content.topAnchor),
+            frozenScrollView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            frozenScrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            frozenWidth,
+            frozenEdge.topAnchor.constraint(equalTo: content.topAnchor),
+            frozenEdge.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            frozenEdge.leadingAnchor.constraint(equalTo: frozenScrollView.trailingAnchor),
+            frozenEdge.widthAnchor.constraint(equalToConstant: 1),
             scrollView.topAnchor.constraint(equalTo: content.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: frozenEdge.trailingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: sidePanel.leadingAnchor),
             sidePanel.topAnchor.constraint(equalTo: content.topAnchor),
             sidePanel.bottomAnchor.constraint(equalTo: content.bottomAnchor),
@@ -204,7 +238,10 @@ final class GridViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        configureTableView()
+        for table in tables {
+            configure(table)
+        }
+        syncVerticalScrolling()
         configureMenus()
         findBar.delegate = self
         filterBar.delegate = self
@@ -224,6 +261,11 @@ final class GridViewController: NSViewController {
         }
     }
 
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        alignFrozenBottom()
+    }
+
     override func viewDidAppear() {
         super.viewDidAppear()
         view.window?.makeFirstResponder(tableView)
@@ -235,26 +277,27 @@ final class GridViewController: NSViewController {
         #endif
     }
 
-    private func configureTableView() {
-        tableView.style = .plain
-        tableView.rowSizeStyle = .custom
-        tableView.rowHeight = 22
-        tableView.intercellSpacing = NSSize(width: 1, height: 1)
-        tableView.usesAlternatingRowBackgroundColors = true
-        tableView.gridStyleMask = [.solidVerticalGridLineMask, .solidHorizontalGridLineMask]
-        tableView.gridColor = .separatorColor
-        tableView.selectionHighlightStyle = .none
-        tableView.allowsMultipleSelection = false
-        tableView.allowsColumnReordering = false
-        tableView.allowsColumnResizing = true
-        tableView.allowsColumnSelection = false
-        tableView.columnAutoresizingStyle = .noColumnAutoresizing
+    private func configure(_ table: GridTableView) {
+        table.style = .plain
+        table.rowSizeStyle = .custom
+        table.rowHeight = Self.baseRowHeight
+        table.intercellSpacing = NSSize(width: 1, height: 1)
+        table.usesAlternatingRowBackgroundColors = true
+        table.gridStyleMask = [.solidVerticalGridLineMask, .solidHorizontalGridLineMask]
+        table.gridColor = .separatorColor
+        table.selectionHighlightStyle = .none
+        table.allowsMultipleSelection = false
+        // Dragging a header moves the column in the file.
+        table.allowsColumnReordering = true
+        table.allowsColumnResizing = true
+        table.allowsColumnSelection = false
+        table.columnAutoresizingStyle = .noColumnAutoresizing
         let header = GridHeaderView()
         header.gridDelegate = self
-        tableView.headerView = header
-        tableView.dataSource = self
-        tableView.delegate = self
-        tableView.interaction = self
+        table.headerView = header
+        table.dataSource = self
+        table.delegate = self
+        table.interaction = self
     }
 
     private static func withBottomSeparator(_ content: NSView) -> NSView {
@@ -279,19 +322,35 @@ final class GridViewController: NSViewController {
 
     // MARK: Columns
 
-    private func rebuildColumns() {
-        var widths: [String: CGFloat] = [:]
-        for column in tableView.tableColumns {
-            widths[column.identifier.rawValue] = column.width
-            tableView.removeTableColumn(column)
+    /// Creates the table columns: row numbers and frozen columns in the frozen table, the rest
+    /// in the scrolling one. Widths are kept by data column.
+    func rebuildColumns() {
+        var widths: [Int: CGFloat] = [:]
+        var numberWidth: CGFloat?
+        for table in tables {
+            for column in table.tableColumns {
+                if let index = dataColumn(of: column) {
+                    widths[index] = column.width
+                } else {
+                    numberWidth = column.width
+                }
+                table.removeTableColumn(column)
+            }
         }
+        if let pending = pendingColumnWidths {
+            widths = pending
+            pendingColumnWidths = nil
+        }
+        frozenColumnCount = min(frozenColumnCount, max(0, columnCount - 1))
+        hiddenColumns = hiddenColumns.filter { $0 < columnCount }
 
         let numbers = NSTableColumn(identifier: .rowNumberColumn)
         numbers.title = ""
         numbers.isEditable = false
         numbers.resizingMask = []
         numbers.headerToolTip = L("Row number in the file")
-        tableView.addTableColumn(numbers)
+        numbers.width = numberWidth ?? 40
+        frozenTable.addTableColumn(numbers)
 
         for index in 0..<columnCount {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("c\(index)"))
@@ -299,11 +358,12 @@ final class GridViewController: NSViewController {
             cell.font = column.headerCell.font
             cell.alignment = column.headerCell.alignment
             column.headerCell = cell
-            column.width = widths[column.identifier.rawValue] ?? Self.defaultColumnWidth
+            column.width = widths[index] ?? Self.defaultColumnWidth
             column.minWidth = 36
             column.resizingMask = .userResizingMask
             column.headerToolTip = Self.columnLetter(index)
-            tableView.addTableColumn(column)
+            column.isHidden = hiddenColumns.contains(index)
+            (index < frozenColumnCount ? frozenTable : tableView).addTableColumn(column)
         }
         refreshColumnTitles()
         updateRowNumberWidth()
@@ -311,12 +371,14 @@ final class GridViewController: NSViewController {
 
     private func refreshColumnTitles() {
         let header = info.hasHeader ? ((try? core.row(index: 0)) ?? []) : []
-        for column in tableView.tableColumns {
+        for column in allTableColumns {
             guard let index = dataColumn(of: column) else { continue }
             let name = index < header.count ? Self.singleLine(header[index]) : ""
             column.title = name.isEmpty ? Self.columnLetter(index) : name
         }
-        tableView.headerView?.needsDisplay = true
+        for table in tables {
+            table.headerView?.needsDisplay = true
+        }
         updateHeaderIcons()
         let titles = (0..<columnCount).map(columnTitle)
         findBar.setColumns(titles)
@@ -327,22 +389,23 @@ final class GridViewController: NSViewController {
     private func updateHeaderIcons() {
         let spec = core.viewSpec()
         let keys = spec.sort
-        for column in tableView.tableColumns {
+        for column in allTableColumns {
             guard let cell = column.headerCell as? GridHeaderCell, let index = dataColumn(of: column) else { continue }
             let key = keys.first { Int($0.column) == index }
             cell.sort = key.map { $0.ascending ? .ascending : .descending } ?? .none
             cell.isFiltered = spec.filters.contains { $0.column.map { Int($0) } == index }
         }
-        tableView.headerView?.needsDisplay = true
-        tableView.highlightedTableColumn = keys.first.flatMap { key in
-            let index = Int(key.column) + 1
-            return index < tableView.tableColumns.count ? tableView.tableColumns[index] : nil
+        let sorted = keys.first.flatMap { tableColumn(forDataColumn: Int($0.column)) }
+        for table in tables {
+            table.headerView?.needsDisplay = true
+            table.highlightedTableColumn = sorted.flatMap { table.tableColumns.contains($0) ? $0 : nil }
         }
     }
 
     private func updateRowNumberWidth() {
         let digits = max(3, String(Int(info.rowCount)).count)
-        tableView.tableColumn(withIdentifier: .rowNumberColumn)?.width = CGFloat(digits) * 8 + 14
+        frozenTable.tableColumn(withIdentifier: .rowNumberColumn)?.width = CGFloat(digits) * 8 + 14
+        updateFrozenWidth()
     }
 
     func dataColumn(of tableColumn: NSTableColumn) -> Int? {
@@ -351,14 +414,13 @@ final class GridViewController: NSViewController {
         return Int(raw.dropFirst())
     }
 
-    func dataColumn(atTableColumn index: Int) -> Int? {
-        guard index >= 0, index < tableView.tableColumns.count else { return nil }
-        return dataColumn(of: tableView.tableColumns[index])
+    func dataColumn(in table: NSTableView, at index: Int) -> Int? {
+        guard index >= 0, index < table.tableColumns.count else { return nil }
+        return dataColumn(of: table.tableColumns[index])
     }
 
     func columnTitle(_ column: Int) -> String {
-        let index = column + 1
-        return index < tableView.tableColumns.count ? tableView.tableColumns[index].title : Self.columnLetter(column)
+        tableColumn(forDataColumn: column)?.title ?? Self.columnLetter(column)
     }
 
     // MARK: Data
@@ -402,10 +464,7 @@ final class GridViewController: NSViewController {
         case .cell(let row, _)? where sameShape:
             rowCache[row] = nil
             if row < tableView.numberOfRows {
-                tableView.reloadData(
-                    forRowIndexes: IndexSet(integer: row),
-                    columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
-                )
+                reloadRows(IndexSet(integer: row))
             }
         case .header? where sameShape:
             refreshColumnTitles()
@@ -418,7 +477,7 @@ final class GridViewController: NSViewController {
                 updateRowNumberWidth()
             }
             selection = selection?.clamped(rowCount: dataRowCount, columnCount: columnCount)
-            tableView.reloadData()
+            reloadTables()
             syncTableSelection()
             syncFilterBar()
         }
@@ -454,6 +513,9 @@ final class GridViewController: NSViewController {
             L("Delimiter: %@", delimiter),
             lineEnding,
         ]
+        if !hiddenColumns.isEmpty {
+            parts.append(L("Hidden columns: %@", Self.format(hiddenColumns.count)))
+        }
         if !spec.sort.isEmpty {
             let keys = spec.sort.map { columnTitle(Int($0.column)) + ($0.ascending ? " ↑" : " ↓") }
             parts.append(L("Sorted by %@", keys.joined(separator: ", ")))
@@ -497,8 +559,7 @@ final class GridViewController: NSViewController {
             refreshCard()
         }
         if scroll, let cursor = clamped?.cursor {
-            tableView.scrollRowToVisible(cursor.row)
-            tableView.scrollColumnToVisible(cursor.column + 1)
+            scrollToCell(row: cursor.row, column: cursor.column)
         }
     }
 
@@ -519,22 +580,21 @@ final class GridViewController: NSViewController {
 
     /// NSTableView's own (invisible) selection follows the cursor row: editing needs it.
     private func syncTableSelection() {
-        guard let row = activeRow else {
-            tableView.deselectAll(nil)
-            return
-        }
-        if tableView.selectedRow != row {
-            tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        for table in tables {
+            guard let row = activeRow else {
+                table.deselectAll(nil)
+                continue
+            }
+            if table.selectedRow != row {
+                table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            }
         }
     }
 
-    private func redrawVisibleRows() {
+    func redrawVisibleRows() {
         let visible = tableView.rows(in: tableView.visibleRect)
-        guard visible.length > 0, tableView.numberOfColumns > 0 else { return }
-        tableView.reloadData(
-            forRowIndexes: IndexSet(integersIn: visible.location..<NSMaxRange(visible)),
-            columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
-        )
+        guard visible.length > 0 else { return }
+        reloadRows(IndexSet(integersIn: visible.location..<NSMaxRange(visible)))
     }
 
     /// Moves the cursor by rows and columns, or to the edge of the table. With `extend` the
@@ -545,10 +605,14 @@ final class GridViewController: NSViewController {
         var target = current.cursor
         if toEdge {
             if rows != 0 { target.row = rows < 0 ? 0 : dataRowCount - 1 }
-            if columns != 0 { target.column = columns < 0 ? 0 : columnCount - 1 }
+            if columns != 0 { target.column = shownColumn(from: columns < 0 ? 0 : columnCount - 1, step: -columns.signum()) }
         } else {
             target.row += rows
-            target.column += columns
+            if columns != 0 {
+                // Hidden columns are skipped; at the edge the cursor stays.
+                let next = shownColumn(from: target.column + columns, step: columns.signum())
+                target.column = (0..<columnCount).contains(next) ? next : target.column
+            }
         }
         select(extend ? GridSelection(anchor: current.anchor, cursor: target) : GridSelection(target))
     }
@@ -574,8 +638,9 @@ final class GridViewController: NSViewController {
             presentCellEditor(row: row, column: activeColumn)
             return
         }
-        tableView.scrollColumnToVisible(activeColumn + 1)
-        tableView.editColumn(activeColumn + 1, row: row, with: nil, select: true)
+        guard let (table, index) = location(ofDataColumn: activeColumn) else { return }
+        scrollToCell(row: row, column: activeColumn)
+        table.editColumn(index, row: row, with: nil, select: true)
         if let text, let editor = view.window?.firstResponder as? NSTextView {
             editor.insertText(text, replacementRange: editor.selectedRange())
         }
@@ -776,20 +841,34 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let tableColumn else { return nil }
         if tableColumn.identifier == .rowNumberColumn {
-            let cell = reusableCell(.rowNumberCell)
+            let cell = reusableCell(.rowNumberCell, in: tableView)
             let fileRow = cachedRow(row)?.fileRow ?? row
             let selected = selection?.rows.contains(row) ?? false
             cell.textField?.stringValue = String(fileRow - headerOffset + 1)
             cell.textField?.textColor = selected ? .controlAccentColor : .secondaryLabelColor
+            // Level with the first line of wrapped values.
+            cell.wrapHeight?.constant = tableView.rowHeight - 4
+            cell.wrapHeight?.isActive = linesPerRow > 1
             let problem = problemRows[fileRow]
             cell.layer?.backgroundColor = problem.map { _ in NSColor.systemRed.withAlphaComponent(0.2).cgColor }
             cell.toolTip = problem.map(RepairView.kindTitle)
             return cell
         }
         guard let column = dataColumn(of: tableColumn) else { return nil }
-        let cell = reusableCell(.dataCell)
+        let cell = reusableCell(.dataCell, in: tableView)
         let value = value(row: row, column: column)
-        cell.textField?.stringValue = Self.singleLine(value)
+        let wraps = linesPerRow > 1
+        cell.textField?.stringValue = wraps ? value : Self.singleLine(value)
+        cell.textField?.maximumNumberOfLines = linesPerRow
+        cell.textField?.cell?.usesSingleLineMode = !wraps
+        cell.textField?.cell?.wraps = wraps
+        // A label's cell scrolls its text by default, which never wraps.
+        cell.textField?.cell?.isScrollable = !wraps
+        cell.textField?.lineBreakMode = wraps ? .byWordWrapping : .byTruncatingTail
+        cell.textField?.cell?.truncatesLastVisibleLine = true
+        // A wrapping label needs a height to lay out more than one line.
+        cell.wrapHeight?.constant = tableView.rowHeight - 4
+        cell.wrapHeight?.isActive = wraps
         cell.textField?.isEditable = !Self.isMultiline(value)
         let isCursor = selection?.cursor == GridCell(row: row, column: column)
         let isSelected = selection.map { !$0.isSingleCell && $0.contains(row: row, column: column) } ?? false
@@ -827,12 +906,12 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         setSort(keys)
     }
 
-    private func reusableCell(_ identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
-        if let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView {
+    private func reusableCell(_ identifier: NSUserInterfaceItemIdentifier, in tableView: NSTableView) -> GridCellView {
+        if let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? GridCellView {
             return cell
         }
         let isData = identifier == .dataCell
-        let cell = NSTableCellView()
+        let cell = GridCellView()
         cell.identifier = identifier
         cell.wantsLayer = true
 
@@ -841,6 +920,7 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         field.lineBreakMode = .byTruncatingTail
         field.cell?.usesSingleLineMode = true
         field.cell?.allowsUndo = false
+        cell.wrapHeight = field.heightAnchor.constraint(equalToConstant: Self.baseRowHeight)
         if isData {
             field.delegate = self
         } else {
@@ -863,9 +943,9 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
 
 extension GridViewController: NSTextFieldDelegate {
     func controlTextDidEndEditing(_ notification: Notification) {
-        guard let field = notification.object as? NSTextField else { return }
-        let row = tableView.row(for: field)
-        guard row >= 0, let column = dataColumn(atTableColumn: tableView.column(for: field)) else { return }
+        guard let field = notification.object as? NSTextField, let table = table(containing: field) else { return }
+        let row = table.row(for: field)
+        guard row >= 0, let column = dataColumn(in: table, at: table.column(for: field)) else { return }
 
         let newValue = field.stringValue
         if newValue != value(row: row, column: column) {
@@ -891,8 +971,9 @@ extension GridViewController: NSTextFieldDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         guard commandSelector == #selector(NSResponder.cancelOperation(_:)),
               let field = control as? NSTextField else { return false }
-        let row = tableView.row(for: field)
-        if row >= 0, let column = dataColumn(atTableColumn: tableView.column(for: field)) {
+        if let table = table(containing: field), table.row(for: field) >= 0,
+           let column = dataColumn(in: table, at: table.column(for: field)) {
+            let row = table.row(for: field)
             field.abortEditing()
             field.stringValue = Self.singleLine(value(row: row, column: column))
         }
@@ -956,18 +1037,29 @@ extension GridViewController: GridTableViewInteraction {
     }
 
     /// Clicking a cell selects it, Shift-click extends the selection, a click on a row number
-    /// selects the whole row, a double-click edits.
-    func gridTableView(_ tableView: GridTableView, mouseDownAtRow row: Int, tableColumn: Int, extend: Bool, clickCount: Int) {
-        selectingRows = tableColumn == 0
+    /// selects the whole row, a double-click edits. Pressing on the number of a selected whole
+    /// row starts moving the selected rows.
+    func gridTableView(
+        _ tableView: GridTableView,
+        mouseDownAtRow row: Int,
+        tableColumn: Int,
+        extend: Bool,
+        clickCount: Int
+    ) -> GridTableView.DragKind {
+        selectingRows = tableView.tableColumns[tableColumn].identifier == .rowNumberColumn
         if selectingRows {
+            if !extend, clickCount == 1, canMoveRows, let selection, selection.columns.count == columnCount,
+               selection.rows.contains(row) {
+                return .moveRows
+            }
             let anchorRow = extend ? (selection?.anchor.row ?? row) : row
             select(GridSelection(
                 anchor: GridCell(row: anchorRow, column: columnCount - 1),
                 cursor: GridCell(row: row, column: 0)
             ), scroll: false)
-            return
+            return .select
         }
-        guard let column = dataColumn(atTableColumn: tableColumn) else { return }
+        guard let column = dataColumn(in: tableView, at: tableColumn) else { return .select }
         let cell = GridCell(row: row, column: column)
         if extend, let selection {
             select(GridSelection(anchor: selection.anchor, cursor: cell), scroll: false)
@@ -977,12 +1069,27 @@ extension GridViewController: GridTableViewInteraction {
         if clickCount == 2 {
             editActiveCell()
         }
+        return .select
     }
 
-    func gridTableView(_ tableView: GridTableView, mouseDraggedToRow row: Int, tableColumn: Int) {
+    func gridTableView(_ tableView: GridTableView, mouseDraggedWith event: NSEvent) {
         guard let selection else { return }
-        let column = selectingRows ? 0 : (dataColumn(atTableColumn: tableColumn) ?? 0)
-        select(GridSelection(anchor: selection.anchor, cursor: GridCell(row: row, column: column)), scroll: false)
+        self.tableView.autoscroll(with: event)
+        let (row, column) = cellNear(windowPoint: event.locationInWindow)
+        select(
+            GridSelection(anchor: selection.anchor, cursor: GridCell(row: row, column: selectingRows ? 0 : column)),
+            scroll: false
+        )
+    }
+
+    func gridTableView(_ tableView: GridTableView, rowMoveDraggedWith event: NSEvent) {
+        self.tableView.autoscroll(with: event)
+        showMoveIndicator(at: event.locationInWindow)
+    }
+
+    func gridTableView(_ tableView: GridTableView, rowMoveEndedWith event: NSEvent) {
+        hideMoveIndicator()
+        dropRows(at: event.locationInWindow)
     }
 
     func gridTableViewSelectAll(_ tableView: GridTableView) {
@@ -992,4 +1099,9 @@ extension GridViewController: GridTableViewInteraction {
             cursor: GridCell(row: 0, column: 0)
         ), scroll: false)
     }
+}
+
+/// A table cell with a text field, which gets a fixed height while text wraps.
+final class GridCellView: NSTableCellView {
+    var wrapHeight: NSLayoutConstraint?
 }

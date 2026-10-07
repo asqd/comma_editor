@@ -310,3 +310,23 @@
 "Find a field" = "Найти поле";
 "Hide empty" = "Скрыть пустые";
 "No rows" = "Нет строк";
+
+/* Table view */
+"Move Rows Up" = "Переместить строки вверх";
+"Move Rows Down" = "Переместить строки вниз";
+"Move Column Left" = "Переместить колонку влево";
+"Move Column Right" = "Переместить колонку вправо";
+"Row Move" = "Перемещение строк";
+"Column Move" = "Перемещение колонки";
+"Freeze Columns Through This One" = "Закрепить колонки до этой";
+"Unfreeze Columns" = "Снять закрепление колонок";
+"Hide Column" = "Скрыть колонку";
+"Show All Columns" = "Показать все колонки";
+"Show All Columns (%@ hidden)" = "Показать все колонки (скрыто: %@)";
+"Fit Column Width" = "Подогнать ширину колонок";
+"Text Wrapping" = "Перенос текста";
+"One Line" = "В одну строку";
+"Up to 2 Lines" = "До 2 строк";
+"Up to 3 Lines" = "До 3 строк";
+"Up to 5 Lines" = "До 5 строк";
+"Hidden columns: %@" = "Скрыто колонок: %@";
