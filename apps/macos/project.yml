@@ -71,6 +71,7 @@ targets:
             LSItemContentTypes:
               - org.openxmlformats.spreadsheetml.sheet
               - org.openxmlformats.spreadsheetml.sheet.macroenabled
+              - com.microsoft.excel.xls
             NSDocumentClass: $(PRODUCT_MODULE_NAME).WorkbookDocument
     entitlements:
       path: CommaEditor/CommaEditor.entitlements

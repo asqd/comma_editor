@@ -16,6 +16,9 @@ final class WorkbookDocument: CSVDocument {
     /// A sheet being read off the main thread.
     private var loading: (index: Int, job: SheetJob)?
 
+    /// An Excel 97–2003 workbook (`.xls`), whose formulas are not shown.
+    var isLegacyFormat: Bool { workbook?.isLegacyFormat() ?? false }
+
     /// The layout of the shown sheet: column widths, hidden columns, frozen panes.
     var layout: SheetLayout? { loaded[sheetIndex]?.layout }
 

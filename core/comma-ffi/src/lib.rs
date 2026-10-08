@@ -55,8 +55,12 @@ pub enum CoreError {
 #[derive(Debug, uniffi::Enum)]
 pub enum WorkbookProblem {
     NotAWorkbook,
-    /// An `.xls` workbook, or an `.xlsx` one with a password.
-    EncryptedOrLegacy,
+    /// A web page saved with a workbook's extension, as many exports are.
+    WebPage,
+    /// An Excel 2003 XML spreadsheet saved with a workbook's extension.
+    Xml2003,
+    /// The workbook is protected with a password.
+    Encrypted,
     /// A part of the file cannot be unpacked, or its XML is broken at byte `position`.
     Damaged { part: String, position: Option<u64>, detail: String },
     /// `sheet` counts from 1.
@@ -69,7 +73,9 @@ impl From<core::WorkbookError> for WorkbookProblem {
     fn from(error: core::WorkbookError) -> Self {
         match error {
             core::WorkbookError::NotAWorkbook => Self::NotAWorkbook,
-            core::WorkbookError::EncryptedOrLegacy => Self::EncryptedOrLegacy,
+            core::WorkbookError::WebPage => Self::WebPage,
+            core::WorkbookError::Xml2003 => Self::Xml2003,
+            core::WorkbookError::Encrypted => Self::Encrypted,
             core::WorkbookError::Damaged { part, position, detail } => Self::Damaged { part, position, detail },
             core::WorkbookError::NoSuchSheet { sheet } => Self::NoSuchSheet { sheet: sheet as u64 },
             core::WorkbookError::NotATable { sheet } => Self::NotATable { sheet },
@@ -2083,6 +2089,11 @@ impl CoreWorkbook {
                 is_table: sheet.kind == core::SheetKind::Worksheet,
             })
             .collect()
+    }
+
+    /// Whether the workbook is in the Excel 97–2003 format, which is only read.
+    pub fn is_legacy_format(&self) -> bool {
+        self.inner.format() == core::WorkbookFormat::Xls
     }
 
     /// The sheet to show first.

@@ -309,7 +309,7 @@ fn files_that_are_not_workbooks_say_why() {
     assert_eq!(problem(Workbook::from_bytes(b"a,b\n1,2\n".to_vec())), WorkbookError::NotAWorkbook);
     let mut compound = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
     compound.resize(512, 0);
-    assert_eq!(problem(Workbook::from_bytes(compound)), WorkbookError::EncryptedOrLegacy);
+    assert_eq!(problem(Workbook::from_bytes(compound)), WorkbookError::NotAWorkbook);
     assert_eq!(problem(Workbook::from_bytes(zip(&[("hello.txt", "hi")]))), WorkbookError::NotAWorkbook);
 
     let workbook = Workbook::from_bytes(package("", "", None, None)).unwrap();

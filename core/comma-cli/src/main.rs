@@ -6,10 +6,10 @@ use std::process::ExitCode;
 
 use std::time::Instant;
 
-use comma_core::{DisplayLocale, Document, LineEnding, QuoteStyle, SheetKind, SheetVisibility, Workbook};
+use comma_core::{DisplayLocale, Document, LineEnding, QuoteStyle, SheetKind, SheetVisibility, Workbook, WorkbookFormat};
 
 const USAGE: &str = "usage:
-  comma info FILE...   show encoding, dialect and size; for .xlsx, the sheets
+  comma info FILE...   show encoding, dialect and size; for .xlsx and .xls, the sheets
   comma check FILE...  verify that open → save reproduces each file byte for byte";
 
 fn main() -> ExitCode {
@@ -44,7 +44,7 @@ fn main() -> ExitCode {
 
 fn is_workbook(path: &Path) -> bool {
     path.extension()
-        .is_some_and(|extension| ["xlsx", "xlsm"].iter().any(|known| extension.eq_ignore_ascii_case(known)))
+        .is_some_and(|extension| ["xlsx", "xlsm", "xls"].iter().any(|known| extension.eq_ignore_ascii_case(known)))
 }
 
 fn info(path: &Path) -> Result<bool, String> {
@@ -94,7 +94,11 @@ fn workbook_info(path: &Path) -> Result<bool, String> {
     let started = Instant::now();
     let workbook = Workbook::open(path).map_err(|e| e.to_string())?;
     println!("{}", path.display());
-    println!("  opened in:  {:.2} s", started.elapsed().as_secs_f64());
+    let format = match workbook.format() {
+        WorkbookFormat::Xlsx => "Excel workbook",
+        WorkbookFormat::Xls => "Excel 97–2003 workbook",
+    };
+    println!("  format:     {format}, opened in {:.2} s", started.elapsed().as_secs_f64());
     if workbook.uses_1904_dates() {
         println!("  dates:      from 1904");
     }

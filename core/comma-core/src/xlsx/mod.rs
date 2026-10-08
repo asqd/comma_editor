@@ -1,4 +1,5 @@
-//! Excel workbooks (XLSX). A sheet opens as a `Document` whose values are what Excel shows:
+//! Excel workbooks: XLSX, and Excel 97–2003 XLS for reading. A sheet opens as a `Document`
+//! whose values are what Excel shows:
 //! numbers and dates in the cell's number format, shared and formatted strings as text, and
 //! cells with a formula keeping it along with its last result.
 
@@ -7,6 +8,7 @@ mod package;
 mod refs;
 mod sheet;
 mod styles;
+mod xls;
 mod xml;
 
 use std::io::{BufRead, BufReader, Read};
@@ -26,6 +28,15 @@ use crate::bytes::{self, Bytes};
 use crate::document::Document;
 use crate::edit::Progress;
 use crate::error::{Result, WorkbookError};
+
+/// The kind of file a workbook was read from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkbookFormat {
+    /// Office Open XML: `.xlsx`, `.xlsm`.
+    Xlsx,
+    /// Excel 97–2003: `.xls`, which is only read.
+    Xls,
+}
 
 /// Whether Excel shows a sheet in its tabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,15 +105,18 @@ pub struct Sheet {
     pub layout: SheetLayout,
 }
 
-/// An open XLSX workbook. Sheets are read one at a time, when asked for.
+/// An open workbook. Sheets are read one at a time, when asked for.
 pub struct Workbook {
-    package: Package,
+    source: Source,
     sheets: Vec<SheetEntry>,
-    strings: Vec<String>,
-    styles: Styles,
     date1904: bool,
     /// The tab shown when the workbook was saved.
     active: usize,
+}
+
+enum Source {
+    Xlsx { package: Package, strings: Vec<String>, styles: Styles },
+    Xls(Box<xls::XlsBook>),
 }
 
 impl Workbook {
@@ -115,6 +129,16 @@ impl Workbook {
     }
 
     fn from_buffer(bytes: Bytes) -> Result<Self> {
+        if bytes.starts_with(&xls::COMPOUND_FILE) {
+            let opened = xls::open(bytes)?;
+            let active = first_shown(&opened.sheets, opened.active);
+            return Ok(Self { source: Source::Xls(Box::new(opened.book)), sheets: opened.sheets, date1904: opened.date1904, active });
+        }
+        if !bytes.starts_with(b"PK")
+            && let Some(problem) = text_disguised_as_workbook(&bytes)
+        {
+            return Err(problem.into());
+        }
         let package = Package::new(bytes)?;
         let workbook_part = package
             .relationships("")?
@@ -183,12 +207,15 @@ impl Workbook {
             },
             None => Styles::default(),
         };
-        let active = if sheets.get(active).is_some_and(|sheet| sheet.kind == SheetKind::Worksheet) {
-            active
-        } else {
-            sheets.iter().position(|sheet| sheet.kind == SheetKind::Worksheet && sheet.visibility == SheetVisibility::Visible).unwrap_or(0)
-        };
-        Ok(Self { package, sheets, strings, styles, date1904, active })
+        let active = first_shown(&sheets, active);
+        Ok(Self { source: Source::Xlsx { package, strings, styles }, sheets, date1904, active })
+    }
+
+    pub fn format(&self) -> WorkbookFormat {
+        match self.source {
+            Source::Xlsx { .. } => WorkbookFormat::Xlsx,
+            Source::Xls(_) => WorkbookFormat::Xls,
+        }
     }
 
     /// Sheets in the order of their tabs.
@@ -217,12 +244,21 @@ impl Workbook {
         if entry.kind != SheetKind::Worksheet {
             return Err(WorkbookError::NotATable { sheet: entry.name.clone() }.into());
         }
+        let (package, strings, styles) = match &self.source {
+            Source::Xlsx { package, strings, styles } => (package, strings, styles),
+            Source::Xls(book) => {
+                let formats = book.styles.formats(locale);
+                let context = Context { strings: &[], formats: &formats, locale, date1904: self.date1904 };
+                let (rows, layout) = book.read_sheet(index, &entry.name, &context)?;
+                return Ok(Some(Sheet { name: entry.name.clone(), document: Document::from_fields(rows), layout }));
+            }
+        };
         let part = entry.part.as_deref().unwrap_or_default();
         let missing = || WorkbookError::MissingCells { sheet: entry.name.clone() };
-        let (stream, size) = self.package.stream(part)?.ok_or_else(missing)?;
+        let (stream, size) = package.stream(part)?.ok_or_else(missing)?;
         let mut input = BufReader::with_capacity(1 << 16, stream);
-        let formats = self.styles.formats(locale);
-        let context = Context { strings: &self.strings, formats: &formats, locale, date1904: self.date1904 };
+        let formats = styles.formats(locale);
+        let context = Context { strings, formats: &formats, locale, date1904: self.date1904 };
         let starts_utf16 = matches!(input.fill_buf()?, [0xFF, 0xFE, ..] | [0xFE, 0xFF, ..]);
         let content = if starts_utf16 {
             let mut bytes = Vec::new();
@@ -241,6 +277,33 @@ impl Workbook {
             layout: content.layout,
         }))
     }
+}
+
+/// Web pages and XML spreadsheets that exports save as `.xls`, told by how they begin.
+fn text_disguised_as_workbook(bytes: &[u8]) -> Option<WorkbookError> {
+    let start = String::from_utf8_lossy(&bytes[..bytes.len().min(2048)]).to_lowercase();
+    let start = start.trim_start_matches(['\u{feff}', ' ', '\t', '\r', '\n']);
+    if !start.starts_with('<') {
+        return None;
+    }
+    if start.contains("urn:schemas-microsoft-com:office:spreadsheet") {
+        Some(WorkbookError::Xml2003)
+    } else if ["<html", "<!doctype html", "<table", "<meta"].iter().any(|tag| start.contains(tag)) {
+        Some(WorkbookError::WebPage)
+    } else {
+        None
+    }
+}
+
+/// The tab saved as shown if it is a table, or else the first visible table.
+fn first_shown(sheets: &[SheetEntry], saved: usize) -> usize {
+    if sheets.get(saved).is_some_and(|sheet| sheet.kind == SheetKind::Worksheet) {
+        return saved;
+    }
+    sheets
+        .iter()
+        .position(|sheet| sheet.kind == SheetKind::Worksheet && sheet.visibility == SheetVisibility::Visible)
+        .unwrap_or(0)
 }
 
 // Shared with the app: a workbook is read on one thread and kept behind a lock.

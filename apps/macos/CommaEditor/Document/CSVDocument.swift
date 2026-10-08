@@ -797,8 +797,12 @@ class CSVDocument: NSDocument {
         switch problem {
         case .notAWorkbook:
             L("The file is not an Excel workbook, or it is damaged.")
-        case .encryptedOrLegacy:
-            L("The workbook is protected with a password, or saved in the old Excel 97–2003 format (.xls). Open it in Excel or Numbers and save it as .xlsx without a password.")
+        case .webPage:
+            L("The file is a web page with a table, saved with an Excel extension, as many exports are. Open it in Excel and save it as .xlsx.")
+        case .xml2003:
+            L("The file is an Excel 2003 XML spreadsheet. Open it in Excel and save it as .xlsx.")
+        case .encrypted:
+            L("The workbook is protected with a password. Open it in Excel or Numbers and save it without a password.")
         // What the XML reader found is technical and in English; where it is helps more.
         case .damaged(let part, let position?, _):
             L("A part of the file is damaged: %@, byte %@. Excel may be able to repair it when it opens the file.", part, format(position))

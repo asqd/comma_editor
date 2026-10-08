@@ -41,6 +41,11 @@ pub(crate) struct Styles {
 }
 
 impl Styles {
+    /// The format id of each cell style, and the format codes the file defines.
+    pub(crate) fn new(style_formats: Vec<u32>, codes: HashMap<u32, String>) -> Self {
+        Self { style_formats, codes }
+    }
+
     pub(crate) fn read(text: &str, part: &str) -> Result<Self> {
         let mut reader = xml::reader(text);
         let mut styles = Self::default();

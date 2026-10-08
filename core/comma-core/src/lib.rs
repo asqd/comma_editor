@@ -48,5 +48,6 @@ pub use view::{Filter, FilterOp, SortKey, ViewSpec};
 pub use writer::SaveFormat;
 pub use xlsx::{
     ColumnLayout, DisplayLocale, Sheet, SheetEntry, SheetKind, SheetLayout, SheetRange, SheetVisibility, Workbook,
+    WorkbookFormat,
     cell_name, column_letters,
 };

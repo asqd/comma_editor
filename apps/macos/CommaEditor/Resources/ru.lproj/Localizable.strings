@@ -564,7 +564,10 @@
 "The table does not fit on an Excel sheet." = "Таблица не помещается на лист Excel.";
 "An Excel sheet holds at most %@ rows, and the table has %@. Filter the rows to export fewer of them." = "На листе Excel помещается не больше %@ строк, а в таблице %@. Отфильтруйте строки, чтобы экспортировать меньше.";
 "The file is not an Excel workbook, or it is damaged." = "Это не книга Excel, или файл повреждён.";
-"The workbook is protected with a password, or saved in the old Excel 97–2003 format (.xls). Open it in Excel or Numbers and save it as .xlsx without a password." = "Книга защищена паролем или сохранена в старом формате Excel 97–2003 (.xls). Откройте её в Excel или Numbers и сохраните как .xlsx без пароля.";
+"The workbook is protected with a password. Open it in Excel or Numbers and save it without a password." = "Книга защищена паролем. Откройте её в Excel или Numbers и сохраните без пароля.";
+"The file is a web page with a table, saved with an Excel extension, as many exports are. Open it in Excel and save it as .xlsx." = "Это веб-страница с таблицей, сохранённая с расширением Excel, — так выгружают данные многие сервисы. Откройте её в Excel и сохраните как .xlsx.";
+"The file is an Excel 2003 XML spreadsheet. Open it in Excel and save it as .xlsx." = "Это таблица в формате XML Excel 2003. Откройте её в Excel и сохраните как .xlsx.";
+"Excel 97–2003 workbook, view only" = "Книга Excel 97–2003, только просмотр";
 "A part of the file is damaged: %@, byte %@. Excel may be able to repair it when it opens the file." = "Повреждена часть файла: %@, байт %@. Excel может восстановить её при открытии.";
 "A part of the file is damaged: %@. Excel may be able to repair it when it opens the file." = "Повреждена часть файла: %@. Excel может восстановить её при открытии.";
 "The workbook has no sheet %@." = "В книге нет листа %@.";

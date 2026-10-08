@@ -56,9 +56,15 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum WorkbookError {
     #[error("the file is not an Excel workbook")]
     NotAWorkbook,
-    /// An OLE compound file: an `.xls` workbook, or an `.xlsx` one with a password.
-    #[error("the workbook is encrypted or in the old Excel 97–2003 format (.xls)")]
-    EncryptedOrLegacy,
+    /// A web page with a table, saved with a workbook's extension, as many exports are.
+    #[error("the file is a web page, not an Excel workbook")]
+    WebPage,
+    /// An Excel 2003 XML spreadsheet saved with a workbook's extension.
+    #[error("the file is an Excel 2003 XML spreadsheet")]
+    Xml2003,
+    /// The workbook is protected with a password.
+    #[error("the workbook is encrypted")]
+    Encrypted,
     /// A part of the file cannot be unpacked, or its XML is broken at byte `position`.
     #[error("{part} is damaged: {detail}")]
     Damaged { part: String, position: Option<u64>, detail: String },

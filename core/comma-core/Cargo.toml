@@ -6,6 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+calamine.workspace = true
+cfb.workspace = true
 encoding_rs.workspace = true
 memchr.workspace = true
 memmap2.workspace = true

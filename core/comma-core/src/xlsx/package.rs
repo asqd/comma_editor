@@ -22,9 +22,6 @@ impl AsRef<[u8]> for Shared {
     }
 }
 
-/// Signature of an OLE compound file: an `.xls` workbook, or an encrypted `.xlsx`.
-const COMPOUND_FILE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
-
 pub(crate) struct Package {
     archive: ZipArchive<Cursor<Shared>>,
     /// Part names in lower case, as names of parts are compared without case.
@@ -44,9 +41,6 @@ pub(crate) struct Relationship {
 
 impl Package {
     pub(crate) fn new(bytes: Bytes) -> Result<Self> {
-        if bytes.starts_with(&COMPOUND_FILE) {
-            return Err(WorkbookError::EncryptedOrLegacy.into());
-        }
         let archive = ZipArchive::new(Cursor::new(Shared(Arc::new(bytes))))
             .map_err(|_| WorkbookError::NotAWorkbook)?;
         let names = (0..archive.len())

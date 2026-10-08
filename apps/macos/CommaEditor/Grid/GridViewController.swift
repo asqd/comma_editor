@@ -565,7 +565,7 @@ final class GridViewController: NSViewController {
         }
         parts.append(L("Columns: %@", Self.format(columnCount)))
         if info.isSheet {
-            parts.append(L("Excel workbook, view only"))
+            parts.append(workbook?.isLegacyFormat == true ? L("Excel 97–2003 workbook, view only") : L("Excel workbook, view only"))
         } else {
             parts += [
                 info.hasBom ? L("%@ with BOM", info.encoding) : info.encoding,
