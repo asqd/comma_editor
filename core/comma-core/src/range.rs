@@ -133,6 +133,9 @@ impl Document {
         if height == 0 || width == 0 {
             return Ok(None);
         }
+        if left + width > self.column_count() {
+            self.check_structure(crate::error::SheetStructure::ColumnsFixed)?;
+        }
 
         let mut splices = Vec::new();
         let mut bottom = (top + height).min(visible);
@@ -193,7 +196,7 @@ impl Document {
                 changed += 1;
             }
             if let Some(fields) = fields {
-                let updated = Record::modified(fields, self.records[record].term());
+                let updated = self.records[record].with_fields(fields);
                 splices.push(Splice::apply(Arc::make_mut(&mut self.records), record, 1, vec![updated]));
             }
         }

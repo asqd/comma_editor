@@ -194,6 +194,11 @@ impl NumberFormat {
 
     /// Text in the text section, if there is one. Padding around it goes; the text itself
     /// stays as it is.
+    /// Whether numbers show as dates or times.
+    pub(crate) fn is_date(&self) -> bool {
+        self.numbers[0].kind == Kind::Date
+    }
+
     pub(crate) fn format_text(&self, text: &str) -> String {
         let Some(section) = &self.text else {
             return text.to_owned();

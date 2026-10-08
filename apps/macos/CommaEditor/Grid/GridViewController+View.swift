@@ -411,6 +411,21 @@ extension GridViewController: NSMenuItemValidation {
         if document.isReadOnly, let action = menuItem.action, Self.editingActions.contains(action) {
             return false
         }
+        if info.isSheet, let action = menuItem.action {
+            if Self.columnActions.contains(action) {
+                return false
+            }
+            if info.sheetRowsFixed, Self.rowActions.contains(action) {
+                return false
+            }
+            // Only below the last row: rows added at the end move nothing.
+            if info.sheetRowsFixed, action == #selector(insertRowAbove(_:)) {
+                return false
+            }
+            if info.sheetRowsFixed, action == #selector(insertRowBelow(_:)) {
+                return activeRow == dataRowCount - 1
+            }
+        }
         let spec = core.viewSpec()
         switch menuItem.action {
         case #selector(undo(_:)), #selector(redo(_:)):

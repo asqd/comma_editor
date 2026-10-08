@@ -116,8 +116,9 @@ class CSVDocument: NSDocument {
     }
 
     /// Shows another table in this document, such as another sheet of a workbook. Work running
-    /// on the previous table stops, and its undo steps go.
-    func replaceCore(_ newCore: CoreDocument, change: Change = .sheet) {
+    /// on the previous table stops; its undo steps go unless `keepsUndo`, as when the tables
+    /// are sheets of one workbook, each undoing its own changes.
+    func replaceCore(_ newCore: CoreDocument, change: Change = .sheet, keepsUndo: Bool = false) {
         viewJob?.cancel()
         viewJob = nil
         editJob?.cancel()
@@ -126,7 +127,9 @@ class CSVDocument: NSDocument {
         core = newCore
         // A file is first read off the main thread, before any window shows it.
         guard Thread.isMainThread else { return }
-        undoManager?.removeAllActions()
+        if !keepsUndo {
+            undoManager?.removeAllActions()
+        }
         post(change)
     }
 
@@ -676,21 +679,30 @@ class CSVDocument: NSDocument {
     // The core keeps the history; the undo manager only drives it, so NSDocument tracks
     // unsaved changes and the Edit menu shows the right titles. The core drops the oldest steps
     // of large changes to save memory; the menu then stops at the oldest step the core has.
+    //
+    // Each step undoes the table it was made on: in a workbook, the sheet shows again first.
     private func registerUndo() {
+        let core = core
         undoManager?.registerUndo(withTarget: self) { document in
-            guard document.core.undo() else { return }
+            document.show(core)
+            guard core.undo() else { return }
             document.registerRedo()
             document.post(.structure)
         }
     }
 
     private func registerRedo() {
+        let core = core
         undoManager?.registerUndo(withTarget: self) { document in
-            guard document.core.redo() else { return }
+            document.show(core)
+            guard core.redo() else { return }
             document.registerUndo()
             document.post(.structure)
         }
     }
+
+    /// Makes a table of this document the shown one, for undo; a file has only one.
+    func show(_ table: CoreDocument) {}
 
     func post(_ change: Change) {
         NotificationCenter.default.post(
@@ -706,8 +718,8 @@ class CSVDocument: NSDocument {
     /// to export the table, which can be changed.
     func presentReadOnlyNotice() {
         let alert = NSAlert()
-        alert.messageText = L("Excel workbooks open for viewing only")
-        alert.informativeText = L("CommaEditor cannot save workbooks yet. To change the data, export the sheet as CSV with File ▸ Export… and open the copy.")
+        alert.messageText = L("Excel 97–2003 workbooks open for viewing only")
+        alert.informativeText = L("CommaEditor cannot save workbooks in this old format. To change the data, export the sheet with File ▸ Export As ▸ Excel Workbook (XLSX) or File ▸ Export… as CSV, and open the copy.")
         alert.addButton(withTitle: L("OK"))
         alert.addButton(withTitle: L("Export…"))
         let respond: (NSApplication.ModalResponse) -> Void = { [weak self] response in
@@ -783,6 +795,14 @@ class CSVDocument: NSDocument {
             )
         case .Formula(let problem):
             userInfo[NSLocalizedDescriptionKey] = FormulaHelp.describe(problem)
+        case .SheetStructure(let rows):
+            if rows {
+                userInfo[NSLocalizedDescriptionKey] = L("Rows of this sheet cannot be inserted, deleted or moved.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Formulas, merged cells, conditional formats, tables or charts of the workbook refer to them, and CommaEditor does not move such references yet. Rows can be added at the end.")
+            } else {
+                userInfo[NSLocalizedDescriptionKey] = L("Columns of a workbook cannot be inserted, deleted or moved yet.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Values in the columns can be changed. To change the columns, export the sheet as CSV.")
+            }
         case .Workbook(let problem):
             userInfo[NSLocalizedDescriptionKey] = L("The Excel workbook cannot be read.")
             userInfo[NSLocalizedRecoverySuggestionErrorKey] = describe(problem)
@@ -814,6 +834,8 @@ class CSVDocument: NSDocument {
             L("“%@” is a chart or macro sheet: it has no cells to show.", sheet)
         case .missingCells(let sheet):
             L("The cells of sheet “%@” are missing from the file.", sheet)
+        case .readOnly:
+            L("Excel 97–2003 workbooks can only be read. Export the sheet as XLSX or CSV to change it.")
         }
     }
 

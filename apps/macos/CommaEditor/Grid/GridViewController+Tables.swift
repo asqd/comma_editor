@@ -259,7 +259,7 @@ extension GridViewController {
     // MARK: Moving rows
 
     /// Rows move in the order of the file, so not while the rows are sorted.
-    var canMoveRows: Bool { core.viewSpec().sort.isEmpty && !document.isReadOnly }
+    var canMoveRows: Bool { core.viewSpec().sort.isEmpty && !document.isReadOnly && !info.sheetRowsFixed }
 
     @objc func moveRowsUp(_ sender: Any?) {
         guard let selection, selection.rows.lowerBound > 0 else { return }

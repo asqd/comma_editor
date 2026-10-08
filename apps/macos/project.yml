@@ -64,13 +64,18 @@ targets:
               - public.tab-separated-values-text
               - public.utf8-tab-separated-values-text
             NSDocumentClass: $(PRODUCT_MODULE_NAME).CSVDocument
-          # Viewer until workbooks can be saved: they open for viewing and export only.
           - CFBundleTypeName: Excel Workbook
-            CFBundleTypeRole: Viewer
+            CFBundleTypeRole: Editor
             LSHandlerRank: Alternate
             LSItemContentTypes:
               - org.openxmlformats.spreadsheetml.sheet
               - org.openxmlformats.spreadsheetml.sheet.macroenabled
+            NSDocumentClass: $(PRODUCT_MODULE_NAME).WorkbookDocument
+          # Excel 97–2003 workbooks are read, not saved.
+          - CFBundleTypeName: Excel 97-2003 Workbook
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
               - com.microsoft.excel.xls
             NSDocumentClass: $(PRODUCT_MODULE_NAME).WorkbookDocument
     entitlements:

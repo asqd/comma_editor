@@ -37,7 +37,7 @@ const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 /// Writes a temporary file in the same folder, then renames it to `path`. An existing file's
 /// permissions carry over.
-fn write_atomically(path: &Path, write: impl FnOnce(&mut BufWriter<std::fs::File>) -> Result<()>) -> Result<()> {
+pub(crate) fn write_atomically(path: &Path, write: impl FnOnce(&mut BufWriter<std::fs::File>) -> Result<()>) -> Result<()> {
     let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     let temporary = path.with_file_name(format!(".{name}.{}.saving", std::process::id()));
     let result = (|| {

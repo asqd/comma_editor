@@ -9,7 +9,7 @@ use crate::bytes::{self, Bytes};
 
 use crate::dialect::{self, Dialect};
 use crate::encoding::{self, Prepared, TextEncoding};
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, SheetStructure};
 use crate::history::{History, Splice, Transaction};
 use crate::parser::{self, Terminator};
 use crate::view::{self, CompiledFilter, ViewSpec};
@@ -36,7 +36,15 @@ pub(crate) enum RecordRef<'a> {
 pub(crate) struct Modified {
     pub fields: Vec<Field>,
     pub term: Terminator,
+    /// For a sheet of a workbook: the row of the file this row was read from, `NO_ORIGIN` for
+    /// a row added since. Saving copies unchanged cells of a row from there.
+    pub origin: u32,
+    /// The fields were changed since the row was read: saving compares them with the file's.
+    pub edited: bool,
 }
+
+/// A row that is not in the file the document was read from.
+pub(crate) const NO_ORIGIN: u32 = u32::MAX;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Field {
@@ -89,8 +97,34 @@ impl Record {
         matches!(self, Self::Original { len: 0, .. })
     }
 
+    /// A new record, not read from the file.
     pub(crate) fn modified(fields: Vec<Field>, term: Terminator) -> Self {
-        Self::Modified(Box::new(Modified { fields, term }))
+        Self::Modified(Box::new(Modified { fields, term, origin: NO_ORIGIN, edited: true }))
+    }
+
+    /// This record with other fields: its line break and where it came from stay.
+    pub(crate) fn with_fields(&self, fields: Vec<Field>) -> Self {
+        let origin = match self.get() {
+            RecordRef::Modified(modified) => modified.origin,
+            RecordRef::Original { .. } => NO_ORIGIN,
+        };
+        Self::Modified(Box::new(Modified { fields, term: self.term(), origin, edited: true }))
+    }
+
+    /// The row of the file a row of a sheet was read from.
+    pub(crate) fn origin(&self) -> Option<usize> {
+        match self.get() {
+            RecordRef::Modified(modified) if modified.origin != NO_ORIGIN => Some(modified.origin as usize),
+            _ => None,
+        }
+    }
+
+    /// Whether the fields may differ from those read: always for a row not read from a sheet.
+    pub(crate) fn is_edited(&self) -> bool {
+        match self.get() {
+            RecordRef::Modified(modified) => modified.edited,
+            RecordRef::Original { .. } => false,
+        }
     }
 
     /// Bytes the record holds besides itself.
@@ -117,6 +151,17 @@ impl Record {
             }
         }
     }
+}
+
+/// What a sheet of a workbook needs to be saved back into it.
+#[derive(Clone, Debug)]
+pub(crate) struct SheetSource {
+    /// Rows cannot be inserted, deleted or moved; see `Document::sheet_rows_fixed`.
+    pub rows_fixed: bool,
+    /// Rows read from the sheet.
+    pub rows: usize,
+    /// How values were shown when read, so that saving can tell which ones changed.
+    pub locale: crate::xlsx::DisplayLocale,
 }
 
 /// Summary of a document for the UI. Encoding, BOM, delimiter and line endings are those the
@@ -187,8 +232,9 @@ pub struct Document {
     column_count: usize,
     unterminated_quote: bool,
     detection_confident: bool,
-    /// A sheet of a workbook, whose rows end at their last value rather than share a width.
-    is_sheet: bool,
+    /// For a sheet of a workbook, what saving it back needs; rows of a sheet end at their last
+    /// value rather than share a width.
+    pub(crate) sheet: Option<Arc<SheetSource>>,
     /// Counts changes to the rows, so work done on a snapshot knows whether it is still current.
     pub(crate) generation: u64,
     /// Rows past the first part of a large file are still being indexed; see `open_partially`.
@@ -218,7 +264,7 @@ impl Document {
             column_count: columns,
             unterminated_quote: false,
             detection_confident: true,
-            is_sheet: false,
+            sheet: None,
             generation: 0,
             indexing: false,
             history: History::default(),
@@ -232,18 +278,31 @@ impl Document {
         }
     }
 
-    /// A table read from elsewhere, such as a sheet of a workbook, one list of fields per row.
-    /// It has no bytes of its own: every field holds its value.
-    pub(crate) fn from_fields(rows: Vec<Vec<Field>>) -> Self {
+    /// A sheet of a workbook, one list of fields per row. It has no bytes of its own: every
+    /// field holds its value, and each row knows the row of the file it was read from.
+    pub(crate) fn from_sheet(rows: Vec<Vec<Field>>, source: SheetSource) -> Self {
         let mut document = Self::new_empty();
-        document.is_sheet = true;
+        document.sheet = Some(Arc::new(source));
         if rows.is_empty() {
-            document.records = Arc::new(vec![Record::modified(Vec::new(), Terminator::Lf)]);
+            // One empty row, standing for the sheet's first row, so an untouched sheet stays so.
+            document.records = Arc::new(vec![Record::Modified(Box::new(Modified {
+                fields: Vec::new(),
+                term: Terminator::Lf,
+                origin: 0,
+                edited: false,
+            }))]);
             document.column_count = 1;
             return document;
         }
         document.column_count = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
-        document.records = Arc::new(rows.into_iter().map(|fields| Record::modified(fields, Terminator::Lf)).collect());
+        document.records = Arc::new(
+            rows.into_iter()
+                .enumerate()
+                .map(|(row, fields)| {
+                    Record::Modified(Box::new(Modified { fields, term: Terminator::Lf, origin: row as u32, edited: false }))
+                })
+                .collect(),
+        );
         document.has_header = document.records.len() > 1
             && document.row(0).is_ok_and(|row| row.len() == document.column_count && dialect::sniff_header(&row));
         document
@@ -251,7 +310,23 @@ impl Document {
 
     /// Whether this is a sheet of a workbook rather than a delimited file.
     pub fn is_sheet(&self) -> bool {
-        self.is_sheet
+        self.sheet.is_some()
+    }
+
+    /// Whether rows of this sheet can be inserted, deleted and moved: no formula, merged
+    /// cell, conditional format, validation, table or chart refers to them. Rows can always
+    /// be added at the end.
+    pub fn sheet_rows_fixed(&self) -> bool {
+        self.sheet.as_ref().is_some_and(|sheet| sheet.rows_fixed)
+    }
+
+    /// Fails if a sheet cannot take a change to its rows or columns.
+    pub(crate) fn check_structure(&self, change: SheetStructure) -> Result<()> {
+        let fixed = match change {
+            SheetStructure::RowsFixed => self.sheet_rows_fixed(),
+            SheetStructure::ColumnsFixed => self.is_sheet(),
+        };
+        if fixed { Err(Error::SheetStructure(change)) } else { Ok(()) }
     }
 
     /// Columns of a row whose cells hold a formula.
@@ -265,6 +340,23 @@ impl Document {
                 .collect(),
             _ => Vec::new(),
         }
+    }
+
+    /// The row of the file a row of a sheet was read from; `None` for a row added since.
+    pub(crate) fn row_origin(&self, row: usize) -> Option<usize> {
+        self.records.get(row)?.origin()
+    }
+
+    /// Whether a row of a sheet may differ from the row of the file it was read from.
+    pub(crate) fn row_edited(&self, row: usize) -> bool {
+        self.records.get(row).is_none_or(Record::is_edited)
+    }
+
+    /// Whether a sheet is as it was read: every row where it was, none edited.
+    pub(crate) fn sheet_unchanged(&self) -> bool {
+        let Some(sheet) = &self.sheet else { return false };
+        self.records.len() == sheet.rows.max(1)
+            && self.records.iter().enumerate().all(|(row, record)| record.origin() == Some(row) && !record.is_edited())
     }
 
     /// The formula of a cell of a workbook, without its leading `=`.
@@ -409,7 +501,7 @@ impl Document {
             column_count: scan.max_fields,
             unterminated_quote: scan.unterminated_quote,
             detection_confident: true,
-            is_sheet: false,
+            sheet: None,
             generation: 0,
             indexing: false,
             history: History::default(),
@@ -570,7 +662,7 @@ impl Document {
             column_count: self.column_count,
             unterminated_quote: self.unterminated_quote,
             detection_confident: self.detection_confident,
-            is_sheet: self.is_sheet,
+            sheet: self.sheet.clone(),
             generation: self.generation,
             indexing: self.indexing,
             history: History::default(),
@@ -631,6 +723,7 @@ impl Document {
         if self.view.spec.sort.is_empty() || !self.view.spec.filters.is_empty() {
             return Ok(false);
         }
+        self.check_structure(SheetStructure::RowsFixed)?;
         let start = self.header_offset();
         let order = self.view.rows.take().map(Arc::unwrap_or_clone).unwrap_or_default();
         self.view.spec.sort.clear();
@@ -714,7 +807,7 @@ impl Document {
             fields.resize(column + 1, Field::Text(String::new()));
         }
         fields[column] = Field::Text(value.to_owned());
-        let updated = Record::modified(fields, record.term());
+        let updated = record.with_fields(fields);
         let splice = Splice::apply(Arc::make_mut(&mut self.records), row, 1, vec![updated]);
         self.commit(vec![splice], self.column_count, false);
         Ok(true)
@@ -722,6 +815,9 @@ impl Document {
 
     /// Inserts `count` empty rows before row `at` (`at == row_count` appends).
     pub fn insert_rows(&mut self, at: usize, count: usize) -> Result<()> {
+        if at < self.records.len() {
+            self.check_structure(SheetStructure::RowsFixed)?;
+        }
         if at > self.records.len() {
             return Err(Error::RowOutOfRange {
                 row: at,
@@ -744,6 +840,7 @@ impl Document {
 
     /// Deletes the given rows as one undoable step.
     pub fn delete_rows(&mut self, rows: &[usize]) -> Result<()> {
+        self.check_structure(SheetStructure::RowsFixed)?;
         let mut rows = rows.to_vec();
         rows.sort_unstable();
         rows.dedup();
@@ -784,6 +881,7 @@ impl Document {
     /// continue past `at` change; when appending, full-width rows get a trailing empty field.
     /// Short rows and blank lines stay untouched. Resets the view.
     pub fn insert_column(&mut self, at: usize) -> Result<()> {
+        self.check_structure(SheetStructure::ColumnsFixed)?;
         if at > self.column_count {
             return Err(Error::ColumnOutOfRange {
                 column: at,
@@ -801,7 +899,7 @@ impl Document {
                     return record.clone();
                 }
                 fields.insert(at, Field::Text(String::new()));
-                Record::modified(fields, record.term())
+                record.with_fields(fields)
             })
             .collect();
         self.replace_records(updated, self.column_count + 1, false);
@@ -811,6 +909,7 @@ impl Document {
 
     /// Deletes column `at`. Resets the view.
     pub fn delete_column(&mut self, at: usize) -> Result<()> {
+        self.check_structure(SheetStructure::ColumnsFixed)?;
         self.check_column(at)?;
         if self.column_count <= 1 {
             return Err(Error::LastColumn);
@@ -824,7 +923,7 @@ impl Document {
                     return record.clone();
                 }
                 fields.remove(at);
-                Record::modified(fields, record.term())
+                record.with_fields(fields)
             })
             .collect();
         self.replace_records(updated, self.column_count - 1, false);
@@ -836,6 +935,7 @@ impl Document {
     /// `to == row_count` moves them to the end), keeping their order, as one undoable step.
     /// Returns `false` if nothing moves.
     pub fn move_rows(&mut self, rows: &[usize], to: usize) -> Result<bool> {
+        self.check_structure(SheetStructure::RowsFixed)?;
         let mut rows = rows.to_vec();
         rows.sort_unstable();
         rows.dedup();
@@ -870,6 +970,7 @@ impl Document {
     /// Moves column `from` to index `to` of the resulting columns. Rows too short to have
     /// either column stay untouched; others get empty fields as needed. Resets the view.
     pub fn move_column(&mut self, from: usize, to: usize) -> Result<bool> {
+        self.check_structure(SheetStructure::ColumnsFixed)?;
         self.check_column(from)?;
         self.check_column(to)?;
         if from == to {
@@ -889,7 +990,7 @@ impl Document {
                 }
                 let field = fields.remove(from);
                 fields.insert(to, field);
-                Record::modified(fields, record.term())
+                record.with_fields(fields)
             })
             .collect();
         self.replace_records(updated, self.column_count, false);

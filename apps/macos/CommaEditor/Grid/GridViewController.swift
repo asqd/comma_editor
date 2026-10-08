@@ -323,7 +323,7 @@ final class GridViewController: NSViewController {
         table.selectionHighlightStyle = .none
         table.allowsMultipleSelection = false
         // Dragging a header moves the column in the file.
-        table.allowsColumnReordering = !document.isReadOnly
+        table.allowsColumnReordering = !document.isReadOnly && workbook == nil
         table.allowsColumnResizing = true
         table.allowsColumnSelection = false
         table.columnAutoresizingStyle = .noColumnAutoresizing
@@ -565,7 +565,7 @@ final class GridViewController: NSViewController {
         }
         parts.append(L("Columns: %@", Self.format(columnCount)))
         if info.isSheet {
-            parts.append(workbook?.isLegacyFormat == true ? L("Excel 97–2003 workbook, view only") : L("Excel workbook, view only"))
+            parts.append(workbook?.isLegacyFormat == true ? L("Excel 97–2003 workbook, view only") : L("Excel workbook"))
         } else {
             parts += [
                 info.hasBom ? L("%@ with BOM", info.encoding) : info.encoding,

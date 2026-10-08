@@ -5,9 +5,9 @@ use std::collections::HashSet;
 
 use regex::Regex;
 
-use crate::document::{Document, Field, Record};
+use crate::document::{Document, Field};
 use crate::edit::{BLOCK, Change, Edit, EditOutcome, Prepared, Progress, drop_later, map_rows};
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, SheetStructure};
 use crate::range::CellRange;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -123,6 +123,7 @@ impl Document {
         regex: bool,
         progress: &Progress,
     ) -> Result<Option<Prepared>> {
+        self.check_structure(SheetStructure::ColumnsFixed)?;
         self.check_column_index(column)?;
         if separator.is_empty() {
             return Err(Error::InvalidPattern("the separator is empty".into()));
@@ -168,7 +169,7 @@ impl Document {
             let values = parts[row].as_ref().unwrap_or(&names);
             let new = (0..count).map(|n| Field::Text(values.get(n).cloned().unwrap_or_default()));
             fields.splice(column + 1..column + 1, new);
-            Some(Record::modified(fields, record.term()))
+            Some(record.with_fields(fields))
         });
         drop_later(parts);
         let Some(records) = records else { return Ok(None) };
@@ -186,6 +187,7 @@ impl Document {
     }
 
     pub(crate) fn prepare_merge(&self, columns: &[usize], separator: &str, progress: &Progress) -> Result<Option<Prepared>> {
+        self.check_structure(SheetStructure::ColumnsFixed)?;
         let mut columns = columns.to_vec();
         columns.sort_unstable();
         columns.dedup();
@@ -212,7 +214,7 @@ impl Document {
                 fields.resize(at, Field::Text(String::new()));
             }
             fields.insert(at, Field::Text(merged));
-            Some(Record::modified(fields, record.term()))
+            Some(record.with_fields(fields))
         }) else {
             return Ok(None);
         };
@@ -230,6 +232,7 @@ impl Document {
     }
 
     pub(crate) fn prepare_duplicates(&self, columns: &[usize], normalize: bool, progress: &Progress) -> Result<Option<Prepared>> {
+        self.check_structure(SheetStructure::RowsFixed)?;
         for &column in columns {
             self.check_column_index(column)?;
         }

@@ -49,6 +49,9 @@ pub enum CoreError {
     /// An Excel workbook that cannot be read, and why.
     #[error("{problem:?}")]
     Workbook { problem: WorkbookProblem },
+    /// A change to rows (or else columns) a sheet of a workbook cannot take and still be saved.
+    #[error("the rows or columns of this sheet cannot change")]
+    SheetStructure { rows: bool },
 }
 
 /// Why an Excel workbook or one of its sheets cannot be read.
@@ -67,6 +70,8 @@ pub enum WorkbookProblem {
     NoSuchSheet { sheet: u64 },
     NotATable { sheet: String },
     MissingCells { sheet: String },
+    /// Excel 97–2003 workbooks are read, not saved.
+    ReadOnly,
 }
 
 impl From<core::WorkbookError> for WorkbookProblem {
@@ -80,6 +85,7 @@ impl From<core::WorkbookError> for WorkbookProblem {
             core::WorkbookError::NoSuchSheet { sheet } => Self::NoSuchSheet { sheet: sheet as u64 },
             core::WorkbookError::NotATable { sheet } => Self::NotATable { sheet },
             core::WorkbookError::MissingCells { sheet } => Self::MissingCells { sheet },
+            core::WorkbookError::ReadOnly => Self::ReadOnly,
         }
     }
 }
@@ -116,6 +122,7 @@ impl From<core::Error> for CoreError {
             core::Error::UnknownColumn(ref column) => Self::Recipe { step: 0, column: Some(column.clone()), message: error.to_string() },
             core::Error::InvalidRecipe(message) => Self::InvalidRecipe { message },
             core::Error::Workbook(problem) => Self::Workbook { problem: problem.into() },
+            core::Error::SheetStructure(change) => Self::SheetStructure { rows: change == core::SheetStructure::RowsFixed },
             core::Error::Recipe { step, source } => {
                 let column = match source.as_ref() {
                     core::Error::UnknownColumn(column) => Some(column.clone()),
@@ -397,8 +404,11 @@ pub struct DocumentInfo {
     pub text_encoding: TextEncoding,
     /// The encoding and delimiter were detected with certainty, or chosen when opening.
     pub detection_confident: bool,
-    /// A sheet of an Excel workbook: rows end at their last value, cells may hold formulas.
+    /// A sheet of an Excel workbook: rows end at their last value, cells may hold formulas,
+    /// and columns cannot be inserted, deleted or moved.
     pub is_sheet: bool,
+    /// Rows of the sheet cannot be inserted, deleted or moved, only added at the end.
+    pub sheet_rows_fixed: bool,
 }
 
 #[derive(uniffi::Record)]
@@ -1128,6 +1138,7 @@ impl CoreDocument {
             text_encoding: info.encoding.into(),
             detection_confident: info.detection_confident,
             is_sheet: document.is_sheet(),
+            sheet_rows_fixed: document.sheet_rows_fixed(),
         }
     }
 
@@ -2061,6 +2072,13 @@ impl SheetJob {
     }
 }
 
+/// A sheet to save: its index in the workbook and the document read from it.
+#[derive(uniffi::Record)]
+pub struct SheetToSave {
+    pub index: u64,
+    pub document: Arc<CoreDocument>,
+}
+
 /// An open Excel workbook. Sheets are read one at a time.
 #[derive(uniffi::Object)]
 pub struct CoreWorkbook {
@@ -2099,6 +2117,16 @@ impl CoreWorkbook {
     /// The sheet to show first.
     pub fn active_sheet(&self) -> u64 {
         self.inner.active_sheet() as u64
+    }
+
+    /// The workbook's file with the edits of the given sheets. The file opened stays the base:
+    /// unchanged parts, rows and cells are copied from it. The app writes the bytes where
+    /// NSDocument asks, which in the sandbox is one temporary file it may write.
+    pub fn bytes(&self, sheets: Vec<SheetToSave>) -> Result<Vec<u8>, CoreError> {
+        let documents = sheets.iter().map(|sheet| sheet.document.whole()).collect::<Result<Vec<_>, _>>()?;
+        let edited: Vec<(usize, &core::Document)> =
+            sheets.iter().zip(&documents).map(|(sheet, document)| (sheet.index as usize, &**document)).collect();
+        Ok(self.inner.to_bytes(&edited)?)
     }
 
     /// Reads a sheet; call off the main thread for large ones. `None` if `job` was cancelled.

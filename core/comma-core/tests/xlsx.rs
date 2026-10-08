@@ -112,16 +112,16 @@ fn rows_of_a_sheet_are_not_broken_rows() {
 }
 
 #[test]
-fn sorting_and_editing_keep_formulas_with_their_cells() {
+fn editing_and_undoing_keep_formulas_with_their_cells() {
     let workbook = Workbook::from_bytes(excel_workbook()).unwrap();
     let mut document = workbook.read_sheet(0, &russian()).unwrap().document;
-    document.move_rows(&[3], 1).unwrap();
-    assert_eq!(document.formula(1, 4).as_deref(), Some("SUM(D2:D3)"));
-    assert!(document.set_cell(1, 4, "100").unwrap());
-    assert_eq!(document.formula(1, 4), None);
+    // Formulas refer to rows, so rows of this sheet stay where they are.
+    assert!(matches!(document.move_rows(&[3], 1), Err(Error::SheetStructure(_))));
+    assert!(document.set_cell(3, 4, "100").unwrap());
+    assert_eq!(document.formula(3, 4), None);
     document.undo();
-    assert_eq!(document.formula(1, 4).as_deref(), Some("SUM(D2:D3)"));
-    assert_eq!(document.cell(1, 4).unwrap(), "2501");
+    assert_eq!(document.formula(3, 4).as_deref(), Some("SUM(D2:D3)"));
+    assert_eq!(document.cell(3, 4).unwrap(), "2501");
 }
 
 #[test]

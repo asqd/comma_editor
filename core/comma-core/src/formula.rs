@@ -9,7 +9,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 
-use crate::document::{Document, Field, Record};
+use crate::document::{Document, Field};
 use crate::edit::{Change, Edit, EditOutcome, Prepared, Progress, map_rows};
 use crate::error::{Error, Result};
 use crate::profile::date_value;
@@ -801,6 +801,7 @@ impl Document {
         at: usize,
         progress: &Progress,
     ) -> Result<Option<Prepared>> {
+        self.check_structure(crate::error::SheetStructure::ColumnsFixed)?;
         let formula = self.compile_formula(text)?;
         if at > self.column_count() {
             return Err(Error::ColumnOutOfRange { column: at, columns: self.column_count() });
@@ -821,7 +822,7 @@ impl Document {
                 fields.resize(at, Field::Text(String::new()));
             }
             fields.insert(at, Field::Text(value));
-            Some((Record::modified(fields, record.term()), error))
+            Some((record.with_fields(fields), error))
         }) else {
             return Ok(None);
         };

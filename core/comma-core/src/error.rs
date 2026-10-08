@@ -44,12 +44,28 @@ pub enum Error {
     #[error("{0}")]
     Workbook(WorkbookError),
 
+    /// A sheet of a workbook cannot take this change and still be saved as it was.
+    #[error("{0}")]
+    SheetStructure(SheetStructure),
+
     /// A step of a recipe failed; `step` counts from 0.
     #[error("step {}: {source}", step + 1)]
     Recipe { step: usize, source: Box<Error> },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Changes to the shape of a sheet that saving cannot keep yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SheetStructure {
+    /// Rows cannot be inserted, deleted or moved: formulas, merged cells, conditional formats,
+    /// validations, tables or charts refer to them.
+    #[error("rows of this sheet cannot be inserted, deleted or moved: other parts of the workbook refer to them")]
+    RowsFixed,
+    /// Columns of a workbook cannot be inserted, deleted or moved yet.
+    #[error("columns of a workbook cannot be inserted, deleted or moved")]
+    ColumnsFixed,
+}
 
 /// Why an Excel workbook or one of its sheets cannot be read.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -75,6 +91,9 @@ pub enum WorkbookError {
     NotATable { sheet: String },
     #[error("the cells of sheet “{sheet}” are missing")]
     MissingCells { sheet: String },
+    /// Excel 97–2003 workbooks are read, not saved.
+    #[error("Excel 97–2003 workbooks can only be read")]
+    ReadOnly,
 }
 
 impl From<WorkbookError> for Error {

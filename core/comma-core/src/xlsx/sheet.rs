@@ -28,10 +28,13 @@ pub(crate) struct SheetContent {
     /// Rows from the first row of the sheet, each up to its last cell with a value.
     pub rows: Vec<Vec<Field>>,
     pub layout: SheetLayout,
+    /// Formulas, merged cells, conditional formats, validations, links, tables, drawings or
+    /// a filter refer to rows of the sheet, so they cannot move.
+    pub refers_to_rows: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum CellType {
+pub(crate) enum CellType {
     Number,
     SharedString,
     InlineString,
@@ -83,6 +86,7 @@ struct Reading {
     next_row: u32,
     next_column: u32,
     cell: Option<Cell>,
+    refers_to_rows: bool,
 }
 
 /// Reads the sheet from `source`, which holds `size` bytes; `None` if `progress` was cancelled.
@@ -101,6 +105,7 @@ pub(crate) fn read_sheet(
         next_row: 0,
         next_column: 0,
         cell: None,
+        refers_to_rows: false,
     };
     let mut cells = 0usize;
     let mut reported = 0u64;
@@ -158,7 +163,8 @@ pub(crate) fn read_sheet(
     if let Some(progress) = progress {
         progress.advance(size.saturating_sub(reported) as usize);
     }
-    Ok(Some(SheetContent { rows: reading.rows, layout: reading.layout }))
+    let refers_to_rows = reading.refers_to_rows || !reading.layout.merged.is_empty();
+    Ok(Some(SheetContent { rows: reading.rows, layout: reading.layout, refers_to_rows }))
 }
 
 impl Reading {
@@ -195,7 +201,10 @@ impl Reading {
             }
             "v" if !empty => return Next::Value,
             "is" if !empty => return Next::InlineString,
+            "conditionalFormatting" | "dataValidation" | "hyperlink" | "tablePart" | "drawing" | "legacyDrawing"
+            | "autoFilter" => self.refers_to_rows = true,
             "f" => {
+                self.refers_to_rows = true;
                 let owned = |name: &str| attribute(element, name).map(|value| value.into_owned());
                 return Next::Formula(FormulaAttributes {
                     kind: owned("t"),
@@ -276,7 +285,7 @@ fn read_formula(cell: &mut Cell, attributes: FormulaAttributes, text: String, sh
 
 /// Where a cell is, its type and its style, read in one pass over its attributes. None of
 /// them can hold an entity, so their raw text is their value.
-fn cell_attributes(element: &BytesStart<'_>) -> (Option<(u32, u32)>, CellType, usize) {
+pub(crate) fn cell_attributes(element: &BytesStart<'_>) -> (Option<(u32, u32)>, CellType, usize) {
     let (mut position, mut kind, mut style) = (None, CellType::Number, 0);
     for attribute in element.attributes().with_checks(false).flatten() {
         match attribute.key.local_name().as_ref() {

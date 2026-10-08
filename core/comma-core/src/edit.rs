@@ -321,7 +321,7 @@ impl Document {
         }
         Some(RowUpdate {
             row,
-            record: Record::modified(fields?, self.records[row].term()),
+            record: self.records[row].with_fields(fields?),
             changed,
             width,
         })

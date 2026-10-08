@@ -6,14 +6,16 @@
 mod numfmt;
 mod package;
 mod refs;
+mod save;
 mod sheet;
 mod styles;
 mod xls;
 mod xml;
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use quick_xml::events::Event;
 
@@ -25,7 +27,7 @@ use self::sheet::Context;
 use self::styles::Styles;
 use self::xml::attribute;
 use crate::bytes::{self, Bytes};
-use crate::document::Document;
+use crate::document::{Document, SheetSource};
 use crate::edit::Progress;
 use crate::error::{Result, WorkbookError};
 
@@ -112,6 +114,13 @@ pub struct Workbook {
     date1904: bool,
     /// The tab shown when the workbook was saved.
     active: usize,
+    /// Defined names, charts or pivot tables refer to cells of any sheet.
+    refers_to_cells: bool,
+    /// Whether each sheet part holds a formula, found out once when needed.
+    formulas: Mutex<HashMap<String, bool>>,
+    /// The part with the list of sheets, and the calculation chain if there is one.
+    workbook_part: String,
+    calc_chain: Option<String>,
 }
 
 enum Source {
@@ -132,7 +141,16 @@ impl Workbook {
         if bytes.starts_with(&xls::COMPOUND_FILE) {
             let opened = xls::open(bytes)?;
             let active = first_shown(&opened.sheets, opened.active);
-            return Ok(Self { source: Source::Xls(Box::new(opened.book)), sheets: opened.sheets, date1904: opened.date1904, active });
+            return Ok(Self {
+                source: Source::Xls(Box::new(opened.book)),
+                sheets: opened.sheets,
+                date1904: opened.date1904,
+                active,
+                refers_to_cells: true,
+                formulas: Mutex::default(),
+                workbook_part: String::new(),
+                calc_chain: None,
+            });
         }
         if !bytes.starts_with(b"PK")
             && let Some(problem) = text_disguised_as_workbook(&bytes)
@@ -161,10 +179,12 @@ impl Workbook {
         let mut sheets = Vec::new();
         let mut date1904 = false;
         let mut active = 0;
+        let mut defined_names = false;
         loop {
             match reader.read_event().map_err(|error| xml::error(&workbook_part, &reader, error))? {
                 Event::Start(element) | Event::Empty(element) => match element.local_name().as_ref() {
                     "workbookPr" => date1904 = xml::flag(&element, "date1904"),
+                    "definedName" => defined_names = true,
                     "workbookView" => {
                         active = attribute(&element, "activeTab").and_then(|tab| tab.parse().ok()).unwrap_or(0);
                     }
@@ -208,7 +228,19 @@ impl Workbook {
             None => Styles::default(),
         };
         let active = first_shown(&sheets, active);
-        Ok(Self { source: Source::Xlsx { package, strings, styles }, sheets, date1904, active })
+        let calc_chain = target("calcChain");
+        let refers_to_cells = defined_names
+            || package.part_names().any(|name| name.starts_with("xl/charts/") || name.starts_with("xl/pivotcache"));
+        Ok(Self {
+            source: Source::Xlsx { package, strings, styles },
+            sheets,
+            date1904,
+            active,
+            refers_to_cells,
+            formulas: Mutex::default(),
+            workbook_part,
+            calc_chain,
+        })
     }
 
     pub fn format(&self) -> WorkbookFormat {
@@ -250,7 +282,8 @@ impl Workbook {
                 let formats = book.styles.formats(locale);
                 let context = Context { strings: &[], formats: &formats, locale, date1904: self.date1904 };
                 let (rows, layout) = book.read_sheet(index, &entry.name, &context)?;
-                return Ok(Some(Sheet { name: entry.name.clone(), document: Document::from_fields(rows), layout }));
+                let source = SheetSource { rows_fixed: true, rows: rows.len(), locale: locale.clone() };
+                return Ok(Some(Sheet { name: entry.name.clone(), document: Document::from_sheet(rows, source), layout }));
             }
         };
         let part = entry.part.as_deref().unwrap_or_default();
@@ -271,11 +304,38 @@ impl Workbook {
         let Some(content) = content else {
             return Ok(None);
         };
+        self.formulas.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(part.to_owned(), content.refers_to_rows);
+        let rows_fixed = content.refers_to_rows || self.refers_to_cells || self.other_sheets_have_formulas(part)?;
+        let rows = content.rows.len();
         Ok(Some(Sheet {
             name: entry.name.clone(),
-            document: Document::from_fields(content.rows),
+            document: Document::from_sheet(content.rows, SheetSource { rows_fixed, rows, locale: locale.clone() }),
             layout: content.layout,
         }))
+    }
+
+    /// Whether a sheet other than the one in `part` has a formula, which may refer to any
+    /// sheet. Each part is looked through once.
+    fn other_sheets_have_formulas(&self, part: &str) -> Result<bool> {
+        let Source::Xlsx { package, .. } = &self.source else { return Ok(true) };
+        for other in self.sheets.iter().filter_map(|sheet| sheet.part.as_deref()).filter(|other| *other != part) {
+            let known = self.formulas.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(other).copied();
+            let has = match known {
+                Some(has) => has,
+                None => {
+                    let has = match package.stream(other)? {
+                        Some((stream, _)) => has_formula(stream)?,
+                        None => false,
+                    };
+                    self.formulas.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(other.to_owned(), has);
+                    has
+                }
+            };
+            if has {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -293,6 +353,35 @@ fn text_disguised_as_workbook(bytes: &[u8]) -> Option<WorkbookError> {
     } else {
         None
     }
+}
+
+/// Whether XML holds a formula element, `<f>` or `<f …>` with any namespace prefix.
+fn has_formula(mut input: impl Read) -> Result<bool> {
+    let mut buffer = vec![0; 1 << 16];
+    // The end of the previous chunk, so a tag cut between chunks is still found.
+    let mut carry = 0;
+    loop {
+        let read = input.read(&mut buffer[carry..])?;
+        if read == 0 {
+            return Ok(false);
+        }
+        let filled = carry + read;
+        let chunk = &buffer[..filled];
+        let found = memchr::memchr_iter(b'<', chunk).any(|at| is_formula_tag(&chunk[at + 1..]));
+        if found {
+            return Ok(true);
+        }
+        carry = filled.min(16);
+        buffer.copy_within(filled - carry..filled, 0);
+    }
+}
+
+/// Whether the text after a `<` starts a formula element: `f`, or `x:f` with a prefix.
+fn is_formula_tag(tag: &[u8]) -> bool {
+    let end = tag.iter().position(|b| !(b.is_ascii_alphanumeric() || *b == b':')).unwrap_or(tag.len());
+    let name = &tag[..end];
+    let local = name.rsplit(|&b| b == b':').next().unwrap_or(name);
+    local == b"f" && matches!(tag.get(end), Some(b'>' | b' ' | b'/'))
 }
 
 /// The tab saved as shown if it is a table, or else the first visible table.

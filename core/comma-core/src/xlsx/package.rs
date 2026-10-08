@@ -1,12 +1,13 @@
 //! The zip archive of a workbook and the relationships that tie its parts together.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Cursor, Read};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, sync_channel};
 
 use quick_xml::events::Event;
-use zip::ZipArchive;
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use super::xml::{self, attribute};
 use crate::bytes::Bytes;
@@ -47,6 +48,11 @@ impl Package {
             .filter_map(|index| Some((archive.name_for_index(index)?.trim_start_matches('/').to_lowercase(), index)))
             .collect();
         Ok(Self { archive, names })
+    }
+
+    /// Names of the parts, in lower case.
+    pub(crate) fn part_names(&self) -> impl Iterator<Item = &str> {
+        self.names.keys().map(String::as_str)
     }
 
     pub(crate) fn has_part(&self, name: &str) -> bool {
@@ -99,10 +105,36 @@ impl Package {
         Ok(self.read(name)?.map(xml::decode))
     }
 
+    /// The archive again, with some parts replaced (by lower-case name) and some left out. The
+    /// other parts are copied compressed, as they are, in their order.
+    pub(crate) fn write_with(&self, replaced: &HashMap<String, Vec<u8>>, removed: &HashSet<String>) -> Result<Vec<u8>> {
+        let mut archive = self.archive.clone();
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        let zip_error = |error: zip::result::ZipError| Error::Io(io::Error::other(error));
+        for index in 0..archive.len() {
+            let file = archive.by_index_raw(index).map_err(zip_error)?;
+            let name = file.name().trim_start_matches('/').to_lowercase();
+            if removed.contains(&name) {
+                continue;
+            }
+            match replaced.get(&name) {
+                Some(bytes) => {
+                    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+                    let original = file.name().to_owned();
+                    drop(file);
+                    writer.start_file(original, options).map_err(zip_error)?;
+                    io::Write::write_all(&mut writer, bytes)?;
+                }
+                None => writer.raw_copy_file(file).map_err(zip_error)?,
+            }
+        }
+        Ok(writer.finish().map_err(zip_error)?.into_inner())
+    }
+
     /// The relationships of a part (`""` for the package itself).
     pub(crate) fn relationships(&self, part: &str) -> Result<Vec<Relationship>> {
-        let (folder, file) = part.rsplit_once('/').unwrap_or(("", part));
-        let path = if folder.is_empty() { format!("_rels/{file}.rels") } else { format!("{folder}/_rels/{file}.rels") };
+        let path = relationships_part(part);
+        let folder = part.rsplit_once('/').map_or("", |(folder, _)| folder);
         let Some(text) = self.read_text(&path)? else {
             return Ok(Vec::new());
         };
@@ -128,6 +160,12 @@ impl Package {
         }
         Ok(relationships)
     }
+}
+
+/// The part with the relationships of `part`: `xl/_rels/workbook.xml.rels`.
+pub(crate) fn relationships_part(part: &str) -> String {
+    let (folder, file) = part.rsplit_once('/').unwrap_or(("", part));
+    if folder.is_empty() { format!("_rels/{file}.rels") } else { format!("{folder}/_rels/{file}.rels") }
 }
 
 /// A target relative to `folder`, or from the root when it starts with `/`, as a part name.

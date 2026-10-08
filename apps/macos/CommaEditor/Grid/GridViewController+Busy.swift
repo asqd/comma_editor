@@ -117,6 +117,20 @@ extension GridViewController {
         #selector(toggleFilterBar(_:)), #selector(clearFilter(_:)), #selector(showFindAndReplaceBar(_:)),
     ]
 
+    /// Commands that insert, delete or move columns, which a workbook does not take yet.
+    static let columnActions: Set<Selector> = [
+        #selector(insertColumnLeft(_:)), #selector(insertColumnRight(_:)), #selector(deleteColumn(_:)),
+        #selector(moveColumnLeft(_:)), #selector(moveColumnRight(_:)), #selector(splitColumn(_:)),
+        #selector(mergeColumns(_:)),
+    ]
+
+    /// Commands that insert, delete or move rows inside a sheet, which a sheet whose rows other
+    /// parts of the workbook refer to does not take. Rows can still be added at the end.
+    static let rowActions: Set<Selector> = [
+        #selector(deleteRows(_:)), #selector(moveRowsUp(_:)), #selector(moveRowsDown(_:)),
+        #selector(applySortToFile(_:)), #selector(removeDuplicateRows(_:)),
+    ]
+
     /// Commands that change the file, which a document open for viewing only does not take.
     /// Sorting, filtering and the header setting only change what is shown.
     static let editingActions: Set<Selector> = changingActions.subtracting([

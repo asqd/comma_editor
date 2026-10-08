@@ -2,8 +2,9 @@ import AppKit
 import UniformTypeIdentifiers
 
 /// An Excel workbook open in the app. Each sheet is a table of its own, read from the file when
-/// first shown; one sheet at a time is the document's table. Workbooks open for viewing only:
-/// they can be sorted, filtered, searched and exported, not changed or saved.
+/// first shown; one sheet at a time is the document's table. Saving writes the edits of every
+/// sheet into the file opened, changing only what changed. Excel 97–2003 workbooks open for
+/// viewing only: they can be sorted, filtered, searched and exported, not changed or saved.
 final class WorkbookDocument: CSVDocument {
     private(set) var workbook: CoreWorkbook?
     /// Sheets in the order of their tabs.
@@ -30,7 +31,12 @@ final class WorkbookDocument: CSVDocument {
         loading.map { (sheets[$0.index].name, $0.job.fraction()) }
     }
 
-    override var isReadOnly: Bool { true }
+    override var isReadOnly: Bool { isLegacyFormat }
+
+    /// Save As runs: the panel offers the workbook's own format rather than CSV.
+    private var savingAsWorkbook = false
+    /// The last save panel was for the workbook itself, not for a CSV copy.
+    private var panelSavedWorkbook = false
 
     // Nothing is ever written to the workbook itself.
     override class var autosavesInPlace: Bool { false }
@@ -108,7 +114,15 @@ final class WorkbookDocument: CSVDocument {
 
     private func show(_ sheet: LoadedSheet, at index: Int) {
         sheetIndex = index
-        replaceCore(sheet.document)
+        replaceCore(sheet.document, keepsUndo: true)
+    }
+
+    /// Undo and redo show the sheet whose change they undo.
+    override func show(_ table: CoreDocument) {
+        guard table !== core, let index = loaded.first(where: { $0.value.document === table })?.key else { return }
+        loading?.job.cancel()
+        loading = nil
+        show(loaded[index]!, at: index)
     }
 
     /// The tables before and after the shown one, for Next and Previous Sheet.
@@ -125,25 +139,65 @@ final class WorkbookDocument: CSVDocument {
 
     // MARK: Saving
 
-    /// Only copies are written, as CSV: Export and Export for Excel. The save panel offers
-    /// these types for a workbook too.
+    private static let csvTypes = [
+        UTType.commaSeparatedText.identifier, UTType.tabSeparatedText.identifier, UTType.utf8TabSeparatedText.identifier,
+    ]
+
+    /// A workbook saves as itself; Export and Export for Excel write the shown sheet as CSV.
     override func writableTypes(for saveOperation: NSDocument.SaveOperationType) -> [String] {
-        saveOperation == .saveToOperation
-            ? [UTType.commaSeparatedText.identifier, UTType.tabSeparatedText.identifier, UTType.utf8TabSeparatedText.identifier]
-            : []
+        if saveOperation == .saveToOperation {
+            return Self.csvTypes
+        }
+        return isLegacyFormat ? [] : [fileType].compactMap { $0 }
     }
 
     override func write(to url: URL, ofType typeName: String) throws {
-        guard !(UTType(typeName)?.conforms(to: .spreadsheet) ?? false) else {
+        guard UTType(typeName)?.conforms(to: .spreadsheet) ?? false else {
+            // A sheet exported as CSV.
+            return try super.write(to: url, ofType: typeName)
+        }
+        guard let workbook, !isLegacyFormat else {
             throw CocoaError(.fileWriteNoPermission)
         }
-        try super.write(to: url, ofType: typeName)
+        let sheets = loaded.map { SheetToSave(index: UInt64($0.key), document: $0.value.document) }
+        let bytes: Data
+        do {
+            bytes = try workbook.bytes(sheets: sheets)
+        } catch {
+            throw Self.userFacingError(error)
+        }
+        // NSDocument writes into a temporary file and puts it in place of the old one.
+        try bytes.write(to: url)
+    }
+
+    // Save As keeps the workbook format: no CSV options in the panel. Export still offers them.
+    override func saveAs(_ sender: Any?) {
+        savingAsWorkbook = true
+        super.saveAs(sender)
+    }
+
+    override func saveTo(_ sender: Any?) {
+        savingAsWorkbook = false
+        super.saveTo(sender)
+    }
+
+    override func prepareSavePanel(_ savePanel: NSSavePanel) -> Bool {
+        panelSavedWorkbook = savingAsWorkbook
+        savingAsWorkbook = false
+        guard panelSavedWorkbook else { return super.prepareSavePanel(savePanel) }
+        savePanel.allowedContentTypes = [fileType.flatMap(UTType.init) ?? .spreadsheet]
+        return true
+    }
+
+    override var fileTypeFromLastRunSavePanel: String? {
+        panelSavedWorkbook ? fileType : super.fileTypeFromLastRunSavePanel
     }
 
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(save(_:)), #selector(saveAs(_:)), #selector(duplicate(_:)),
-             #selector(reopenWithEncoding(_:)), #selector(reopenWithDelimiter(_:)):
+        case #selector(save(_:)), #selector(saveAs(_:)), #selector(duplicate(_:)):
+            return !isLegacyFormat && super.validateMenuItem(menuItem)
+        case #selector(reopenWithEncoding(_:)), #selector(reopenWithDelimiter(_:)):
             return false
         default:
             return super.validateMenuItem(menuItem)

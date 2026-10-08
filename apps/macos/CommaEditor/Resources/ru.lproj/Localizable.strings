@@ -542,11 +542,11 @@
 "%@ is not empty" = "%@ не пусто";
 
 /* Excel workbooks */
-"Excel workbooks open for viewing only" = "Книги Excel открываются только для просмотра";
-"CommaEditor cannot save workbooks yet. To change the data, export the sheet as CSV with File ▸ Export… and open the copy." = "CommaEditor пока не умеет сохранять книги. Чтобы изменить данные, экспортируйте лист в CSV («Файл ▸ Экспортировать…») и откройте копию.";
+"Excel 97–2003 workbooks open for viewing only" = "Книги Excel 97–2003 открываются только для просмотра";
+"CommaEditor cannot save workbooks in this old format. To change the data, export the sheet with File ▸ Export As ▸ Excel Workbook (XLSX) or File ▸ Export… as CSV, and open the copy." = "CommaEditor не сохраняет книги в этом старом формате. Чтобы изменить данные, экспортируйте лист («Файл ▸ Экспортировать как ▸ Книга Excel (XLSX)» или «Файл ▸ Экспортировать…» в CSV) и откройте копию.";
 "The Excel workbook cannot be read." = "Книгу Excel не удалось прочитать.";
 "The workbook has no sheets with cells." = "В книге нет листов с ячейками.";
-"Excel workbook, view only" = "Книга Excel, только просмотр";
+"Excel workbook" = "Книга Excel";
 "Reading “%@”: %@" = "Чтение «%@»: %@";
 "A chart sheet: it has no cells to show" = "Лист-диаграмма: ячеек на нём нет";
 "A hidden sheet" = "Скрытый лист";
@@ -573,3 +573,8 @@
 "The workbook has no sheet %@." = "В книге нет листа %@.";
 "“%@” is a chart or macro sheet: it has no cells to show." = "«%@» — лист с диаграммой или макросами: ячеек на нём нет.";
 "The cells of sheet “%@” are missing from the file." = "Ячеек листа «%@» в файле нет.";
+"Rows of this sheet cannot be inserted, deleted or moved." = "На этом листе нельзя вставлять, удалять и перемещать строки.";
+"Formulas, merged cells, conditional formats, tables or charts of the workbook refer to them, and CommaEditor does not move such references yet. Rows can be added at the end." = "На строки ссылаются формулы, объединённые ячейки, условное форматирование, таблицы или диаграммы книги, а сдвигать такие ссылки CommaEditor пока не умеет. Добавлять строки в конец можно.";
+"Columns of a workbook cannot be inserted, deleted or moved yet." = "В книгах Excel пока нельзя вставлять, удалять и перемещать колонки.";
+"Values in the columns can be changed. To change the columns, export the sheet as CSV." = "Значения в колонках менять можно. Чтобы изменить сами колонки, экспортируйте лист в CSV.";
+"Excel 97–2003 workbooks can only be read. Export the sheet as XLSX or CSV to change it." = "Книги Excel 97–2003 можно только читать. Чтобы изменить лист, экспортируйте его в XLSX или CSV.";
