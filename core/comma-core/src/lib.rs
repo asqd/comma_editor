@@ -3,6 +3,8 @@
 //! The original file bytes stay in memory. Unchanged records are written back byte for byte,
 //! so `open → save` without edits reproduces the file exactly, and an edit changes only the
 //! fields that were edited.
+//!
+//! Sheets of Excel workbooks open as documents too; see `Workbook`.
 
 mod bytes;
 mod columns;
@@ -24,6 +26,7 @@ mod repair;
 mod search;
 mod view;
 mod writer;
+mod xlsx;
 
 pub use columns::TextTransform;
 pub use dialect::{Dialect, LineEnding, QuoteStyle};
@@ -43,3 +46,7 @@ pub use repair::{Fix, Problem, ProblemKind, RepairOption, RepairReport};
 pub use search::SearchQuery;
 pub use view::{Filter, FilterOp, SortKey, ViewSpec};
 pub use writer::SaveFormat;
+pub use xlsx::{
+    ColumnLayout, DisplayLocale, Sheet, SheetEntry, SheetKind, SheetLayout, SheetRange, SheetVisibility, Workbook,
+    cell_name, column_letters,
+};

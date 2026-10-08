@@ -8,9 +8,10 @@
 
 ```
 core/
-  comma-core/            ядро: парсинг, определение кодировки и диалекта, правки, undo, сохранение
+  comma-core/            ядро: парсинг, определение кодировки и диалекта, правки, undo, сохранение,
+                         чтение книг Excel (xlsx/)
   comma-ffi/             UniFFI-обёртка ядра для Swift
-  comma-cli/             утилита `comma`: info и check (проверка побайтового round-trip)
+  comma-cli/             утилита `comma`: info и check (проверка побайтового round-trip), листы XLSX
   uniffi-bindgen-swift/  генератор Swift-биндингов
 apps/
   macos/                 приложение для macOS (XcodeGen: project.yml)
@@ -44,6 +45,7 @@ make icon     # перерисовать иконку из design/make-icon.swif
 ```bash
 cargo run -p comma-cli -- info samples/*.csv
 cargo run -p comma-cli -- check samples/*.csv
+cargo run -p comma-cli -- info book.xlsx   # листы книги Excel: размер, формулы, время чтения
 ```
 
 ## Как устроено сохранение без лишнего диффа

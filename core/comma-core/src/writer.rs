@@ -142,7 +142,8 @@ impl Document {
             }
             match field {
                 Field::Raw { start, end } => out.write_all(&self.buf[*start..*end])?,
-                Field::Text(text) => {
+                Field::Text(_) | Field::Formula(_) => {
+                    let text = &self.field_value(field);
                     let bytes = encoding
                         .encode(text)
                         .expect("checked by check_encodable");
@@ -175,8 +176,8 @@ impl Document {
                 continue;
             };
             for (column, field) in modified.fields.iter().enumerate() {
-                if let Field::Text(text) = field
-                    && encoding.encode(text).is_none()
+                if !matches!(field, Field::Raw { .. })
+                    && encoding.encode(&self.field_value(field)).is_none()
                 {
                     return Err(Error::Unmappable {
                         row,
@@ -264,7 +265,9 @@ impl Document {
                     }
                     match field {
                         Field::Raw { start, end } => out.push_str(&encoding.decode(&self.buf[*start..*end])),
-                        Field::Text(text) => self.push_quoted(out, text, self.dialect.delimiter),
+                        Field::Text(_) | Field::Formula(_) => {
+                            self.push_quoted(out, &self.field_value(field), self.dialect.delimiter)
+                        }
                     }
                 }
             }

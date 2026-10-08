@@ -43,6 +43,18 @@ pub(crate) enum Field {
     /// Untouched field: raw bytes of the original file, quotes included.
     Raw { start: usize, end: usize },
     Text(String),
+    /// A cell of a workbook computed by a formula.
+    Formula(Box<FormulaField>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FormulaField {
+    /// The formula without its leading `=`, as Excel writes it in the file.
+    pub formula: String,
+    /// The result as shown: the one stored in the file until the formula is computed again.
+    pub value: String,
+    /// The range an array formula fills, such as `C1:C3`.
+    pub array: Option<String>,
 }
 
 impl Record {
@@ -93,6 +105,12 @@ impl Record {
                     .map(|field| match field {
                         Field::Text(text) => text.capacity(),
                         Field::Raw { .. } => 0,
+                        Field::Formula(cell) => {
+                            size_of::<FormulaField>()
+                                + cell.formula.capacity()
+                                + cell.value.capacity()
+                                + cell.array.as_ref().map_or(0, String::capacity)
+                        }
                     })
                     .sum();
                 size_of::<Modified>() + modified.fields.capacity() * size_of::<Field>() + texts
@@ -208,6 +226,33 @@ impl Document {
                 delimiter: b',',
                 line_ending: crate::dialect::LineEnding::Lf,
             },
+        }
+    }
+
+    /// A table read from elsewhere, such as a sheet of a workbook, one list of fields per row.
+    /// It has no bytes of its own: every field holds its value.
+    pub(crate) fn from_fields(rows: Vec<Vec<Field>>) -> Self {
+        let mut document = Self::new_empty();
+        if rows.is_empty() {
+            document.records = Arc::new(vec![Record::modified(Vec::new(), Terminator::Lf)]);
+            document.column_count = 1;
+            return document;
+        }
+        document.column_count = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
+        document.records = Arc::new(rows.into_iter().map(|fields| Record::modified(fields, Terminator::Lf)).collect());
+        document.has_header = document.records.len() > 1
+            && document.row(0).is_ok_and(|row| row.len() == document.column_count && dialect::sniff_header(&row));
+        document
+    }
+
+    /// The formula of a cell of a workbook, without its leading `=`.
+    pub fn formula(&self, row: usize, column: usize) -> Option<String> {
+        let RecordRef::Modified(modified) = self.records.get(row)?.get() else {
+            return None;
+        };
+        match modified.fields.get(column)? {
+            Field::Formula(cell) => Some(cell.formula.clone()),
+            _ => None,
         }
     }
 
@@ -980,6 +1025,7 @@ impl Document {
         match field {
             Field::Raw { start, end } => self.raw_value(*start, *end),
             Field::Text(text) => Cow::Borrowed(text),
+            Field::Formula(cell) => Cow::Borrowed(&cell.value),
         }
     }
 
@@ -1176,6 +1222,11 @@ mod tests {
     #[test]
     fn a_record_takes_16_bytes() {
         assert_eq!(std::mem::size_of::<Record>(), 16);
+    }
+
+    #[test]
+    fn a_field_takes_24_bytes_even_with_formulas() {
+        assert_eq!(std::mem::size_of::<Field>(), 24);
     }
 
     #[test]

@@ -73,6 +73,8 @@ impl From<core::Error> for CoreError {
             core::Error::Formula(error) => Self::Formula { problem: error.into() },
             core::Error::UnknownColumn(ref column) => Self::Recipe { step: 0, column: Some(column.clone()), message: error.to_string() },
             core::Error::InvalidRecipe(message) => Self::InvalidRecipe { message },
+            // A file that cannot be read; the app gets its own case when it opens workbooks.
+            core::Error::Workbook(message) => Self::Io { message },
             core::Error::Recipe { step, source } => {
                 let column = match source.as_ref() {
                     core::Error::UnknownColumn(column) => Some(column.clone()),

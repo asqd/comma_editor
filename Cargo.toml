@@ -17,6 +17,7 @@ comma-core = { path = "core/comma-core" }
 encoding_rs = "0.8.42"
 memchr = "2.8"
 memmap2 = "0.9"
+quick-xml = "0.42"
 rayon = "1.10"
 regex = "1.13"
 serde = { version = "1", features = ["derive"] }
@@ -24,6 +25,7 @@ serde_json = "1"
 rust_xlsxwriter = { version = "0.99", default-features = false }
 thiserror = "2"
 uniffi = "0.32"
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [profile.release]
 debug = false

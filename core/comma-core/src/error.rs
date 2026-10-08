@@ -37,6 +37,10 @@ pub enum Error {
     #[error("{0}")]
     InvalidRecipe(String),
 
+    /// An Excel workbook that cannot be read, and why.
+    #[error("{0}")]
+    Workbook(String),
+
     /// A step of a recipe failed; `step` counts from 0.
     #[error("step {}: {source}", step + 1)]
     Recipe { step: usize, source: Box<Error> },

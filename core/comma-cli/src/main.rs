@@ -1,13 +1,15 @@
-//! `comma info FILE...` prints what CommaEditor detects in a file.
+//! `comma info FILE...` prints what CommaEditor detects in a file, or the sheets of a workbook.
 //! `comma check FILE...` verifies that opening and saving a file reproduces it byte for byte.
 
 use std::path::Path;
 use std::process::ExitCode;
 
-use comma_core::{Document, LineEnding, QuoteStyle};
+use std::time::Instant;
+
+use comma_core::{DisplayLocale, Document, LineEnding, QuoteStyle, SheetKind, SheetVisibility, Workbook};
 
 const USAGE: &str = "usage:
-  comma info FILE...   show encoding, dialect and size
+  comma info FILE...   show encoding, dialect and size; for .xlsx, the sheets
   comma check FILE...  verify that open → save reproduces each file byte for byte";
 
 fn main() -> ExitCode {
@@ -40,7 +42,15 @@ fn main() -> ExitCode {
     if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
 
+fn is_workbook(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| ["xlsx", "xlsm"].iter().any(|known| extension.eq_ignore_ascii_case(known)))
+}
+
 fn info(path: &Path) -> Result<bool, String> {
+    if is_workbook(path) {
+        return workbook_info(path);
+    }
     let document = Document::open(path).map_err(|e| e.to_string())?;
     let info = document.info();
     let delimiter = match info.dialect.delimiter {
@@ -76,6 +86,45 @@ fn info(path: &Path) -> Result<bool, String> {
     );
     if info.unterminated_quote {
         println!("  warning:    a quoted value is never closed");
+    }
+    Ok(true)
+}
+
+fn workbook_info(path: &Path) -> Result<bool, String> {
+    let started = Instant::now();
+    let workbook = Workbook::open(path).map_err(|e| e.to_string())?;
+    println!("{}", path.display());
+    println!("  opened in:  {:.2} s", started.elapsed().as_secs_f64());
+    if workbook.uses_1904_dates() {
+        println!("  dates:      from 1904");
+    }
+    let locale = DisplayLocale::default();
+    for (index, entry) in workbook.sheets().iter().enumerate() {
+        let state = match entry.visibility {
+            SheetVisibility::Visible => "",
+            SheetVisibility::Hidden => ", hidden",
+            SheetVisibility::VeryHidden => ", very hidden",
+        };
+        if entry.kind != SheetKind::Worksheet {
+            println!("  sheet {}:    “{}”: not a table{state}", index + 1, entry.name);
+            continue;
+        }
+        let started = Instant::now();
+        let sheet = workbook.read_sheet(index, &locale).map_err(|e| e.to_string())?;
+        let document = &sheet.document;
+        let formulas = (0..document.row_count())
+            .map(|row| (0..document.column_count()).filter(|&column| document.formula(row, column).is_some()).count())
+            .sum::<usize>();
+        println!(
+            "  sheet {}:    “{}”: {} rows × {} columns, {formulas} formulas, {} merged ranges{}{state}, read in {:.2} s",
+            index + 1,
+            entry.name,
+            document.row_count(),
+            document.column_count(),
+            sheet.layout.merged.len(),
+            if document.has_header() { ", first row is a header" } else { "" },
+            started.elapsed().as_secs_f64(),
+        );
     }
     Ok(true)
 }
