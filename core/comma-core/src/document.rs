@@ -187,6 +187,8 @@ pub struct Document {
     column_count: usize,
     unterminated_quote: bool,
     detection_confident: bool,
+    /// A sheet of a workbook, whose rows end at their last value rather than share a width.
+    is_sheet: bool,
     /// Counts changes to the rows, so work done on a snapshot knows whether it is still current.
     pub(crate) generation: u64,
     /// Rows past the first part of a large file are still being indexed; see `open_partially`.
@@ -216,6 +218,7 @@ impl Document {
             column_count: columns,
             unterminated_quote: false,
             detection_confident: true,
+            is_sheet: false,
             generation: 0,
             indexing: false,
             history: History::default(),
@@ -233,6 +236,7 @@ impl Document {
     /// It has no bytes of its own: every field holds its value.
     pub(crate) fn from_fields(rows: Vec<Vec<Field>>) -> Self {
         let mut document = Self::new_empty();
+        document.is_sheet = true;
         if rows.is_empty() {
             document.records = Arc::new(vec![Record::modified(Vec::new(), Terminator::Lf)]);
             document.column_count = 1;
@@ -243,6 +247,24 @@ impl Document {
         document.has_header = document.records.len() > 1
             && document.row(0).is_ok_and(|row| row.len() == document.column_count && dialect::sniff_header(&row));
         document
+    }
+
+    /// Whether this is a sheet of a workbook rather than a delimited file.
+    pub fn is_sheet(&self) -> bool {
+        self.is_sheet
+    }
+
+    /// Columns of a row whose cells hold a formula.
+    pub fn formula_columns(&self, row: usize) -> Vec<usize> {
+        match self.records.get(row).map(Record::get) {
+            Some(RecordRef::Modified(modified)) => modified
+                .fields
+                .iter()
+                .enumerate()
+                .filter_map(|(column, field)| matches!(field, Field::Formula(_)).then_some(column))
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     /// The formula of a cell of a workbook, without its leading `=`.
@@ -387,6 +409,7 @@ impl Document {
             column_count: scan.max_fields,
             unterminated_quote: scan.unterminated_quote,
             detection_confident: true,
+            is_sheet: false,
             generation: 0,
             indexing: false,
             history: History::default(),
@@ -547,6 +570,7 @@ impl Document {
             column_count: self.column_count,
             unterminated_quote: self.unterminated_quote,
             detection_confident: self.detection_confident,
+            is_sheet: self.is_sheet,
             generation: self.generation,
             indexing: self.indexing,
             history: History::default(),

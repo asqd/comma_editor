@@ -64,6 +64,14 @@ targets:
               - public.tab-separated-values-text
               - public.utf8-tab-separated-values-text
             NSDocumentClass: $(PRODUCT_MODULE_NAME).CSVDocument
+          # Viewer until workbooks can be saved: they open for viewing and export only.
+          - CFBundleTypeName: Excel Workbook
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - org.openxmlformats.spreadsheetml.sheet
+              - org.openxmlformats.spreadsheetml.sheet.macroenabled
+            NSDocumentClass: $(PRODUCT_MODULE_NAME).WorkbookDocument
     entitlements:
       path: CommaEditor/CommaEditor.entitlements
       properties:

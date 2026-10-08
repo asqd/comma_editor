@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 /// A CSV file open in the app. The data and the edit history live in the Rust core;
 /// each core edit is mirrored by one step in the document's undo manager.
-final class CSVDocument: NSDocument {
+class CSVDocument: NSDocument {
     enum Change {
         /// One cell of a visible row changed.
         case cell(visibleRow: Int, column: Int)
@@ -13,6 +13,8 @@ final class CSVDocument: NSDocument {
         case structure
         /// More rows of a large file were indexed, or background sorting started or stopped.
         case progress
+        /// Another table took the place of the shown one: another sheet of a workbook.
+        case sheet
     }
 
     /// Tables from this many rows on are sorted, filtered and changed off the main thread.
@@ -33,6 +35,9 @@ final class CSVDocument: NSDocument {
     var editFraction: Double? { editJob?.fraction() }
     /// The file cannot be changed now: it is being read, or another change runs.
     var isBusy: Bool { isIndexing || editJob != nil }
+    /// The file can be looked at, sorted and filtered, but not changed: a workbook, until the
+    /// app can save workbooks.
+    var isReadOnly: Bool { false }
 
     static let didChangeNotification = Notification.Name("CSVDocumentDidChange")
     static let changeKey = "change"
@@ -108,6 +113,21 @@ final class CSVDocument: NSDocument {
                 }
             }
         }
+    }
+
+    /// Shows another table in this document, such as another sheet of a workbook. Work running
+    /// on the previous table stops, and its undo steps go.
+    func replaceCore(_ newCore: CoreDocument, change: Change = .sheet) {
+        viewJob?.cancel()
+        viewJob = nil
+        editJob?.cancel()
+        editJob = nil
+        editStatus = nil
+        core = newCore
+        // A file is first read off the main thread, before any window shows it.
+        guard Thread.isMainThread else { return }
+        undoManager?.removeAllActions()
+        post(change)
     }
 
     /// Reads the file again with an encoding and delimiter (`nil` detects them). Unsaved
@@ -481,6 +501,10 @@ final class CSVDocument: NSDocument {
     /// thread, with progress and Cancel in the status bar; the table can be read meanwhile, not
     /// changed. `done` runs once the change is made, unless it failed or was cancelled.
     func edit(_ actionName: String, _ request: EditRequest, done: @escaping (EditResult) -> Void = { _ in }) {
+        guard !isReadOnly else {
+            presentReadOnlyNotice()
+            return
+        }
         guard editJob == nil else {
             NSSound.beep()
             return
@@ -633,6 +657,10 @@ final class CSVDocument: NSDocument {
     /// Runs one core edit. If it changed something, registers an undo step and notifies the UI.
     @discardableResult
     private func perform(_ actionName: String, _ change: Change, _ edit: (CoreDocument) throws -> Bool) -> Bool {
+        guard !isReadOnly else {
+            presentReadOnlyNotice()
+            return false
+        }
         do {
             guard try edit(core) else { return false }
         } catch {
@@ -664,7 +692,7 @@ final class CSVDocument: NSDocument {
         }
     }
 
-    private func post(_ change: Change) {
+    func post(_ change: Change) {
         NotificationCenter.default.post(
             name: Self.didChangeNotification,
             object: self,
@@ -673,6 +701,26 @@ final class CSVDocument: NSDocument {
     }
 
     // MARK: Errors
+
+    /// Says why a change was not made to a document that is open for viewing only, and offers
+    /// to export the table, which can be changed.
+    func presentReadOnlyNotice() {
+        let alert = NSAlert()
+        alert.messageText = L("Excel workbooks open for viewing only")
+        alert.informativeText = L("CommaEditor cannot save workbooks yet. To change the data, export the sheet as CSV with File ▸ Export… and open the copy.")
+        alert.addButton(withTitle: L("OK"))
+        alert.addButton(withTitle: L("Export…"))
+        let respond: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            if response == .alertSecondButtonReturn {
+                self?.saveTo(nil)
+            }
+        }
+        if let window = windowForSheet {
+            alert.beginSheetModal(for: window, completionHandler: respond)
+        } else {
+            respond(alert.runModal())
+        }
+    }
 
     func presentEditError(_ error: Error) {
         let error = Self.userFacingError(error)
@@ -717,6 +765,10 @@ final class CSVDocument: NSDocument {
             userInfo[NSLocalizedDescriptionKey] = message
         case .Formula(let problem):
             userInfo[NSLocalizedDescriptionKey] = FormulaHelp.describe(problem)
+        case .Workbook(let message):
+            userInfo[NSLocalizedDescriptionKey] = L("The Excel workbook cannot be read.")
+            // The core's usual reasons are translated; a damaged part is named as it is.
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = L(message)
         case .InvalidPattern(let message):
             userInfo[NSLocalizedDescriptionKey] = L("The regular expression is not valid.")
             userInfo[NSLocalizedRecoverySuggestionErrorKey] = message

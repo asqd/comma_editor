@@ -102,7 +102,9 @@ impl Document {
         let survey = self.survey();
         let mut counts: HashMap<ProblemKind, usize> = HashMap::new();
         let mut problems = Vec::new();
-        let kinds: Vec<(usize, ProblemKind)> = (0..self.records.len())
+        // Rows of a sheet end at their last value, so their lengths say nothing.
+        let rows = if self.is_sheet() { 0 } else { self.records.len() };
+        let kinds: Vec<(usize, ProblemKind)> = (0..rows)
             .into_par_iter()
             .filter_map(|row| self.problem_kind(&survey, row).map(|kind| (row, kind)))
             .collect();

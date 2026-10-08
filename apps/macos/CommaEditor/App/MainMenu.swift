@@ -210,6 +210,8 @@ enum MainMenu {
             item(L("Show Record Card"), #selector(GridViewController.toggleRecordCard(_:)), "i", [.command, .option]),
             item(L("Previous Record"), #selector(GridViewController.previousRecord(_:)), "["),
             item(L("Next Record"), #selector(GridViewController.nextRecord(_:)), "]"),
+            item(L("Previous Sheet"), #selector(GridViewController.previousSheet(_:)), key(NSPageUpFunctionKey), [.control]),
+            item(L("Next Sheet"), #selector(GridViewController.nextSheet(_:)), key(NSPageDownFunctionKey), [.control]),
             .separator(),
             item(L("Freeze Columns Through This One"), #selector(GridViewController.freezeColumns(_:))),
             item(L("Unfreeze Columns"), #selector(GridViewController.unfreezeColumns(_:))),

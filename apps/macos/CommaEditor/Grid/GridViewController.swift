@@ -84,11 +84,19 @@ final class GridViewController: NSViewController {
     let busyLabel = NSTextField(labelWithString: "")
     let busyCancel = NSButton()
     private var changeObserver: NSObjectProtocol?
+    /// Tabs of the sheets of a workbook, above the status bar.
+    let sheetTabs = SheetTabsView()
+    /// What the table looked like on each sheet of a workbook, to come back to it.
+    var sheetStates: [Int: SheetViewState] = [:]
+    /// The workbook read and the sheet the table shows.
+    var shownSheet: (generation: Int, index: Int)?
 
     private struct CachedRow {
         let values: [String]
         /// Row of the file, the header row counted.
         let fileRow: Int
+        /// Columns whose cells hold a formula, in a sheet of a workbook.
+        let formulaColumns: Set<Int>
     }
 
     private static let cacheBlock = 128
@@ -131,6 +139,12 @@ final class GridViewController: NSViewController {
     var dataRowCount: Int { Int(info.visibleRowCount) }
     var columnCount: Int { Int(info.columnCount) }
     var headerOffset: Int { info.hasHeader && info.rowCount > 0 ? 1 : 0 }
+    /// The number a row of the file is shown with: data rows count from 1, while a sheet
+    /// numbers its rows as Excel does, which its formulas refer to.
+    func rowNumber(fileRow: Int) -> Int {
+        info.isSheet ? fileRow + 1 : fileRow - headerOffset + 1
+    }
+
     /// Data rows in the file, shown or not.
     var totalDataRowCount: Int { Int(info.rowCount) - headerOffset }
 
@@ -222,7 +236,8 @@ final class GridViewController: NSViewController {
             sidePanelWidth,
         ])
 
-        let stack = NSStackView(views: [findContainer, filterContainer, content, separator, statusBar])
+        let sheetBar = configureSheetTabs()
+        let stack = NSStackView(views: [findContainer, filterContainer, content, separator, sheetBar, statusBar])
         stack.orientation = .vertical
         stack.spacing = 0
         stack.distribution = .fill
@@ -263,6 +278,7 @@ final class GridViewController: NSViewController {
             self?.selection.flatMap { $0.isSingleCell ? nil : $0.range }
         }
         filterBar.delegate = self
+        applyFirstSheetLayout()
         rebuildColumns()
         updateStatus()
         configureRepairActions()
@@ -307,7 +323,7 @@ final class GridViewController: NSViewController {
         table.selectionHighlightStyle = .none
         table.allowsMultipleSelection = false
         // Dragging a header moves the column in the file.
-        table.allowsColumnReordering = true
+        table.allowsColumnReordering = !document.isReadOnly
         table.allowsColumnResizing = true
         table.allowsColumnSelection = false
         table.columnAutoresizingStyle = .noColumnAutoresizing
@@ -453,10 +469,12 @@ final class GridViewController: NSViewController {
             rowCache.removeAll(keepingCapacity: true)
         }
         let start = row - row % Self.cacheBlock
+        let formulas = info.isSheet ? core.visibleFormulaColumns(start: UInt64(start), count: UInt64(Self.cacheBlock)) : []
         for (offset, values) in core.visibleRows(start: UInt64(start), count: UInt64(Self.cacheBlock)).enumerated() {
             let visibleRow = start + offset
             let fileRow = core.visibleRecord(visibleRow: UInt64(visibleRow)).map { Int($0) } ?? visibleRow
-            rowCache[visibleRow] = CachedRow(values: values, fileRow: fileRow)
+            let formulaColumns = offset < formulas.count ? Set(formulas[offset].map { Int($0) }) : []
+            rowCache[visibleRow] = CachedRow(values: values, fileRow: fileRow, formulaColumns: formulaColumns)
         }
         return rowCache[row]
     }
@@ -470,12 +488,27 @@ final class GridViewController: NSViewController {
         return column < values.count ? values[column] : ""
     }
 
+    /// The formula of a visible cell of a sheet, with its `=`.
+    func formula(row: Int, column: Int) -> String? {
+        guard let cached = cachedRow(row), cached.formulaColumns.contains(column) else { return nil }
+        return core.formula(row: UInt64(cached.fileRow), column: UInt64(column)).map { "=" + $0 }
+    }
+
+    /// Rows fetched for the previous table go when another one is shown.
+    func clearRowCache() {
+        rowCache.removeAll(keepingCapacity: true)
+    }
+
     private func documentDidChange(_ notification: Notification) {
         let previous = info
         info = core.info()
         let change = notification.userInfo?[CSVDocument.changeKey] as? CSVDocument.Change
         if case .progress? = change {
             rowsAdded(since: previous)
+            return
+        }
+        if case .sheet? = change {
+            sheetDidChange()
             return
         }
         let sameShape = previous.rowCount == info.rowCount
@@ -530,12 +563,16 @@ final class GridViewController: NSViewController {
         } else {
             parts.append(L("Showing %@ of %@", Self.format(dataRowCount), Self.format(totalDataRowCount)))
         }
-        parts += [
-            L("Columns: %@", Self.format(columnCount)),
-            info.hasBom ? L("%@ with BOM", info.encoding) : info.encoding,
-            L("Delimiter: %@", delimiter),
-            lineEnding,
-        ]
+        parts.append(L("Columns: %@", Self.format(columnCount)))
+        if info.isSheet {
+            parts.append(L("Excel workbook, view only"))
+        } else {
+            parts += [
+                info.hasBom ? L("%@ with BOM", info.encoding) : info.encoding,
+                L("Delimiter: %@", delimiter),
+                lineEnding,
+            ]
+        }
         if !hiddenColumns.isEmpty {
             parts.append(L("Hidden columns: %@", Self.format(hiddenColumns.count)))
         }
@@ -545,6 +582,8 @@ final class GridViewController: NSViewController {
         }
         if let selection, !selection.isSingleCell {
             parts.insert(contentsOf: selectionSummary(selection), at: 0)
+        } else if let row = activeRow, let formula = formula(row: row, column: activeColumn) {
+            parts.insert("ƒ  " + Self.singleLine(formula), at: 0)
         }
         if let searchSummary, findContainer.isHidden {
             parts.insert(searchSummary, at: 0)
@@ -670,6 +709,10 @@ final class GridViewController: NSViewController {
     /// Values with line breaks open in a sheet instead.
     private func editActiveCell(typing text: String? = nil) {
         guard let row = activeRow, columnCount > 0 else { return }
+        guard !document.isReadOnly else {
+            document.presentReadOnlyNotice()
+            return
+        }
         guard !document.isBusy else {
             NSSound.beep()
             return
@@ -889,7 +932,7 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
             let cell = reusableCell(.rowNumberCell, in: tableView)
             let fileRow = cachedRow(row)?.fileRow ?? row
             let selected = selection?.rows.contains(row) ?? false
-            cell.textField?.stringValue = String(fileRow - headerOffset + 1)
+            cell.textField?.stringValue = String(rowNumber(fileRow: fileRow))
             cell.textField?.textColor = selected ? .controlAccentColor : .secondaryLabelColor
             // Level with the first line of wrapped values.
             cell.wrapHeight?.constant = tableView.rowHeight - 4
@@ -903,8 +946,9 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         let cell = reusableCell(.dataCell, in: tableView)
         let values = values(forRow: row)
         let value = column < values.count ? values[column] : ""
-        // The row has no such field at all: shorter than others, or a blank line.
-        let isMissing = showsInvisibles && column >= values.count
+        // The row has no such field at all: shorter than others, or a blank line. Rows of a
+        // sheet end at their last value, so there it means nothing.
+        let isMissing = showsInvisibles && column >= values.count && !info.isSheet
         let wraps = linesPerRow > 1
         if showsInvisibles, !isMissing {
             cell.textField?.attributedStringValue = InvisibleText.render(
@@ -925,13 +969,15 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         // A wrapping label needs a height to lay out more than one line.
         cell.wrapHeight?.constant = tableView.rowHeight - 4
         cell.wrapHeight?.isActive = wraps
-        cell.textField?.isEditable = !Self.isMultiline(value)
+        cell.textField?.isEditable = !Self.isMultiline(value) && !document.isReadOnly
         let isCursor = selection?.cursor == GridCell(row: row, column: column)
         let isSelected = selection.map { !$0.isSingleCell && $0.contains(row: row, column: column) } ?? false
         cell.layer?.borderWidth = isCursor ? 2 : 0
         cell.layer?.borderColor = NSColor.controlAccentColor.cgColor
         let issue = profileIssue(of: value, column: column)
-        cell.toolTip = issue ?? (isMissing ? L("This row has no such field") : nil)
+        let cellFormula = formula(row: row, column: column)
+        cell.marksFormula = cellFormula != nil
+        cell.toolTip = issue ?? cellFormula ?? (isMissing ? L("This row has no such field") : nil)
         if isSelected {
             cell.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
         } else if issue != nil {
@@ -1167,4 +1213,25 @@ extension GridViewController: GridTableViewInteraction {
 /// A table cell with a text field, which gets a fixed height while text wraps.
 final class GridCellView: NSTableCellView {
     var wrapHeight: NSLayoutConstraint?
+    /// The cell holds a formula: a small corner mark, as spreadsheets mark notes.
+    var marksFormula = false {
+        didSet {
+            if marksFormula != oldValue { needsDisplay = true }
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard marksFormula else { return }
+        let size: CGFloat = 6
+        let corner = NSBezierPath()
+        let top = isFlipped ? bounds.minY : bounds.maxY
+        let down: CGFloat = isFlipped ? size : -size
+        corner.move(to: NSPoint(x: bounds.minX, y: top))
+        corner.line(to: NSPoint(x: bounds.minX + size, y: top))
+        corner.line(to: NSPoint(x: bounds.minX, y: top + down))
+        corner.close()
+        NSColor.systemGreen.withAlphaComponent(0.8).setFill()
+        corner.fill()
+    }
 }

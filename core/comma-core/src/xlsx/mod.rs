@@ -101,6 +101,8 @@ pub struct Workbook {
     strings: Vec<String>,
     styles: Styles,
     date1904: bool,
+    /// The tab shown when the workbook was saved.
+    active: usize,
 }
 
 impl Workbook {
@@ -134,10 +136,14 @@ impl Workbook {
         let mut reader = xml::reader(&text);
         let mut sheets = Vec::new();
         let mut date1904 = false;
+        let mut active = 0;
         loop {
             match reader.read_event().map_err(|error| xml::error(&workbook_part, &reader, error))? {
                 Event::Start(element) | Event::Empty(element) => match element.local_name().as_ref() {
                     "workbookPr" => date1904 = xml::flag(&element, "date1904"),
+                    "workbookView" => {
+                        active = attribute(&element, "activeTab").and_then(|tab| tab.parse().ok()).unwrap_or(0);
+                    }
                     "sheet" => {
                         let relationship = attribute(&element, "id")
                             .and_then(|id| relationships.iter().find(|relationship| relationship.id == id));
@@ -177,12 +183,22 @@ impl Workbook {
             },
             None => Styles::default(),
         };
-        Ok(Self { package, sheets, strings, styles, date1904 })
+        let active = if sheets.get(active).is_some_and(|sheet| sheet.kind == SheetKind::Worksheet) {
+            active
+        } else {
+            sheets.iter().position(|sheet| sheet.kind == SheetKind::Worksheet && sheet.visibility == SheetVisibility::Visible).unwrap_or(0)
+        };
+        Ok(Self { package, sheets, strings, styles, date1904, active })
     }
 
     /// Sheets in the order of their tabs.
     pub fn sheets(&self) -> &[SheetEntry] {
         &self.sheets
+    }
+
+    /// The sheet to show first: the one shown when the workbook was saved, if it is a table.
+    pub fn active_sheet(&self) -> usize {
+        self.active
     }
 
     /// Whether dates count from 1904, as in workbooks made by old Excel for Mac.

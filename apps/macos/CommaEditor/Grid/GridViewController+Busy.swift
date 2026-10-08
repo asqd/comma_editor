@@ -25,7 +25,12 @@ extension GridViewController {
     /// Reading a large file, or sorting and filtering in the background.
     func updateBusyState() {
         let stack = busyLabel.superview
-        if let fraction = document.indexingFraction {
+        updateSheetTabs()
+        if let loading = workbook?.loadingSheet {
+            let percent = loading.fraction.formatted(.percent.precision(.fractionLength(0)))
+            busyLabel.stringValue = L("Reading “%@”: %@", loading.name, percent)
+            busyCancel.isHidden = false
+        } else if let fraction = document.indexingFraction {
             busyLabel.stringValue = L("Reading the file: %@", fraction.formatted(.percent.precision(.fractionLength(0))))
             busyCancel.isHidden = true
         } else if let status = document.editStatus {
@@ -49,7 +54,9 @@ extension GridViewController {
 
     /// Stops the change, or else the sorting and filtering, running in the background.
     @objc func cancelBackgroundWork(_ sender: Any?) {
-        if document.editStatus != nil {
+        if let workbook, workbook.loadingSheet != nil {
+            workbook.cancelSheetLoading()
+        } else if document.editStatus != nil {
             document.cancelEdit()
         } else {
             document.cancelViewUpdate()
@@ -109,4 +116,13 @@ extension GridViewController {
         #selector(sortAscending(_:)), #selector(sortDescending(_:)), #selector(clearSort(_:)),
         #selector(toggleFilterBar(_:)), #selector(clearFilter(_:)), #selector(showFindAndReplaceBar(_:)),
     ]
+
+    /// Commands that change the file, which a document open for viewing only does not take.
+    /// Sorting, filtering and the header setting only change what is shown.
+    static let editingActions: Set<Selector> = changingActions.subtracting([
+        #selector(sortAscending(_:)), #selector(sortDescending(_:)), #selector(clearSort(_:)),
+        #selector(toggleFilterBar(_:)), #selector(clearFilter(_:)), #selector(toggleHeaderRow(_:)),
+    ]).union([
+        #selector(toggleRecipeRecording(_:)), #selector(applySavedRecipe(_:)), #selector(showOpenOptions(_:)),
+    ])
 }

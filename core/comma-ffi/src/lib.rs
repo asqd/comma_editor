@@ -42,6 +42,9 @@ pub enum CoreError {
     Recipe { step: u64, column: Option<String>, message: String },
     #[error("{message}")]
     InvalidRecipe { message: String },
+    /// An Excel workbook that cannot be read, and why.
+    #[error("{message}")]
+    Workbook { message: String },
 }
 
 impl From<core::Error> for CoreError {
@@ -73,8 +76,7 @@ impl From<core::Error> for CoreError {
             core::Error::Formula(error) => Self::Formula { problem: error.into() },
             core::Error::UnknownColumn(ref column) => Self::Recipe { step: 0, column: Some(column.clone()), message: error.to_string() },
             core::Error::InvalidRecipe(message) => Self::InvalidRecipe { message },
-            // A file that cannot be read; the app gets its own case when it opens workbooks.
-            core::Error::Workbook(message) => Self::Io { message },
+            core::Error::Workbook(message) => Self::Workbook { message },
             core::Error::Recipe { step, source } => {
                 let column = match source.as_ref() {
                     core::Error::UnknownColumn(column) => Some(column.clone()),
@@ -356,6 +358,8 @@ pub struct DocumentInfo {
     pub text_encoding: TextEncoding,
     /// The encoding and delimiter were detected with certainty, or chosen when opening.
     pub detection_confident: bool,
+    /// A sheet of an Excel workbook: rows end at their last value, cells may hold formulas.
+    pub is_sheet: bool,
 }
 
 #[derive(uniffi::Record)]
@@ -1065,7 +1069,8 @@ impl CoreDocument {
     }
 
     pub fn info(&self) -> DocumentInfo {
-        let info = self.lock().info();
+        let document = self.lock();
+        let info = document.info();
         DocumentInfo {
             encoding: info.encoding.name().to_owned(),
             has_bom: info.has_bom,
@@ -1083,6 +1088,7 @@ impl CoreDocument {
             unterminated_quote: info.unterminated_quote,
             text_encoding: info.encoding.into(),
             detection_confident: info.detection_confident,
+            is_sheet: document.is_sheet(),
         }
     }
 
@@ -1187,6 +1193,27 @@ impl CoreDocument {
             .min(start.saturating_add(count as usize));
         (start..end)
             .map(|row| document.visible_row(row).unwrap_or_default())
+            .collect()
+    }
+
+    /// The formula of a cell of a sheet, without its leading `=`.
+    pub fn formula(&self, row: u64, column: u64) -> Option<String> {
+        self.lock().formula(row as usize, column as usize)
+    }
+
+    /// Columns with a formula in each of up to `count` visible rows from `start`, as
+    /// `visible_rows` returns them.
+    pub fn visible_formula_columns(&self, start: u64, count: u64) -> Vec<Vec<u64>> {
+        let document = self.lock();
+        let start = start as usize;
+        let end = document.visible_row_count().min(start.saturating_add(count as usize));
+        (start..end)
+            .map(|visible| {
+                document
+                    .visible_record(visible)
+                    .map(|row| document.formula_columns(row).into_iter().map(|column| column as u64).collect())
+                    .unwrap_or_default()
+            })
             .collect()
     }
 
@@ -1847,5 +1874,192 @@ mod recording_tests {
         let kinds: Vec<String> = recipe.steps().into_iter().map(|step| step.kind).collect();
         assert_eq!(kinds, ["uppercase", "delete_column"]);
         assert_eq!(document.recorded_step_count(), None);
+    }
+}
+
+// MARK: Workbooks
+
+#[derive(uniffi::Enum)]
+pub enum SheetVisibility {
+    Visible,
+    Hidden,
+    VeryHidden,
+}
+
+#[derive(uniffi::Record)]
+pub struct SheetInfo {
+    pub name: String,
+    pub visibility: SheetVisibility,
+    /// A sheet of cells; charts and old macro sheets are not.
+    pub is_table: bool,
+}
+
+/// How the system shows numbers and dates, which Excel follows.
+#[derive(uniffi::Record)]
+pub struct DisplayLocale {
+    pub decimal_separator: String,
+    pub group_separator: String,
+    /// The built-in short date as an Excel format code, such as `dd.mm.yyyy`.
+    pub short_date: String,
+    /// January first.
+    pub month_names: Vec<String>,
+    pub month_abbreviations: Vec<String>,
+    /// Sunday first.
+    pub day_names: Vec<String>,
+    pub day_abbreviations: Vec<String>,
+    pub am: String,
+    pub pm: String,
+    pub true_text: String,
+    pub false_text: String,
+}
+
+impl From<DisplayLocale> for core::DisplayLocale {
+    fn from(locale: DisplayLocale) -> Self {
+        let defaults = core::DisplayLocale::default();
+        let names = |names: Vec<String>, count: usize, default: Vec<String>| if names.len() == count { names } else { default };
+        let character = |text: &str, default: char| text.chars().next().unwrap_or(default);
+        Self {
+            decimal_separator: character(&locale.decimal_separator, defaults.decimal_separator),
+            group_separator: character(&locale.group_separator, defaults.group_separator),
+            short_date: if locale.short_date.is_empty() { defaults.short_date } else { locale.short_date },
+            month_names: names(locale.month_names, 12, defaults.month_names),
+            month_abbreviations: names(locale.month_abbreviations, 12, defaults.month_abbreviations),
+            day_names: names(locale.day_names, 7, defaults.day_names),
+            day_abbreviations: names(locale.day_abbreviations, 7, defaults.day_abbreviations),
+            am: locale.am,
+            pm: locale.pm,
+            true_text: locale.true_text,
+            false_text: locale.false_text,
+        }
+    }
+}
+
+/// Rows `top..=bottom` and columns `left..=right` of a sheet.
+#[derive(uniffi::Record)]
+pub struct SheetRange {
+    pub top: u64,
+    pub left: u64,
+    pub bottom: u64,
+    pub right: u64,
+}
+
+/// Columns `first..=last` as the sheet sets them.
+#[derive(uniffi::Record)]
+pub struct ColumnLayout {
+    pub first: u64,
+    pub last: u64,
+    /// Width in characters of the workbook's default font.
+    pub width: Option<f64>,
+    pub hidden: bool,
+}
+
+#[derive(uniffi::Record)]
+pub struct SheetLayout {
+    pub merged: Vec<SheetRange>,
+    pub columns: Vec<ColumnLayout>,
+    pub default_column_width: Option<f64>,
+    pub frozen_rows: u64,
+    pub frozen_columns: u64,
+}
+
+impl From<core::SheetLayout> for SheetLayout {
+    fn from(layout: core::SheetLayout) -> Self {
+        Self {
+            merged: layout
+                .merged
+                .into_iter()
+                .map(|range| SheetRange {
+                    top: range.top as u64,
+                    left: range.left as u64,
+                    bottom: range.bottom as u64,
+                    right: range.right as u64,
+                })
+                .collect(),
+            columns: layout
+                .columns
+                .into_iter()
+                .map(|column| ColumnLayout {
+                    first: column.first as u64,
+                    last: column.last as u64,
+                    width: column.width,
+                    hidden: column.hidden,
+                })
+                .collect(),
+            default_column_width: layout.default_column_width,
+            frozen_rows: layout.frozen_rows as u64,
+            frozen_columns: layout.frozen_columns as u64,
+        }
+    }
+}
+
+/// A sheet read from a workbook: its table, and how Excel lays it out.
+#[derive(uniffi::Record)]
+pub struct LoadedSheet {
+    pub document: Arc<CoreDocument>,
+    pub layout: SheetLayout,
+}
+
+/// Reading a sheet, with its progress and a way to cancel it; see `CoreWorkbook::read_sheet`.
+#[derive(uniffi::Object)]
+pub struct SheetJob {
+    progress: core::Progress,
+}
+
+#[uniffi::export]
+impl SheetJob {
+    #[uniffi::constructor]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { progress: core::Progress::default() })
+    }
+
+    pub fn cancel(&self) {
+        self.progress.cancel();
+    }
+
+    /// Share of the sheet read, from 0 to 1.
+    pub fn fraction(&self) -> f64 {
+        self.progress.fraction()
+    }
+}
+
+/// An open Excel workbook. Sheets are read one at a time.
+#[derive(uniffi::Object)]
+pub struct CoreWorkbook {
+    inner: core::Workbook,
+}
+
+#[uniffi::export]
+impl CoreWorkbook {
+    #[uniffi::constructor]
+    pub fn open(path: String) -> Result<Arc<Self>, CoreError> {
+        Ok(Arc::new(Self { inner: core::Workbook::open(path)? }))
+    }
+
+    /// Sheets in the order of their tabs.
+    pub fn sheets(&self) -> Vec<SheetInfo> {
+        self.inner
+            .sheets()
+            .iter()
+            .map(|sheet| SheetInfo {
+                name: sheet.name.clone(),
+                visibility: match sheet.visibility {
+                    core::SheetVisibility::Visible => SheetVisibility::Visible,
+                    core::SheetVisibility::Hidden => SheetVisibility::Hidden,
+                    core::SheetVisibility::VeryHidden => SheetVisibility::VeryHidden,
+                },
+                is_table: sheet.kind == core::SheetKind::Worksheet,
+            })
+            .collect()
+    }
+
+    /// The sheet to show first.
+    pub fn active_sheet(&self) -> u64 {
+        self.inner.active_sheet() as u64
+    }
+
+    /// Reads a sheet; call off the main thread for large ones. `None` if `job` was cancelled.
+    pub fn read_sheet(&self, index: u64, locale: DisplayLocale, job: Arc<SheetJob>) -> Result<Option<LoadedSheet>, CoreError> {
+        let sheet = self.inner.read_sheet_with_progress(index as usize, &locale.into(), &job.progress)?;
+        Ok(sheet.map(|sheet| LoadedSheet { document: CoreDocument::wrap(sheet.document), layout: sheet.layout.into() }))
     }
 }

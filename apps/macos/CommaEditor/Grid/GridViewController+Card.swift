@@ -54,7 +54,7 @@ extension GridViewController {
         let fileRow = activeFileRow ?? row + headerOffset
         cardModel.show(
             row: row,
-            title: L("Row %@", Self.format(fileRow - headerOffset + 1)),
+            title: L("Row %@", Self.format(rowNumber(fileRow: fileRow))),
             position: L("%@ of %@", Self.format(row + 1), Self.format(dataRowCount)),
             fields: (0..<columnCount).map { column in
                 RecordCardModel.Field(

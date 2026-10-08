@@ -540,3 +540,19 @@
 "%@ matches %@" = "%@ соответствует %@";
 "%@ is empty" = "%@ пусто";
 "%@ is not empty" = "%@ не пусто";
+
+/* Excel workbooks */
+"Excel workbooks open for viewing only" = "Книги Excel открываются только для просмотра";
+"CommaEditor cannot save workbooks yet. To change the data, export the sheet as CSV with File ▸ Export… and open the copy." = "CommaEditor пока не умеет сохранять книги. Чтобы изменить данные, экспортируйте лист в CSV («Файл ▸ Экспортировать…») и откройте копию.";
+"The Excel workbook cannot be read." = "Книгу Excel не удалось прочитать.";
+"the file is not an Excel workbook" = "Это не книга Excel.";
+"the workbook is encrypted or in the old Excel 97–2003 format (.xls)" = "Книга защищена паролем или сохранена в старом формате Excel 97–2003 (.xls).";
+"The workbook has no sheets with cells." = "В книге нет листов с ячейками.";
+"Excel workbook, view only" = "Книга Excel, только просмотр";
+"Reading “%@”: %@" = "Чтение «%@»: %@";
+"A chart sheet: it has no cells to show" = "Лист-диаграмма: ячеек на нём нет";
+"A hidden sheet" = "Скрытый лист";
+"Previous Sheet" = "Предыдущий лист";
+"Next Sheet" = "Следующий лист";
+"TRUE" = "ИСТИНА";
+"FALSE" = "ЛОЖЬ";

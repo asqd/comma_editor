@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import UniformTypeIdentifiers
 import SwiftUI
 
 /// Debug builds only: applies UI steps from `COMMA_DEBUG_SCRIPT` to the first window, so the
@@ -10,7 +11,8 @@ import SwiftUI
 /// `replaceall=<text>`, `cardedit=<column>:<value>` (types into the record card and leaves the field),
 /// `lines=<n>` (text wrapping), `endedit`, `dump` (logs the geometry of the tables),
 /// `formula=<text>` and `formulaapply` (the computed column sheet), `cancel` (stops background
-/// work), `undo`, `compare=<left>:<right>` and `diff=<step>` (comparison window), `wait=<seconds>`.
+/// work), `undo`, `compare=<left>:<right>` and `diff=<step>` (comparison window),
+/// `sheet=<index>` (a sheet of a workbook), `exportto=<path>` (Export as CSV), `wait=<seconds>`.
 /// Example: `open --env COMMA_DEBUG_SCRIPT='sort=2:d;find=lon' -a CommaEditor file.csv`
 @MainActor
 enum DebugScript {
@@ -54,6 +56,17 @@ enum DebugScript {
                 grid.findBarQueryDidChange(grid.findBar)
             case "replace":
                 grid.showFindAndReplaceBar(nil)
+            case "sheet":
+                grid.workbook?.showSheet(Int(argument) ?? 0)
+            case "exportto":
+                // exportto=<path>: File ▸ Export as CSV without the panel.
+                grid.document.save(
+                    to: URL(fileURLWithPath: argument),
+                    ofType: UTType.commaSeparatedText.identifier,
+                    for: .saveToOperation
+                ) { error in
+                    NSLog("COMMA exported to \(argument): \(error.map { "\($0)" } ?? "ok")")
+                }
             case "replaceall":
                 // replaceall=<replacement>, for the text in the find field.
                 grid.findBar.replaceField.stringValue = argument

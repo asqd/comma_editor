@@ -408,6 +408,9 @@ extension GridViewController: NSMenuItemValidation {
         if document.isBusy, let action = menuItem.action, Self.changingActions.contains(action) {
             return false
         }
+        if document.isReadOnly, let action = menuItem.action, Self.editingActions.contains(action) {
+            return false
+        }
         let spec = core.viewSpec()
         switch menuItem.action {
         case #selector(undo(_:)), #selector(redo(_:)):
@@ -433,6 +436,12 @@ extension GridViewController: NSMenuItemValidation {
         case #selector(toggleRepairPanel(_:)):
             menuItem.title = isRepairVisible ? L("Hide File Repair") : L("Show File Repair")
             return true
+        case #selector(nextSheet(_:)):
+            menuItem.isHidden = workbook == nil
+            return workbook?.neighbourSheet(1) != nil
+        case #selector(previousSheet(_:)):
+            menuItem.isHidden = workbook == nil
+            return workbook?.neighbourSheet(-1) != nil
         case #selector(freezeColumns(_:)):
             return columnCount > 1
         case #selector(unfreezeColumns(_:)):

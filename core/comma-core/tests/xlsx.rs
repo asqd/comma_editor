@@ -89,6 +89,28 @@ fn reads_a_workbook_written_like_excel() {
 }
 
 #[test]
+fn opens_at_the_tab_shown_when_saved() {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    workbook.add_worksheet().write_string(0, 0, "first").unwrap();
+    workbook.add_worksheet().write_string(0, 0, "second").unwrap().set_active(true);
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    assert_eq!(workbook.active_sheet(), 1);
+    assert_eq!(Workbook::from_bytes(excel_workbook()).unwrap().active_sheet(), 0);
+}
+
+#[test]
+fn rows_of_a_sheet_are_not_broken_rows() {
+    let workbook = Workbook::from_bytes(excel_workbook()).unwrap();
+    let document = workbook.read_sheet(0, &russian()).unwrap().document;
+    assert!(document.is_sheet());
+    assert!(document.find_problems(10).problems.is_empty());
+    assert_eq!(document.formula_columns(1), [3]);
+    assert_eq!(document.formula_columns(3), [4]);
+    assert!(document.formula_columns(0).is_empty());
+    assert!(!Document::from_bytes(b"a,b\n1\n".to_vec()).is_sheet());
+}
+
+#[test]
 fn sorting_and_editing_keep_formulas_with_their_cells() {
     let workbook = Workbook::from_bytes(excel_workbook()).unwrap();
     let mut document = workbook.read_sheet(0, &russian()).unwrap().document;
