@@ -545,8 +545,6 @@
 "Excel workbooks open for viewing only" = "Книги Excel открываются только для просмотра";
 "CommaEditor cannot save workbooks yet. To change the data, export the sheet as CSV with File ▸ Export… and open the copy." = "CommaEditor пока не умеет сохранять книги. Чтобы изменить данные, экспортируйте лист в CSV («Файл ▸ Экспортировать…») и откройте копию.";
 "The Excel workbook cannot be read." = "Книгу Excel не удалось прочитать.";
-"the file is not an Excel workbook" = "Это не книга Excel.";
-"the workbook is encrypted or in the old Excel 97–2003 format (.xls)" = "Книга защищена паролем или сохранена в старом формате Excel 97–2003 (.xls).";
 "The workbook has no sheets with cells." = "В книге нет листов с ячейками.";
 "Excel workbook, view only" = "Книга Excel, только просмотр";
 "Reading “%@”: %@" = "Чтение «%@»: %@";
@@ -556,3 +554,19 @@
 "Next Sheet" = "Следующий лист";
 "TRUE" = "ИСТИНА";
 "FALSE" = "ЛОЖЬ";
+
+/* Errors */
+"The file cannot be read or written." = "Файл не удалось прочитать или записать.";
+"There is no such row or column." = "Такой строки или колонки нет.";
+"“%@” cannot be used as a delimiter." = "«%@» нельзя использовать как разделитель.";
+"A delimiter is one character other than a quote or a line break." = "Разделитель — один символ, кроме кавычки и перевода строки.";
+"The table cannot be exported." = "Таблицу не удалось экспортировать.";
+"The table does not fit on an Excel sheet." = "Таблица не помещается на лист Excel.";
+"An Excel sheet holds at most %@ rows, and the table has %@. Filter the rows to export fewer of them." = "На листе Excel помещается не больше %@ строк, а в таблице %@. Отфильтруйте строки, чтобы экспортировать меньше.";
+"The file is not an Excel workbook, or it is damaged." = "Это не книга Excel, или файл повреждён.";
+"The workbook is protected with a password, or saved in the old Excel 97–2003 format (.xls). Open it in Excel or Numbers and save it as .xlsx without a password." = "Книга защищена паролем или сохранена в старом формате Excel 97–2003 (.xls). Откройте её в Excel или Numbers и сохраните как .xlsx без пароля.";
+"A part of the file is damaged: %@, byte %@. Excel may be able to repair it when it opens the file." = "Повреждена часть файла: %@, байт %@. Excel может восстановить её при открытии.";
+"A part of the file is damaged: %@. Excel may be able to repair it when it opens the file." = "Повреждена часть файла: %@. Excel может восстановить её при открытии.";
+"The workbook has no sheet %@." = "В книге нет листа %@.";
+"“%@” is a chart or macro sheet: it has no cells to show." = "«%@» — лист с диаграммой или макросами: ячеек на нём нет.";
+"The cells of sheet “%@” are missing from the file." = "Ячеек листа «%@» в файле нет.";

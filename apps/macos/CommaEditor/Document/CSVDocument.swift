@@ -735,8 +735,16 @@ class CSVDocument: NSDocument {
         guard let error = error as? CoreError else { return error as NSError }
         var userInfo: [String: Any] = [:]
         switch error {
-        case .Io(let message), .OutOfRange(let message):
-            userInfo[NSLocalizedDescriptionKey] = message
+        case .Io(let message, let code):
+            // The system says what went wrong in the user's language.
+            if let code, let posix = POSIXErrorCode(rawValue: code) {
+                return NSError(domain: NSPOSIXErrorDomain, code: Int(posix.rawValue))
+            }
+            userInfo[NSLocalizedDescriptionKey] = L("The file cannot be read or written.")
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = message
+        case .OutOfRange(let message):
+            userInfo[NSLocalizedDescriptionKey] = L("There is no such row or column.")
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = message
         case .Unmappable(let row, let column, let encoding):
             userInfo[NSLocalizedDescriptionKey] = L(
                 "The value in row %lld, column %lld cannot be saved in %@.",
@@ -761,18 +769,51 @@ class CSVDocument: NSDocument {
         case .Editing:
             userInfo[NSLocalizedDescriptionKey] = L("Another change is being made.")
             userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Wait until it ends or cancel it in the status bar.")
-        case .InvalidDelimiter(let message), .Export(let message):
-            userInfo[NSLocalizedDescriptionKey] = message
+        case .InvalidDelimiter(let delimiter):
+            userInfo[NSLocalizedDescriptionKey] = L("“%@” cannot be used as a delimiter.", delimiter)
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("A delimiter is one character other than a quote or a line break.")
+        case .Export(let message):
+            userInfo[NSLocalizedDescriptionKey] = L("The table cannot be exported.")
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = message
+        case .ExcelRowLimit(let rows, let limit):
+            userInfo[NSLocalizedDescriptionKey] = L("The table does not fit on an Excel sheet.")
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = L(
+                "An Excel sheet holds at most %@ rows, and the table has %@. Filter the rows to export fewer of them.",
+                format(limit), format(rows)
+            )
         case .Formula(let problem):
             userInfo[NSLocalizedDescriptionKey] = FormulaHelp.describe(problem)
-        case .Workbook(let message):
+        case .Workbook(let problem):
             userInfo[NSLocalizedDescriptionKey] = L("The Excel workbook cannot be read.")
-            // The core's usual reasons are translated; a damaged part is named as it is.
-            userInfo[NSLocalizedRecoverySuggestionErrorKey] = L(message)
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = describe(problem)
         case .InvalidPattern(let message):
             userInfo[NSLocalizedDescriptionKey] = L("The regular expression is not valid.")
             userInfo[NSLocalizedRecoverySuggestionErrorKey] = message
         }
         return NSError(domain: "app.commaeditor", code: 1, userInfo: userInfo)
+    }
+
+    static func describe(_ problem: WorkbookProblem) -> String {
+        switch problem {
+        case .notAWorkbook:
+            L("The file is not an Excel workbook, or it is damaged.")
+        case .encryptedOrLegacy:
+            L("The workbook is protected with a password, or saved in the old Excel 97–2003 format (.xls). Open it in Excel or Numbers and save it as .xlsx without a password.")
+        // What the XML reader found is technical and in English; where it is helps more.
+        case .damaged(let part, let position?, _):
+            L("A part of the file is damaged: %@, byte %@. Excel may be able to repair it when it opens the file.", part, format(position))
+        case .damaged(let part, nil, _):
+            L("A part of the file is damaged: %@. Excel may be able to repair it when it opens the file.", part)
+        case .noSuchSheet(let sheet):
+            L("The workbook has no sheet %@.", format(sheet))
+        case .notATable(let sheet):
+            L("“%@” is a chart or macro sheet: it has no cells to show.", sheet)
+        case .missingCells(let sheet):
+            L("The cells of sheet “%@” are missing from the file.", sheet)
+        }
+    }
+
+    private static func format(_ number: UInt64) -> String {
+        number.formatted(.number)
     }
 }

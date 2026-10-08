@@ -10,7 +10,7 @@ use zip::ZipArchive;
 
 use super::xml::{self, attribute};
 use crate::bytes::Bytes;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, WorkbookError};
 
 /// The file's bytes, shared by the copies of the archive that read parts.
 #[derive(Clone)]
@@ -45,12 +45,10 @@ pub(crate) struct Relationship {
 impl Package {
     pub(crate) fn new(bytes: Bytes) -> Result<Self> {
         if bytes.starts_with(&COMPOUND_FILE) {
-            return Err(Error::Workbook(
-                "the workbook is encrypted or in the old Excel 97–2003 format (.xls)".to_owned(),
-            ));
+            return Err(WorkbookError::EncryptedOrLegacy.into());
         }
         let archive = ZipArchive::new(Cursor::new(Shared(Arc::new(bytes))))
-            .map_err(|_| Error::Workbook("the file is not an Excel workbook".to_owned()))?;
+            .map_err(|_| WorkbookError::NotAWorkbook)?;
         let names = (0..archive.len())
             .filter_map(|index| Some((archive.name_for_index(index)?.trim_start_matches('/').to_lowercase(), index)))
             .collect();
@@ -203,7 +201,7 @@ impl Read for PartStream {
 }
 
 fn part_error(name: &str, error: impl std::fmt::Display) -> Error {
-    Error::Workbook(format!("cannot read {name}: {error}"))
+    WorkbookError::Damaged { part: name.to_owned(), position: None, detail: error.to_string() }.into()
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ use self::xml::attribute;
 use crate::bytes::{self, Bytes};
 use crate::document::Document;
 use crate::edit::Progress;
-use crate::error::{Error, Result};
+use crate::error::{Result, WorkbookError};
 
 /// Whether Excel shows a sheet in its tabs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,7 +123,7 @@ impl Workbook {
             .map(|relationship| relationship.target)
             .filter(|part| package.has_part(part))
             .or_else(|| package.has_part("xl/workbook.xml").then(|| "xl/workbook.xml".to_owned()))
-            .ok_or_else(|| Error::Workbook("the file is not an Excel workbook".to_owned()))?;
+            .ok_or(WorkbookError::NotAWorkbook)?;
         let relationships = package.relationships(&workbook_part)?;
         let target = |kind: &str| {
             relationships
@@ -213,12 +213,12 @@ impl Workbook {
 
     /// Like `read_sheet`, counting the work in `progress`; `None` if it was cancelled.
     pub fn read_sheet_with_progress(&self, index: usize, locale: &DisplayLocale, progress: &Progress) -> Result<Option<Sheet>> {
-        let entry = self.sheets.get(index).ok_or_else(|| Error::Workbook(format!("there is no sheet {}", index + 1)))?;
+        let entry = self.sheets.get(index).ok_or(WorkbookError::NoSuchSheet { sheet: index + 1 })?;
         if entry.kind != SheetKind::Worksheet {
-            return Err(Error::Workbook(format!("“{}” is a chart or macro sheet, not a table", entry.name)));
+            return Err(WorkbookError::NotATable { sheet: entry.name.clone() }.into());
         }
         let part = entry.part.as_deref().unwrap_or_default();
-        let missing = || Error::Workbook(format!("the cells of sheet “{}” are missing", entry.name));
+        let missing = || WorkbookError::MissingCells { sheet: entry.name.clone() };
         let (stream, size) = self.package.stream(part)?.ok_or_else(missing)?;
         let mut input = BufReader::with_capacity(1 << 16, stream);
         let formats = self.styles.formats(locale);

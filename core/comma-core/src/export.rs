@@ -163,11 +163,7 @@ impl Document {
 
     fn export_xlsx(&self, columns: &Columns, rows: Range<usize>, name: &str) -> Result<Vec<u8>> {
         if rows.len() + 1 > XLSX_MAX_ROWS {
-            return Err(Error::Export(format!(
-                "Excel sheets hold at most {} rows; this table has {}",
-                XLSX_MAX_ROWS - 1,
-                rows.len()
-            )));
+            return Err(Error::TooManyRowsForExcel { rows: rows.len(), limit: XLSX_MAX_ROWS - 1 });
         }
         let xlsx = |error: rust_xlsxwriter::XlsxError| Error::Export(error.to_string());
         let mut workbook = Workbook::new();

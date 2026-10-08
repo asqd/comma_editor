@@ -11,8 +11,9 @@ uniffi::setup_scaffolding!();
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum CoreError {
+    /// `code` is the system's error number, which the app turns into the system's own words.
     #[error("{message}")]
-    Io { message: String },
+    Io { message: String, code: Option<i32> },
     #[error("{message}")]
     OutOfRange { message: String },
     #[error("the value in row {row}, column {column} cannot be saved in {encoding}")]
@@ -25,10 +26,13 @@ pub enum CoreError {
     LastColumn,
     #[error("{message}")]
     InvalidPattern { message: String },
-    #[error("{message}")]
-    InvalidDelimiter { message: String },
+    #[error("{delimiter} cannot be used as a delimiter")]
+    InvalidDelimiter { delimiter: String },
     #[error("{message}")]
     Export { message: String },
+    /// An Excel sheet holds at most `limit` data rows.
+    #[error("Excel sheets hold at most {limit} rows; this table has {rows}")]
+    ExcelRowLimit { rows: u64, limit: u64 },
     #[error("{problem:?}")]
     Formula { problem: FormulaProblem },
     /// The file is still being indexed; it cannot be changed or saved yet.
@@ -43,8 +47,35 @@ pub enum CoreError {
     #[error("{message}")]
     InvalidRecipe { message: String },
     /// An Excel workbook that cannot be read, and why.
-    #[error("{message}")]
-    Workbook { message: String },
+    #[error("{problem:?}")]
+    Workbook { problem: WorkbookProblem },
+}
+
+/// Why an Excel workbook or one of its sheets cannot be read.
+#[derive(Debug, uniffi::Enum)]
+pub enum WorkbookProblem {
+    NotAWorkbook,
+    /// An `.xls` workbook, or an `.xlsx` one with a password.
+    EncryptedOrLegacy,
+    /// A part of the file cannot be unpacked, or its XML is broken at byte `position`.
+    Damaged { part: String, position: Option<u64>, detail: String },
+    /// `sheet` counts from 1.
+    NoSuchSheet { sheet: u64 },
+    NotATable { sheet: String },
+    MissingCells { sheet: String },
+}
+
+impl From<core::WorkbookError> for WorkbookProblem {
+    fn from(error: core::WorkbookError) -> Self {
+        match error {
+            core::WorkbookError::NotAWorkbook => Self::NotAWorkbook,
+            core::WorkbookError::EncryptedOrLegacy => Self::EncryptedOrLegacy,
+            core::WorkbookError::Damaged { part, position, detail } => Self::Damaged { part, position, detail },
+            core::WorkbookError::NoSuchSheet { sheet } => Self::NoSuchSheet { sheet: sheet as u64 },
+            core::WorkbookError::NotATable { sheet } => Self::NotATable { sheet },
+            core::WorkbookError::MissingCells { sheet } => Self::MissingCells { sheet },
+        }
+    }
 }
 
 impl From<core::Error> for CoreError {
@@ -52,6 +83,7 @@ impl From<core::Error> for CoreError {
         match error {
             core::Error::Io(error) => Self::Io {
                 message: error.to_string(),
+                code: error.raw_os_error(),
             },
             core::Error::RowOutOfRange { .. } | core::Error::ColumnOutOfRange { .. } => {
                 Self::OutOfRange {
@@ -69,14 +101,15 @@ impl From<core::Error> for CoreError {
             },
             core::Error::LastColumn => Self::LastColumn,
             core::Error::InvalidPattern(message) => Self::InvalidPattern { message },
-            core::Error::InvalidDelimiter(_) => Self::InvalidDelimiter {
-                message: error.to_string(),
+            core::Error::InvalidDelimiter(delimiter) => Self::InvalidDelimiter {
+                delimiter: delimiter.to_string(),
             },
             core::Error::Export(message) => Self::Export { message },
+            core::Error::TooManyRowsForExcel { rows, limit } => Self::ExcelRowLimit { rows: rows as u64, limit: limit as u64 },
             core::Error::Formula(error) => Self::Formula { problem: error.into() },
             core::Error::UnknownColumn(ref column) => Self::Recipe { step: 0, column: Some(column.clone()), message: error.to_string() },
             core::Error::InvalidRecipe(message) => Self::InvalidRecipe { message },
-            core::Error::Workbook(message) => Self::Workbook { message },
+            core::Error::Workbook(problem) => Self::Workbook { problem: problem.into() },
             core::Error::Recipe { step, source } => {
                 let column = match source.as_ref() {
                     core::Error::UnknownColumn(column) => Some(column.clone()),
@@ -215,7 +248,7 @@ fn delimiter_byte(delimiter: &str) -> Result<u8, CoreError> {
     match (chars.next(), chars.next()) {
         (Some(c), None) if c.is_ascii() && c != '"' && c != '\n' && c != '\r' => Ok(c as u8),
         _ => Err(CoreError::InvalidDelimiter {
-            message: format!("“{delimiter}” cannot be used as a delimiter"),
+            delimiter: delimiter.to_string(),
         }),
     }
 }
@@ -300,7 +333,7 @@ impl TryFrom<SaveFormat> for core::SaveFormat {
             (Some(c), None) if c.is_ascii() => c as u8,
             _ => {
                 return Err(CoreError::InvalidDelimiter {
-                    message: format!("“{}” cannot be used as a delimiter", format.delimiter),
+                    delimiter: format.delimiter.clone(),
                 });
             }
         };

@@ -37,7 +37,7 @@ pub use encoding::TextEncoding;
 pub use export::ExportFormat;
 pub use garbled::fix_garbled;
 pub use formula::{FUNCTIONS, FormulaError, FormulaErrorKind, FormulaReport};
-pub use error::{Error, Result};
+pub use error::{Error, Result, WorkbookError};
 pub use parser::Terminator;
 pub use profile::{ColumnProfile, Issue, ValueKind, classify};
 pub use range::{CellRange, RangeStats, parse_pasted_text};

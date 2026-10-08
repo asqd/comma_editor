@@ -2,6 +2,7 @@ use std::io::{Cursor, Write};
 
 use comma_core::{
     ColumnLayout, DisplayLocale, Document, Error, ExportFormat, SheetKind, SheetRange, SheetVisibility, Workbook,
+    WorkbookError,
 };
 use rust_xlsxwriter::{Format, Formula};
 
@@ -300,28 +301,32 @@ fn strict_workbooks_read_like_transitional_ones() {
 
 #[test]
 fn files_that_are_not_workbooks_say_why() {
-    let message = |result: Result<Workbook, Error>| match result {
-        Err(Error::Workbook(message)) => message,
+    let problem = |result: Result<Workbook, Error>| match result {
+        Err(Error::Workbook(problem)) => problem,
         Err(error) => panic!("unexpected error: {error}"),
         Ok(_) => panic!("opened"),
     };
-    assert!(message(Workbook::from_bytes(b"a,b\n1,2\n".to_vec())).contains("not an Excel workbook"));
+    assert_eq!(problem(Workbook::from_bytes(b"a,b\n1,2\n".to_vec())), WorkbookError::NotAWorkbook);
     let mut compound = vec![0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
     compound.resize(512, 0);
-    assert!(message(Workbook::from_bytes(compound)).contains(".xls"));
-    assert!(message(Workbook::from_bytes(zip(&[("hello.txt", "hi")]))).contains("not an Excel workbook"));
+    assert_eq!(problem(Workbook::from_bytes(compound)), WorkbookError::EncryptedOrLegacy);
+    assert_eq!(problem(Workbook::from_bytes(zip(&[("hello.txt", "hi")]))), WorkbookError::NotAWorkbook);
 
     let workbook = Workbook::from_bytes(package("", "", None, None)).unwrap();
     assert_eq!(workbook.sheets()[1].kind, SheetKind::Chartsheet);
-    assert!(matches!(workbook.read_sheet(1, &DisplayLocale::default()), Err(Error::Workbook(_))));
-    assert!(matches!(workbook.read_sheet(2, &DisplayLocale::default()), Err(Error::Workbook(_))));
+    let sheet_problem = |index| match workbook.read_sheet(index, &DisplayLocale::default()) {
+        Err(Error::Workbook(problem)) => problem,
+        _ => panic!("read sheet {index}"),
+    };
+    assert_eq!(sheet_problem(1), WorkbookError::NotATable { sheet: "Chart".to_owned() });
+    assert_eq!(sheet_problem(2), WorkbookError::NoSuchSheet { sheet: 3 });
 }
 
 #[test]
 fn damaged_xml_names_the_part() {
     let bytes = package("", r#"<row r="1"><c r="A1"><v>1</v></c></row><!-- never closed"#, None, None);
     match Workbook::from_bytes(bytes).unwrap().read_sheet(0, &DisplayLocale::default()) {
-        Err(Error::Workbook(message)) => assert!(message.contains("xl/worksheets/sheet1.xml"), "{message}"),
+        Err(Error::Workbook(WorkbookError::Damaged { part, .. })) => assert_eq!(part, "xl/worksheets/sheet1.xml"),
         Err(error) => panic!("unexpected error: {error}"),
         Ok(_) => panic!("read a damaged sheet"),
     }

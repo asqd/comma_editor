@@ -6,7 +6,7 @@ use std::io::BufRead;
 use quick_xml::{Reader, XmlVersion};
 use quick_xml::events::{BytesRef, BytesStart, Event};
 
-use crate::error::Error;
+use crate::error::{Error, WorkbookError};
 
 /// Text of an XML part. Parts are UTF-8, or UTF-16 with a byte order mark.
 pub(crate) fn decode(bytes: Vec<u8>) -> String {
@@ -37,7 +37,8 @@ fn configure<R>(reader: &mut Reader<R>) {
 }
 
 pub(crate) fn error<R>(part: &str, reader: &Reader<R>, error: quick_xml::Error) -> Error {
-    Error::Workbook(format!("{part} is damaged at byte {}: {error}", reader.error_position()))
+    let position = reader.error_position();
+    WorkbookError::Damaged { part: part.to_owned(), position: Some(position), detail: format!("{error} at byte {position}") }.into()
 }
 
 /// Events of an XML part, read from text in memory or from a stream.
