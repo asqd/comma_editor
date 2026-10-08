@@ -10,7 +10,7 @@ import SwiftUI
 /// `replaceall=<text>`, `cardedit=<column>:<value>` (types into the record card and leaves the field),
 /// `lines=<n>` (text wrapping), `endedit`, `dump` (logs the geometry of the tables),
 /// `formula=<text>` and `formulaapply` (the computed column sheet), `cancel` (stops background
-/// work), `undo`, `wait=<seconds>`.
+/// work), `undo`, `compare=<left>:<right>` and `diff=<step>` (comparison window), `wait=<seconds>`.
 /// Example: `open --env COMMA_DEBUG_SCRIPT='sort=2:d;find=lon' -a CommaEditor file.csv`
 @MainActor
 enum DebugScript {
@@ -114,6 +114,18 @@ enum DebugScript {
                     let widths = table.tableColumns.map { "\($0.identifier.rawValue)=\(Int($0.width))" }
                     NSLog("COMMA table frame=\(table.frame) clip=\(table.enclosingScrollView?.frame ?? .zero) \(widths)")
                 }
+            case "compare" where parts.count == 2:
+                // compare=<left file name>:<right file name>, both open in the app (the sandbox
+                // lets it read files the user opened).
+                let documents = NSDocumentController.shared.documents.compactMap { $0 as? CSVDocument }
+                let named = { (name: String) in documents.first { $0.fileURL?.lastPathComponent == name } }
+                if let left = named(parts[0]), let right = named(parts[1])?.fileURL,
+                   let leftGrid = left.windowControllers.first?.contentViewController as? GridViewController {
+                    DiffWindowController.compare(leftGrid, with: right)
+                }
+            case "diff":
+                // diff=filter:<segment>, diff=key:<column or -1>, diff=case, diff=open
+                DiffWindowController.debugStep(argument)
             case "cancel":
                 grid.cancelBackgroundWork(nil)
             case "undo":

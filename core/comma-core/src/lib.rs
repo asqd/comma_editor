@@ -7,6 +7,7 @@
 mod bytes;
 mod columns;
 mod dialect;
+mod diff;
 mod document;
 mod edit;
 mod encoding;
@@ -25,6 +26,7 @@ mod writer;
 
 pub use columns::TextTransform;
 pub use dialect::{Dialect, LineEnding, QuoteStyle};
+pub use diff::{Diff, DiffCell, DiffColumn, DiffCounts, DiffEntry, DiffOptions, DiffStatus};
 pub use document::{Document, FilePreview, IndexChunk, Indexer, Info, OpenOptions, ViewTask};
 pub use edit::{Edit, EditOutcome, EditTask, Progress};
 pub use encoding::TextEncoding;

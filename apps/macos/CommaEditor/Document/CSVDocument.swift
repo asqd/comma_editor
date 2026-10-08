@@ -58,6 +58,13 @@ final class CSVDocument: NSDocument {
         super.init()
     }
 
+    /// An untitled document holding a table made by the app, such as a comparison.
+    convenience init(core: CoreDocument) {
+        self.init()
+        self.core = core
+        fileType = NSDocumentController.shared.defaultType
+    }
+
     override class var autosavesInPlace: Bool { true }
 
     override class func canConcurrentlyReadDocuments(ofType typeName: String) -> Bool { true }

@@ -5,6 +5,23 @@ import SwiftUI
 // encoding or delimiter and reopens it so. It opens by itself when detection is not sure.
 
 extension GridViewController {
+    /// File ▸ Compare with File: another file against this table, in a window of its own.
+    @objc func compareWithFile(_ sender: Any?) {
+        guard !document.isIndexing else {
+            NSSound.beep()
+            return
+        }
+        guard let window = view.window else { return }
+        let panel = NSOpenPanel()
+        panel.message = L("Choose a file to compare with “%@”.", document.displayName ?? "")
+        panel.prompt = L("Compare")
+        panel.directoryURL = document.fileURL?.deletingLastPathComponent()
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            DiffWindowController.compare(self, with: url)
+        }
+    }
+
     @objc func showOpenOptions(_ sender: Any?) {
         presentOpenOptions(uncertain: false)
     }

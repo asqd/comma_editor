@@ -597,6 +597,15 @@ final class GridViewController: NSViewController {
         selectCell(row: row, column: activeColumn)
     }
 
+    /// Selects a row of the file, if the view shows it; beeps otherwise.
+    func reveal(fileRow: Int) {
+        guard let row = core.visibleIndex(row: UInt64(fileRow)) else {
+            NSSound.beep()
+            return
+        }
+        selectCell(row: Int(row), column: activeColumn)
+    }
+
     /// Moves the active cell, scrolling it into view.
     func activate(row: Int, column: Int) {
         selectCell(row: row, column: column)

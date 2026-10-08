@@ -81,6 +81,8 @@ enum MainMenu {
                 #selector(CSVDocument.reopenWithDelimiter(_:))
             )),
             item(L("Check Encoding and Delimiter…"), #selector(GridViewController.showOpenOptions(_:))),
+            .separator(),
+            item(L("Compare with File…"), #selector(GridViewController.compareWithFile(_:)), "d", [.command, .option]),
         ])
     }
 

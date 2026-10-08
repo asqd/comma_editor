@@ -1361,3 +1361,233 @@ impl CoreDocument {
         Ok(self.whole()?.to_bytes()?)
     }
 }
+
+// Comparing two tables.
+
+#[derive(uniffi::Record)]
+pub struct DiffOptions {
+    /// Key columns of this table; empty compares rows by position.
+    pub key: Vec<u64>,
+    pub ignore_case: bool,
+    pub trim: bool,
+}
+
+#[derive(uniffi::Record)]
+pub struct DiffColumnInfo {
+    pub name: Option<String>,
+    pub left: Option<u64>,
+    pub right: Option<u64>,
+}
+
+impl From<&core::DiffColumn> for DiffColumnInfo {
+    fn from(column: &core::DiffColumn) -> Self {
+        Self {
+            name: column.name.clone(),
+            left: column.left.map(|c| c as u64),
+            right: column.right.map(|c| c as u64),
+        }
+    }
+}
+
+#[derive(uniffi::Enum, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiffStatus {
+    OnlyLeft,
+    OnlyRight,
+    Changed,
+    Same,
+}
+
+impl From<core::DiffStatus> for DiffStatus {
+    fn from(status: core::DiffStatus) -> Self {
+        match status {
+            core::DiffStatus::OnlyLeft => Self::OnlyLeft,
+            core::DiffStatus::OnlyRight => Self::OnlyRight,
+            core::DiffStatus::Changed => Self::Changed,
+            core::DiffStatus::Same => Self::Same,
+        }
+    }
+}
+
+impl From<DiffStatus> for core::DiffStatus {
+    fn from(status: DiffStatus) -> Self {
+        match status {
+            DiffStatus::OnlyLeft => Self::OnlyLeft,
+            DiffStatus::OnlyRight => Self::OnlyRight,
+            DiffStatus::Changed => Self::Changed,
+            DiffStatus::Same => Self::Same,
+        }
+    }
+}
+
+#[derive(uniffi::Record)]
+pub struct DiffSummary {
+    pub only_left: u64,
+    pub only_right: u64,
+    pub changed: u64,
+    pub same: u64,
+    pub repeated_left: u64,
+    pub repeated_right: u64,
+}
+
+#[derive(uniffi::Record)]
+pub struct DiffCellValue {
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub changed: bool,
+}
+
+/// A row of the comparison; rows are rows of the files, header included.
+#[derive(uniffi::Record)]
+pub struct DiffRow {
+    pub status: DiffStatus,
+    pub left_row: Option<u64>,
+    pub right_row: Option<u64>,
+    pub cells: Vec<DiffCellValue>,
+}
+
+/// A comparison computed off the main thread; see `CoreDocument::begin_diff`.
+#[derive(uniffi::Object)]
+pub struct DiffJob {
+    tables: Mutex<Option<(core::Document, core::Document)>>,
+    options: core::DiffOptions,
+    progress: core::Progress,
+}
+
+#[uniffi::export]
+impl DiffJob {
+    /// Compares the tables; call off the main thread. `None` when cancelled.
+    pub fn run(&self) -> Result<Option<Arc<DiffResult>>, CoreError> {
+        let tables = self.tables.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        let Some((left, right)) = tables else { return Ok(None) };
+        let diff = left.diff(&right, &self.options, &self.progress)?;
+        Ok(diff.map(|diff| Arc::new(DiffResult { diff, shown: Mutex::new(None) })))
+    }
+
+    pub fn cancel(&self) {
+        self.progress.cancel();
+    }
+
+    pub fn fraction(&self) -> f64 {
+        self.progress.fraction()
+    }
+}
+
+/// Entries of a comparison with some statuses, by their index.
+type ShownEntries = (Vec<DiffStatus>, Arc<Vec<u32>>);
+
+/// The result of a comparison: rows are read a few at a time, for the statuses shown.
+#[derive(uniffi::Object)]
+pub struct DiffResult {
+    diff: core::Diff,
+    /// Entries with the statuses last asked for.
+    shown: Mutex<Option<ShownEntries>>,
+}
+
+impl DiffResult {
+    fn shown(&self, statuses: &[DiffStatus]) -> Arc<Vec<u32>> {
+        let mut shown = self.shown.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((cached, entries)) = shown.as_ref()
+            && cached == statuses
+        {
+            return Arc::clone(entries);
+        }
+        let entries: Arc<Vec<u32>> = Arc::new(
+            self.diff
+                .entries()
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| statuses.contains(&entry.status.into()))
+                .map(|(index, _)| index as u32)
+                .collect(),
+        );
+        *shown = Some((statuses.to_vec(), Arc::clone(&entries)));
+        entries
+    }
+}
+
+#[uniffi::export]
+impl DiffResult {
+    pub fn summary(&self) -> DiffSummary {
+        let counts = self.diff.counts();
+        DiffSummary {
+            only_left: counts.only_left as u64,
+            only_right: counts.only_right as u64,
+            changed: counts.changed as u64,
+            same: counts.same as u64,
+            repeated_left: counts.repeated_left as u64,
+            repeated_right: counts.repeated_right as u64,
+        }
+    }
+
+    pub fn columns(&self) -> Vec<DiffColumnInfo> {
+        self.diff.columns().iter().map(Into::into).collect()
+    }
+
+    /// Number of rows with one of `statuses`.
+    pub fn count(&self, statuses: Vec<DiffStatus>) -> u64 {
+        self.shown(&statuses).len() as u64
+    }
+
+    /// Rows `start..start + count` of those with one of `statuses`.
+    pub fn rows(&self, statuses: Vec<DiffStatus>, start: u64, count: u64) -> Vec<DiffRow> {
+        let shown = self.shown(&statuses);
+        let start = (start as usize).min(shown.len());
+        let end = (start + count as usize).min(shown.len());
+        shown[start..end]
+            .iter()
+            .map(|&index| {
+                let entry = &self.diff.entries()[index as usize];
+                DiffRow {
+                    status: entry.status.into(),
+                    left_row: entry.left.map(|row| row as u64),
+                    right_row: entry.right.map(|row| row as u64),
+                    cells: self
+                        .diff
+                        .cells(entry)
+                        .into_iter()
+                        .map(|cell| DiffCellValue { left: cell.left, right: cell.right, changed: cell.changed })
+                        .collect(),
+                }
+            })
+            .collect()
+    }
+
+    /// Rows with one of `statuses` as a CSV table with a status column titled `status_title`;
+    /// `names` name the statuses in the order only left, only right, changed, same.
+    pub fn to_csv(&self, statuses: Vec<DiffStatus>, names: Vec<String>, status_title: String) -> Vec<u8> {
+        let statuses: Vec<core::DiffStatus> = statuses.into_iter().map(Into::into).collect();
+        let name = |index: usize| names.get(index).map(String::as_str).unwrap_or_default();
+        self.diff.to_csv(&statuses, [name(0), name(1), name(2), name(3)], &status_title)
+    }
+}
+
+#[uniffi::export]
+impl CoreDocument {
+    /// How the columns of this table and `other` line up.
+    pub fn diff_columns(&self, other: Arc<CoreDocument>) -> Vec<DiffColumnInfo> {
+        let other = other.read();
+        self.read().diff_columns(&other).iter().map(Into::into).collect()
+    }
+
+    /// Key columns of this table that suit a comparison with `other`; empty if none does.
+    pub fn suggest_diff_key(&self, other: Arc<CoreDocument>) -> Vec<u64> {
+        let other = other.read();
+        self.read().suggest_diff_key(&other).into_iter().map(|c| c as u64).collect()
+    }
+
+    /// Prepares a comparison of this table (left) with `other` (right) to run with
+    /// `DiffJob::run` off the main thread. Both must be read whole.
+    pub fn begin_diff(&self, other: Arc<CoreDocument>, options: DiffOptions) -> Result<Arc<DiffJob>, CoreError> {
+        let left = self.whole()?.snapshot();
+        let right = other.whole()?.snapshot();
+        Ok(Arc::new(DiffJob {
+            tables: Mutex::new(Some((left, right))),
+            options: core::DiffOptions {
+                key: options.key.into_iter().map(|c| c as usize).collect(),
+                ignore_case: options.ignore_case,
+                trim: options.trim,
+            },
+            progress: core::Progress::default(),
+        }))
+    }
+}

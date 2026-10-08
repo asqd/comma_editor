@@ -450,3 +450,32 @@
 "Another change is being made." = "Выполняется другое изменение.";
 "Another change is being made" = "Выполняется другое изменение";
 "Wait until it ends or cancel it in the status bar." = "Дождитесь его окончания или отмените его в строке состояния.";
+
+/* Comparing two files */
+"Compare with File…" = "Сравнить с файлом…";
+"Choose a file to compare with “%@”." = "Выберите файл для сравнения с «%@».";
+"Compare" = "Сравнить";
+"Comparison" = "Сравнение";
+"%@ and %@" = "%@ и %@";
+"Ignore case" = "Без учёта регистра";
+"Ignore surrounding spaces" = "Без пробелов по краям";
+"Open as Table" = "Открыть как таблицу";
+"Match rows by:" = "Сопоставлять строки по:";
+"Row Number" = "номеру строки";
+"Reading %@…" = "Чтение %@…";
+"Comparing…" = "Сравнение…";
+"The comparison was cancelled." = "Сравнение отменено.";
+"The tables match." = "Таблицы совпадают.";
+"Differences: %@." = "Различий: %@.";
+"Rows with a repeated key: %@ in %@, %@ in %@; they are paired in order." = "Строк с повторяющимся ключом: %@ в %@, %@ в %@; они сопоставлены по порядку.";
+"Columns only in one file are shown but not compared: %@." = "Колонки, которые есть только в одном файле, показаны, но не сравниваются: %@.";
+"Double-click a row to show it in the table." = "Двойной щелчок по строке показывает её в таблице.";
+"All Differences" = "Все различия";
+"Only in %@" = "Только в %@";
+"Changed" = "Изменены";
+"Same" = "Совпадают";
+"Rows" = "Строки";
+"(only in %@)" = "(только в %@)";
+"Untitled" = "Без названия";
+"Changed Row" = "Изменена";
+"Same Row" = "Совпадает";
