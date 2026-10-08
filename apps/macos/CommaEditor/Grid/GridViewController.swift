@@ -658,7 +658,7 @@ final class GridViewController: NSViewController {
     /// Values with line breaks open in a sheet instead.
     private func editActiveCell(typing text: String? = nil) {
         guard let row = activeRow, columnCount > 0 else { return }
-        guard !document.isIndexing else {
+        guard !document.isBusy else {
             NSSound.beep()
             return
         }

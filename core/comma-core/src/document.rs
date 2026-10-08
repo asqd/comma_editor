@@ -128,6 +128,10 @@ struct View {
     rows: Option<Arc<Vec<usize>>>,
 }
 
+/// From this many separate runs of deleted rows on, the rows are removed in one pass over the
+/// list rather than run by run, each of which moves the rows after it.
+const SCATTERED_RUNS: usize = 16;
+
 /// A CSV file being edited.
 ///
 /// *Rows* are records of the file, the header row included. *Visible rows* are the data rows
@@ -147,7 +151,7 @@ pub struct Document {
     unterminated_quote: bool,
     detection_confident: bool,
     /// Counts changes to the rows, so work done on a snapshot knows whether it is still current.
-    generation: u64,
+    pub(crate) generation: u64,
     /// Rows past the first part of a large file are still being indexed; see `open_partially`.
     indexing: bool,
     history: History,
@@ -658,6 +662,14 @@ impl Document {
         match rows.last() {
             None => return Ok(()),
             Some(&last) => self.check_row(last)?,
+        }
+        // Many scattered rows, such as duplicates, are taken out in one pass over the list.
+        let runs = 1 + rows.windows(2).filter(|pair| pair[1] != pair[0] + 1).count();
+        if runs > SCATTERED_RUNS {
+            let splice = Splice::remove(Arc::make_mut(&mut self.records), rows);
+            self.commit(vec![splice], self.column_count, true);
+            self.refresh_view();
+            return Ok(());
         }
         // Contiguous runs, from the end so that earlier indices stay valid.
         let mut splices = Vec::new();

@@ -48,17 +48,21 @@ extension GridViewController {
 
     private func applyFormula(_ formula: String, target: FormulaModel.Target, name: String, column: Int) {
         let row = activeRow ?? 0
-        let report: FormulaReport?
         switch target {
         case .newColumn:
-            report = document.addFormulaColumn(formula, name: name.trimmingCharacters(in: .whitespaces), at: column + 1)
-            if report != nil {
-                selectCell(row: row, column: column + 1)
+            document.addFormulaColumn(formula, name: name.trimmingCharacters(in: .whitespaces), at: column + 1) { [weak self] report in
+                self?.selectCell(row: row, column: column + 1)
+                self?.showFormulaErrors(report)
             }
         case .activeColumn:
-            report = document.fillColumn(column, formula: formula)
+            document.fillColumn(column, formula: formula) { [weak self] report in
+                self?.showFormulaErrors(report)
+            }
         }
-        guard let report, report.errors > 0, let window = view.window else { return }
+    }
+
+    private func showFormulaErrors(_ report: FormulaReport) {
+        guard report.errors > 0, let window = view.window else { return }
         let alert = NSAlert()
         alert.messageText = L("The formula failed in %@ of %@ rows.", Self.format(Int(report.errors)), Self.format(Int(report.rows)))
         var details = L("These cells were left empty. Undo with ⌘Z.")

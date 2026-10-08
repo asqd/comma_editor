@@ -15,7 +15,7 @@ extension GridViewController {
         busyCancel.controlSize = .small
         busyCancel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         busyCancel.target = self
-        busyCancel.action = #selector(cancelViewUpdate(_:))
+        busyCancel.action = #selector(cancelBackgroundWork(_:))
         let stack = NSStackView(views: [busyIndicator, busyLabel, busyCancel])
         stack.spacing = 6
         stack.isHidden = true
@@ -28,6 +28,10 @@ extension GridViewController {
         if let fraction = document.indexingFraction {
             busyLabel.stringValue = L("Reading the file: %@", fraction.formatted(.percent.precision(.fractionLength(0))))
             busyCancel.isHidden = true
+        } else if let status = document.editStatus {
+            let fraction = document.editFraction ?? 0
+            busyLabel.stringValue = status + " " + fraction.formatted(.percent.precision(.fractionLength(0)))
+            busyCancel.isHidden = false
         } else if document.isUpdatingView {
             busyLabel.stringValue = L("Sorting and filtering…")
             busyCancel.isHidden = false
@@ -43,8 +47,34 @@ extension GridViewController {
         busyIndicator.startAnimation(nil)
     }
 
-    @objc func cancelViewUpdate(_ sender: Any?) {
-        document.cancelViewUpdate()
+    /// Stops the change, or else the sorting and filtering, running in the background.
+    @objc func cancelBackgroundWork(_ sender: Any?) {
+        if document.editStatus != nil {
+            document.cancelEdit()
+        } else {
+            document.cancelViewUpdate()
+        }
+    }
+
+    // Undo and redo wait for a change running in the background: the core takes no other
+    // changes until it ends. A field editor handles its own undo before these.
+
+    @objc func undo(_ sender: Any?) {
+        document.undoManager?.undo()
+    }
+
+    @objc func redo(_ sender: Any?) {
+        document.undoManager?.redo()
+    }
+
+    func validateUndo(_ menuItem: NSMenuItem) -> Bool {
+        guard let undoManager = document.undoManager else { return false }
+        if menuItem.action == #selector(undo(_:)) {
+            menuItem.title = undoManager.undoMenuItemTitle
+            return !document.isBusy && undoManager.canUndo
+        }
+        menuItem.title = undoManager.redoMenuItemTitle
+        return !document.isBusy && undoManager.canRedo
     }
 
     /// More rows of a large file were read: the table grows without reloading what it shows.
@@ -63,7 +93,8 @@ extension GridViewController {
         updateStatus()
     }
 
-    /// Commands that change the file, which wait until a large file is read whole.
+    /// Commands that change the file, which wait until a large file is read whole and until a
+    /// change running in the background ends.
     static let changingActions: Set<Selector> = [
         #selector(deleteRows(_:)), #selector(delete(_:)), #selector(cut(_:)), #selector(paste(_:)),
         #selector(fillDown(_:)), #selector(insertRowAbove(_:)), #selector(insertRowBelow(_:)),

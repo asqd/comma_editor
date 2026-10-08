@@ -9,9 +9,8 @@
 use std::cmp::Ordering;
 use std::fmt;
 
-use rayon::prelude::*;
-
 use crate::document::{Document, Field, Record};
+use crate::edit::{Change, Edit, EditOutcome, Prepared, Progress, map_rows};
 use crate::error::{Error, Result};
 use crate::profile::date_value;
 use crate::view::{natural_cmp, parse_number};
@@ -63,7 +62,7 @@ impl fmt::Display for FormulaError {
 }
 
 /// Result of writing a computed column.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FormulaReport {
     /// Rows written.
     pub rows: usize,
@@ -694,67 +693,86 @@ impl Document {
     /// Inserts a column named `name` before column `at`, with the formula's value for every
     /// data row, as one undoable step. Rows where the formula fails are left empty. Resets the view.
     pub fn add_formula_column(&mut self, text: &str, name: &str, at: usize) -> Result<FormulaReport> {
+        let edit = Edit::AddFormulaColumn { formula: text.to_owned(), name: name.to_owned(), at };
+        Ok(self.apply_edit(&edit)?.report.unwrap_or_default())
+    }
+
+    pub(crate) fn prepare_formula_column(
+        &self,
+        text: &str,
+        name: &str,
+        at: usize,
+        progress: &Progress,
+    ) -> Result<Option<Prepared>> {
         let formula = self.compile_formula(text)?;
         if at > self.column_count() {
             return Err(Error::ColumnOutOfRange { column: at, columns: self.column_count() });
         }
         let header = self.header_offset();
+        let rows = 0..self.records.len();
+        progress.expect(rows.len());
         // Rows are computed on all cores; the report is gathered in order afterwards.
-        let computed: Vec<(Record, Option<FormulaError>)> = (0..self.records.len())
-            .into_par_iter()
-            .map(|row| {
-                let record = &self.records[row];
-                let (value, error) = if row < header {
-                    (name.to_owned(), None)
-                } else {
-                    self.evaluate(&formula, row)
-                };
-                let mut fields = self.fields(record);
-                if fields.len() < at {
-                    fields.resize(at, Field::Text(String::new()));
-                }
-                fields.insert(at, Field::Text(value));
-                (Record::modified(fields, record.term()), error)
-            })
-            .collect();
-        let mut report = FormulaReport { rows: 0, errors: 0, first_error: None };
-        let mut updated = Vec::with_capacity(computed.len());
+        let Some(computed) = map_rows(rows, progress, |row| {
+            let record = &self.records[row];
+            let (value, error) = if row < header {
+                (name.to_owned(), None)
+            } else {
+                self.evaluate(&formula, row)
+            };
+            let mut fields = self.fields(record);
+            if fields.len() < at {
+                fields.resize(at, Field::Text(String::new()));
+            }
+            fields.insert(at, Field::Text(value));
+            Some((Record::modified(fields, record.term()), error))
+        }) else {
+            return Ok(None);
+        };
+        let mut report = FormulaReport::default();
+        let mut records = Vec::with_capacity(computed.len());
         for (row, (record, error)) in computed.into_iter().enumerate() {
             if row >= header {
                 report.add(row, error);
             }
-            updated.push(record);
+            records.push(record);
         }
-        self.replace_records(updated, self.column_count() + 1, false);
-        self.reset_view();
-        Ok(report)
+        Ok(Some(Prepared {
+            change: Change::All { records, columns_after: self.column_count() + 1 },
+            outcome: EditOutcome { changed: false, count: report.rows, report: Some(report) },
+        }))
     }
 
     /// Writes the formula's value into `column` of every visible row, as one undoable step.
     /// The formula may use the column itself: `{price} * 1.2`.
     pub fn fill_column_with_formula(&mut self, text: &str, column: usize) -> Result<FormulaReport> {
+        let edit = Edit::FillWithFormula { formula: text.to_owned(), column };
+        Ok(self.apply_edit(&edit)?.report.unwrap_or_default())
+    }
+
+    pub(crate) fn prepare_formula_fill(&self, text: &str, column: usize, progress: &Progress) -> Result<Option<Prepared>> {
         let formula = self.compile_formula(text)?;
         if column >= self.column_count() {
             return Err(Error::ColumnOutOfRange { column, columns: self.column_count() });
         }
         // Values come from the rows as they were, so the formula may use the column itself.
-        let computed: Vec<(usize, String, Option<FormulaError>)> = (0..self.visible_row_count())
-            .into_par_iter()
-            .map(|visible| {
-                let record = self.visible_record(visible).expect("visible row");
-                let (value, error) = self.evaluate(&formula, record);
-                (record, value, error)
-            })
-            .collect();
-        let mut report = FormulaReport { rows: 0, errors: 0, first_error: None };
-        let mut values = Vec::with_capacity(computed.len());
-        for (record, value, error) in computed {
+        let rows = 0..self.visible_row_count();
+        progress.expect(rows.len());
+        let Some(computed) = map_rows(rows, progress, |visible| {
+            let record = self.visible_record(visible)?;
+            let (value, error) = self.evaluate(&formula, record);
+            let mut value = Some(value);
+            let update = self.updated_record(record, std::iter::once(column), |_, _| value.take());
+            Some((record, update, error))
+        }) else {
+            return Ok(None);
+        };
+        let mut report = FormulaReport::default();
+        let mut updates = Vec::new();
+        for (record, update, error) in computed {
             report.add(record, error);
-            values.push(value);
+            updates.extend(update);
         }
-        let rows = values.len();
-        self.edit_range_parallel(0..rows, column..column + 1, |row, _, _| Some(values[row].clone()));
-        Ok(report)
+        Ok(Some(Prepared::rows(updates, self.column_count(), Some(report))))
     }
 
     /// The formula's value for a row of the file; empty, with the reason, where it fails.

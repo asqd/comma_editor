@@ -34,6 +34,9 @@ pub enum CoreError {
     /// The file is still being indexed; it cannot be changed or saved yet.
     #[error("the file is still being read")]
     Busy,
+    /// A change runs in the background; others wait until it ends.
+    #[error("another change is being made")]
+    Editing,
 }
 
 impl From<core::Error> for CoreError {
@@ -631,6 +634,18 @@ pub enum TextTransform {
     Capitalize,
 }
 
+impl From<TextTransform> for core::TextTransform {
+    fn from(transform: TextTransform) -> Self {
+        match transform {
+            TextTransform::Trim => Self::Trim,
+            TextTransform::CollapseSpaces => Self::CollapseSpaces,
+            TextTransform::Uppercase => Self::Uppercase,
+            TextTransform::Lowercase => Self::Lowercase,
+            TextTransform::Capitalize => Self::Capitalize,
+        }
+    }
+}
+
 #[derive(uniffi::Record)]
 pub struct RangeStats {
     pub cells: u64,
@@ -745,6 +760,8 @@ pub struct CoreDocument {
     inner: Mutex<core::Document>,
     /// Indexes the rest of a large file; a separate lock, so indexing does not block reading.
     indexer: Mutex<Option<core::Indexer>>,
+    /// An edit job runs, from `begin_edit` to `finish_edit`.
+    editing: AtomicBool,
 }
 
 /// How far indexing of a large file has come.
@@ -775,6 +792,82 @@ impl ViewJob {
     }
 }
 
+/// A change to many rows; see `core::Edit`.
+#[derive(uniffi::Enum)]
+pub enum EditRequest {
+    ReplaceAll { query: SearchQuery, replacement: String },
+    Transform { range: CellRange, transform: TextTransform },
+    FillEmpty { range: CellRange, from_above: bool, value: String },
+    /// A range of visible cells, or the whole file with the header when `None`.
+    FixGarbled { range: Option<CellRange> },
+    AddFormulaColumn { formula: String, name: String, at: u64 },
+    FillWithFormula { formula: String, column: u64 },
+    SplitColumn { column: u64, separator: String, regex: bool },
+    MergeColumns { columns: Vec<u64>, separator: String },
+    RemoveDuplicates { columns: Vec<u64>, normalize: bool },
+}
+
+impl From<EditRequest> for core::Edit {
+    fn from(request: EditRequest) -> Self {
+        let columns = |columns: Vec<u64>| columns.into_iter().map(|column| column as usize).collect();
+        match request {
+            EditRequest::ReplaceAll { query, replacement } => Self::ReplaceAll { query: query.into(), replacement },
+            EditRequest::Transform { range, transform } => Self::Transform { range: range.into(), transform: transform.into() },
+            EditRequest::FillEmpty { range, from_above, value } => Self::FillEmpty { range: range.into(), from_above, value },
+            EditRequest::FixGarbled { range } => Self::FixGarbled { range: range.map(Into::into) },
+            EditRequest::AddFormulaColumn { formula, name, at } => Self::AddFormulaColumn { formula, name, at: at as usize },
+            EditRequest::FillWithFormula { formula, column } => Self::FillWithFormula { formula, column: column as usize },
+            EditRequest::SplitColumn { column, separator, regex } => Self::SplitColumn { column: column as usize, separator, regex },
+            EditRequest::MergeColumns { columns: list, separator } => Self::MergeColumns { columns: columns(list), separator },
+            EditRequest::RemoveDuplicates { columns: list, normalize } => Self::RemoveDuplicates { columns: columns(list), normalize },
+        }
+    }
+}
+
+/// What an edit did: cells changed, columns added or rows removed, and for formulas the report.
+#[derive(uniffi::Record)]
+pub struct EditResult {
+    /// Whether the document changed; an undoable step was recorded.
+    pub changed: bool,
+    pub count: u64,
+    pub report: Option<FormulaReport>,
+}
+
+impl From<core::EditOutcome> for EditResult {
+    fn from(outcome: core::EditOutcome) -> Self {
+        Self {
+            changed: outcome.changed,
+            count: outcome.count as u64,
+            report: outcome.report.map(Into::into),
+        }
+    }
+}
+
+/// A change computed off the document; see `CoreDocument::begin_edit`.
+#[derive(uniffi::Object)]
+pub struct EditJob {
+    task: Mutex<Option<core::EditTask>>,
+    progress: core::Progress,
+}
+
+#[uniffi::export]
+impl EditJob {
+    /// Computes the change; call off the main thread. Returns `false` when cancelled.
+    pub fn run(&self) -> bool {
+        let mut task = self.task.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        task.as_mut().is_some_and(|task| task.run(&self.progress))
+    }
+
+    pub fn cancel(&self) {
+        self.progress.cancel();
+    }
+
+    /// Share of the work done, from 0 to 1.
+    pub fn fraction(&self) -> f64 {
+        self.progress.fraction()
+    }
+}
+
 /// The first part of a file indexed when it opens; the rest follows with `continue_indexing`.
 const FIRST_PART: usize = 32 << 20;
 
@@ -787,6 +880,7 @@ impl CoreDocument {
         Arc::new(Self {
             inner: Mutex::new(document),
             indexer: Mutex::new(indexer),
+            editing: AtomicBool::new(false),
         })
     }
 
@@ -800,8 +894,18 @@ impl CoreDocument {
         self.lock().snapshot()
     }
 
-    /// The document for a change or a save, which must wait until indexing is done.
+    /// The document for a change, which must wait until indexing and a background edit end.
     fn edit(&self) -> Result<MutexGuard<'_, core::Document>, CoreError> {
+        let document = self.whole()?;
+        if self.editing.load(Ordering::Acquire) {
+            return Err(CoreError::Editing);
+        }
+        Ok(document)
+    }
+
+    /// The document for a save or an export, which must wait until indexing is done. A
+    /// background edit does not change the document until it finishes, so it need not wait.
+    fn whole(&self) -> Result<MutexGuard<'_, core::Document>, CoreError> {
         let document = self.lock();
         if document.is_indexing() {
             return Err(CoreError::Busy);
@@ -862,6 +966,35 @@ impl CoreDocument {
     pub fn finish_view(&self, job: Arc<ViewJob>) -> bool {
         let task = job.task.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
         task.is_some_and(|task| self.lock().finish_view(task))
+    }
+
+    /// Prepares a change to many rows to run with `EditJob::run` off the main thread. Until
+    /// `finish_edit`, other changes fail with `Editing`; reading, saving and exporting work.
+    pub fn begin_edit(&self, request: EditRequest) -> Result<Arc<EditJob>, CoreError> {
+        let document = self.edit()?;
+        let task = document.begin_edit(request.into());
+        self.editing.store(true, Ordering::Release);
+        Ok(Arc::new(EditJob { task: Mutex::new(Some(task)), progress: core::Progress::default() }))
+    }
+
+    /// Applies a job as one undoable step and lets other changes run again. `None` when it
+    /// was cancelled; call it then too.
+    pub fn finish_edit(&self, job: Arc<EditJob>) -> Result<Option<EditResult>, CoreError> {
+        let task = job.task.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
+        let mut document = self.lock();
+        self.editing.store(false, Ordering::Release);
+        let Some(task) = task else { return Ok(None) };
+        Ok(document.finish_edit(task)?.map(Into::into))
+    }
+
+    /// Makes a change to many rows at once, for tables small enough not to need a job.
+    pub fn apply_edit(&self, request: EditRequest) -> Result<EditResult, CoreError> {
+        Ok(self.edit()?.apply_edit(&request.into())?.into())
+    }
+
+    /// Whether an edit job runs.
+    pub fn is_editing(&self) -> bool {
+        self.editing.load(Ordering::Acquire)
     }
 
     #[uniffi::constructor]
@@ -1024,11 +1157,6 @@ impl CoreDocument {
         )?)
     }
 
-    /// Replaces every match in the visible rows; returns the number of changed cells.
-    pub fn replace_all(&self, query: SearchQuery, replacement: String) -> Result<u64, CoreError> {
-        Ok(self.edit()?.replace_all(&query.into(), &replacement)? as u64)
-    }
-
     // Ranges of visible cells.
 
     pub fn copy_range(&self, range: CellRange) -> Result<String, CoreError> {
@@ -1062,14 +1190,14 @@ impl CoreDocument {
             .map(Into::into))
     }
 
-    /// Visible rows of `range` (all visible cells when `None`) in `format`. `name` titles the
-    /// HTML page, SQL table and sheet; a `fragment` is for the clipboard.
     /// Writes the visible rows to `path`, building them a batch at a time off the document.
     pub fn export_to_file(&self, path: String, format: ExportFormat, name: String) -> Result<(), CoreError> {
-        let snapshot = self.edit()?.snapshot();
+        let snapshot = self.whole()?.snapshot();
         Ok(snapshot.export_to_file(path, format.into(), &name)?)
     }
 
+    /// Visible rows of `range` (all visible cells when `None`) in `format`. `name` titles the
+    /// HTML page, SQL table and sheet; a `fragment` is for the clipboard.
     pub fn export(
         &self,
         format: ExportFormat,
@@ -1078,7 +1206,7 @@ impl CoreDocument {
         fragment: bool,
     ) -> Result<Vec<u8>, CoreError> {
         let format: core::ExportFormat = format.into();
-        let snapshot = self.edit()?.snapshot();
+        let snapshot = self.whole()?.snapshot();
         Ok(snapshot.export(format, range.map(Into::into), &name, fragment)?)
     }
 
@@ -1166,11 +1294,6 @@ impl CoreDocument {
         self.edit().map_or(0, |mut document| document.fix_all(kind.into()) as u64)
     }
 
-    /// Fixes text read in the wrong encoding in a range, or in the whole file with the header.
-    pub fn fix_garbled_text(&self, range: Option<CellRange>) -> Result<u64, CoreError> {
-        Ok(self.edit()?.fix_garbled_text(range.map(Into::into))? as u64)
-    }
-
     /// The row as written in the file, cut to `max_chars` characters.
     pub fn raw_text(&self, row: u64, max_chars: u64) -> Result<String, CoreError> {
         Ok(self.lock().raw_text(row as usize, max_chars as usize)?)
@@ -1190,52 +1313,6 @@ impl CoreDocument {
                 Err(error) => FormulaOutcome { value: None, problem: Some(error.into()) },
             })
             .collect())
-    }
-
-    /// Inserts a column computed by the formula before column `at`.
-    pub fn add_formula_column(&self, formula: String, name: String, at: u64) -> Result<FormulaReport, CoreError> {
-        Ok(self.edit()?.add_formula_column(&formula, &name, at as usize)?.into())
-    }
-
-    /// Writes the formula's value into a column of every visible row.
-    pub fn fill_column_with_formula(&self, formula: String, column: u64) -> Result<FormulaReport, CoreError> {
-        Ok(self.edit()?.fill_column_with_formula(&formula, column as usize)?.into())
-    }
-
-    // Column operations.
-
-    /// Transforms the text of every cell in the range; returns the number of changed cells.
-    pub fn transform_range(&self, range: CellRange, transform: TextTransform) -> Result<u64, CoreError> {
-        let transform = match transform {
-            TextTransform::Trim => core::TextTransform::Trim,
-            TextTransform::CollapseSpaces => core::TextTransform::CollapseSpaces,
-            TextTransform::Uppercase => core::TextTransform::Uppercase,
-            TextTransform::Lowercase => core::TextTransform::Lowercase,
-            TextTransform::Capitalize => core::TextTransform::Capitalize,
-        };
-        Ok(self.edit()?.transform_range(range.into(), transform)? as u64)
-    }
-
-    /// Fills empty cells with the value above them or with `value`.
-    pub fn fill_empty(&self, range: CellRange, from_above: bool, value: String) -> Result<u64, CoreError> {
-        Ok(self.edit()?.fill_empty(range.into(), from_above, &value)? as u64)
-    }
-
-    /// Splits a column into new columns after it; returns how many were added.
-    pub fn split_column(&self, column: u64, separator: String, regex: bool) -> Result<u64, CoreError> {
-        Ok(self.edit()?.split_column(column as usize, &separator, regex)? as u64)
-    }
-
-    /// Joins columns into a new column after the last of them.
-    pub fn merge_columns(&self, columns: Vec<u64>, separator: String) -> Result<(), CoreError> {
-        let columns: Vec<usize> = columns.into_iter().map(|column| column as usize).collect();
-        Ok(self.edit()?.merge_columns(&columns, &separator)?)
-    }
-
-    /// Deletes repeated visible rows; returns how many were removed.
-    pub fn remove_duplicates(&self, columns: Vec<u64>, normalize: bool) -> Result<u64, CoreError> {
-        let columns: Vec<usize> = columns.into_iter().map(|column| column as usize).collect();
-        Ok(self.edit()?.remove_duplicates(&columns, normalize)? as u64)
     }
 
     pub fn set_has_header(&self, has_header: bool) {
@@ -1268,14 +1345,14 @@ impl CoreDocument {
 
     /// Writes a copy in `format`; the document keeps its own format (for "Export").
     pub fn save_with(&self, path: String, format: SaveFormat) -> Result<(), CoreError> {
-        Ok(self.edit()?.save_with(path, &format.try_into()?)?)
+        Ok(self.whole()?.save_with(path, &format.try_into()?)?)
     }
 
     pub fn save(&self, path: String) -> Result<(), CoreError> {
-        Ok(self.edit()?.save(path)?)
+        Ok(self.whole()?.save(path)?)
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, CoreError> {
-        Ok(self.edit()?.to_bytes()?)
+        Ok(self.whole()?.to_bytes()?)
     }
 }

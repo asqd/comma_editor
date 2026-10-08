@@ -1,14 +1,13 @@
 //! Find and replace over the visible rows, in the order they are shown.
 
-use std::sync::Arc;
 use std::ops::Range;
 
 use rayon::prelude::*;
 use regex::{NoExpand, Regex, RegexBuilder};
 
-use crate::document::{Document, Field, Record};
+use crate::document::Document;
+use crate::edit::{Edit, Prepared, Progress};
 use crate::error::{Error, Result};
-use crate::history::Splice;
 use crate::range::CellRange;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -163,45 +162,22 @@ impl Document {
     /// Replaces every match in the visible rows as one undoable step.
     /// Returns the number of cells that changed.
     pub fn replace_all(&mut self, query: &SearchQuery, replacement: &str) -> Result<usize> {
+        let edit = Edit::ReplaceAll { query: query.clone(), replacement: replacement.to_owned() };
+        Ok(self.apply_edit(&edit)?.count)
+    }
+
+    pub(crate) fn prepare_replace_all(
+        &self,
+        query: &SearchQuery,
+        replacement: &str,
+        progress: &Progress,
+    ) -> Result<Option<Prepared>> {
         let Some(Scope { matcher, rows, columns }) = self.prepare(query)? else {
-            return Ok(0);
+            return Ok(Some(Prepared::nothing()));
         };
-        // New values are found on all cores; the changed rows are then replaced in order.
-        let updates: Vec<(usize, Record, usize)> = rows
-            .into_par_iter()
-            .filter_map(|row| {
-                let record = self.visible_record(row)?;
-                let mut fields: Option<Vec<Field>> = None;
-                let mut changed = 0;
-                for &column in &columns {
-                    let value = self.value_at(record, column);
-                    if !matcher.is_match(&value) {
-                        continue;
-                    }
-                    let replaced = matcher.replace(&value, replacement);
-                    if replaced == value {
-                        continue;
-                    }
-                    let fields = fields.get_or_insert_with(|| self.fields(&self.records[record]));
-                    if fields.len() <= column {
-                        fields.resize(column + 1, Field::Text(String::new()));
-                    }
-                    fields[column] = Field::Text(replaced);
-                    changed += 1;
-                }
-                fields.map(|fields| (record, Record::modified(fields, self.records[record].term()), changed))
-            })
-            .collect();
-        let changed = updates.iter().map(|(_, _, changed)| changed).sum();
-        let records = Arc::make_mut(&mut self.records);
-        let splices: Vec<Splice> = updates
-            .into_iter()
-            .map(|(record, updated, _)| Splice::apply(records, record, 1, vec![updated]))
-            .collect();
-        if !splices.is_empty() {
-            self.commit(splices, self.column_count(), false);
-        }
-        Ok(changed)
+        Ok(self.cell_updates(rows, &columns, progress, |_, _, value| {
+            matcher.is_match(value).then(|| matcher.replace(value, replacement))
+        }))
     }
 
     /// What to search, or `None` when there is nothing to look for. A range that reaches past

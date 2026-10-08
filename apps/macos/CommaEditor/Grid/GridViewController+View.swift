@@ -14,7 +14,7 @@ extension GridViewController {
     /// Changes the view and keeps the active row selected if it is still shown.
     @discardableResult
     func applyView(_ spec: ViewSpec) -> Bool {
-        guard !document.isIndexing else {
+        guard !document.isBusy else {
             NSSound.beep()
             return false
         }
@@ -347,8 +347,9 @@ extension GridViewController: FindBarDelegate {
     }
 
     func findBarReplaceAll(_ bar: FindBarView) {
-        let count = document.replaceAll(query: bar.query, replacement: bar.replaceField.stringValue)
-        bar.showResult(L("Replaced: %@", Self.format(count)))
+        document.replaceAll(query: bar.query, replacement: bar.replaceField.stringValue) { count in
+            bar.showResult(L("Replaced: %@", Self.format(count)))
+        }
     }
 
     func findBarClose(_ bar: FindBarView) {
@@ -363,8 +364,8 @@ extension GridViewController: FilterBarDelegate {
         var spec = core.viewSpec()
         guard spec.filters != bar.rules else { return }
         spec.filters = bar.rules
-        guard !document.isIndexing else {
-            bar.setSummary(L("The file is still being read"))
+        guard !document.isBusy else {
+            bar.setSummary(document.isIndexing ? L("The file is still being read") : L("Another change is being made"))
             return
         }
         let fileRow = activeFileRow
@@ -404,11 +405,13 @@ extension GridViewController: NSToolbarItemValidation {
 
 extension GridViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        if document.isIndexing, let action = menuItem.action, Self.changingActions.contains(action) {
+        if document.isBusy, let action = menuItem.action, Self.changingActions.contains(action) {
             return false
         }
         let spec = core.viewSpec()
         switch menuItem.action {
+        case #selector(undo(_:)), #selector(redo(_:)):
+            return validateUndo(menuItem)
         case #selector(deleteRows(_:)), #selector(delete(_:)), #selector(copy(_:)), #selector(cut(_:)):
             return selection != nil
         case #selector(trimSpaces(_:)), #selector(collapseSpaces(_:)), #selector(makeUppercase(_:)),

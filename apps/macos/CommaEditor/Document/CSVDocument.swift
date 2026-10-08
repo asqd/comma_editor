@@ -15,8 +15,8 @@ final class CSVDocument: NSDocument {
         case progress
     }
 
-    /// Tables from this many rows on are sorted and filtered off the main thread.
-    private static let backgroundViewRows: UInt64 = 200_000
+    /// Tables from this many rows on are sorted, filtered and changed off the main thread.
+    private static let backgroundRows: UInt64 = 200_000
     /// Bytes indexed per step of a large file.
     private static let indexingStep: UInt64 = 64 << 20
 
@@ -26,6 +26,13 @@ final class CSVDocument: NSDocument {
     /// Sorting or filtering running off the main thread.
     private var viewJob: ViewJob?
     var isUpdatingView: Bool { viewJob != nil }
+    /// A change to many rows running off the main thread, and what the status bar calls it.
+    private var editJob: EditJob?
+    private(set) var editStatus: String?
+    /// Share of the running change done, while one runs.
+    var editFraction: Double? { editJob?.fraction() }
+    /// The file cannot be changed now: it is being read, or another change runs.
+    var isBusy: Bool { isIndexing || editJob != nil }
 
     static let didChangeNotification = Notification.Name("CSVDocumentDidChange")
     static let changeKey = "change"
@@ -114,6 +121,8 @@ final class CSVDocument: NSDocument {
         updateChangeCount(.changeCleared)
         viewJob?.cancel()
         viewJob = nil
+        editJob?.cancel()
+        editJob = nil
         startIndexing()
         post(.structure)
     }
@@ -360,14 +369,9 @@ final class CSVDocument: NSDocument {
         }
     }
 
-    /// Replaces every match in the visible rows; returns the number of changed cells.
-    func replaceAll(query: SearchQuery, replacement: String) -> Int {
-        var count: UInt64 = 0
-        perform(L("Replacement"), .structure) {
-            count = try $0.replaceAll(query: query, replacement: replacement)
-            return count > 0
-        }
-        return Int(count)
+    /// Replaces every match in the visible rows; `done` gets the number of changed cells.
+    func replaceAll(query: SearchQuery, replacement: String, done: @escaping (Int) -> Void) {
+        edit(L("Replacement"), .replaceAll(query: query, replacement: replacement)) { done(Int($0.count)) }
     }
 
     /// Sets every cell of a range of visible cells; an empty value clears them.
@@ -394,77 +398,139 @@ final class CSVDocument: NSDocument {
 
     // MARK: Column operations
 
-    @discardableResult
-    func transform(_ range: CellRange, _ transform: TextTransform, actionName: String) -> Bool {
-        perform(actionName, .structure) { try $0.transformRange(range: range, transform: transform) > 0 }
+    func transform(_ range: CellRange, _ transform: TextTransform, actionName: String) {
+        edit(actionName, .transform(range: range, transform: transform))
     }
 
-    @discardableResult
-    func fillEmpty(_ range: CellRange, fromAbove: Bool, value: String) -> Bool {
-        perform(L("Filling Empty Cells"), .structure) {
-            try $0.fillEmpty(range: range, fromAbove: fromAbove, value: value) > 0
+    func fillEmpty(_ range: CellRange, fromAbove: Bool, value: String) {
+        edit(L("Filling Empty Cells"), .fillEmpty(range: range, fromAbove: fromAbove, value: value))
+    }
+
+    /// `done` gets the number of columns added.
+    func splitColumn(_ column: Int, separator: String, regex: Bool, done: @escaping (Int) -> Void) {
+        edit(L("Column Split"), .splitColumn(column: UInt64(column), separator: separator, regex: regex)) {
+            done(Int($0.count))
         }
     }
 
-    /// Returns the number of columns added.
-    func splitColumn(_ column: Int, separator: String, regex: Bool) -> Int {
-        var added: UInt64 = 0
-        perform(L("Column Split"), .structure) {
-            added = try $0.splitColumn(column: UInt64(column), separator: separator, regex: regex)
-            return added > 0
-        }
-        return Int(added)
+    func mergeColumns(_ columns: [Int], separator: String) {
+        edit(L("Column Merge"), .mergeColumns(columns: columns.map { UInt64($0) }, separator: separator))
     }
 
-    @discardableResult
-    func mergeColumns(_ columns: [Int], separator: String) -> Bool {
-        perform(L("Column Merge"), .structure) {
-            try $0.mergeColumns(columns: columns.map { UInt64($0) }, separator: separator)
-            return true
+    /// `done` gets the number of rows removed.
+    func removeDuplicates(columns: [Int], normalize: Bool, done: @escaping (Int) -> Void) {
+        edit(L("Duplicate Removal"), .removeDuplicates(columns: columns.map { UInt64($0) }, normalize: normalize)) {
+            done(Int($0.count))
         }
-    }
-
-    /// Returns the number of rows removed.
-    func removeDuplicates(columns: [Int], normalize: Bool) -> Int {
-        var removed: UInt64 = 0
-        perform(L("Duplicate Removal"), .structure) {
-            removed = try $0.removeDuplicates(columns: columns.map { UInt64($0) }, normalize: normalize)
-            return removed > 0
-        }
-        return Int(removed)
     }
 
     // MARK: Formulas
 
     /// Inserts a column computed by the formula before column `at`.
-    func addFormulaColumn(_ formula: String, name: String, at column: Int) -> FormulaReport? {
-        var report: FormulaReport?
-        perform(L("Computed Column"), .structure) {
-            report = try $0.addFormulaColumn(formula: formula, name: name, at: UInt64(column))
-            return true
+    func addFormulaColumn(_ formula: String, name: String, at column: Int, done: @escaping (FormulaReport) -> Void) {
+        edit(L("Computed Column"), .addFormulaColumn(formula: formula, name: name, at: UInt64(column))) {
+            $0.report.map(done)
         }
-        return report
     }
 
     /// Writes the formula's value into a column of every visible row.
-    func fillColumn(_ column: Int, formula: String) -> FormulaReport? {
-        var report: FormulaReport?
-        perform(L("Computed Column"), .structure) {
-            report = try $0.fillColumnWithFormula(formula: formula, column: UInt64(column))
-            return true
+    func fillColumn(_ column: Int, formula: String, done: @escaping (FormulaReport) -> Void) {
+        edit(L("Computed Column"), .fillWithFormula(formula: formula, column: UInt64(column))) {
+            $0.report.map(done)
         }
-        return report
     }
 
-    /// Fixes text read in the wrong encoding in a range, or in the whole file.
-    @discardableResult
-    func fixGarbledText(_ range: CellRange?) -> Int {
-        var fixed: UInt64 = 0
-        perform(L("Garbled Text Fix"), .structure) {
-            fixed = try $0.fixGarbledText(range: range)
-            return fixed > 0
+    /// Fixes text read in the wrong encoding in a range, or in the whole file; `done` gets the
+    /// number of fixed cells.
+    func fixGarbledText(_ range: CellRange?, done: @escaping (Int) -> Void = { _ in }) {
+        edit(L("Garbled Text Fix"), .fixGarbled(range: range)) { done(Int($0.count)) }
+    }
+
+    // MARK: Changes to many rows
+
+    /// Makes a change to many rows as one undoable step. Large tables are changed off the main
+    /// thread, with progress and Cancel in the status bar; the table can be read meanwhile, not
+    /// changed. `done` runs once the change is made, unless it failed or was cancelled.
+    func edit(_ actionName: String, _ request: EditRequest, done: @escaping (EditResult) -> Void = { _ in }) {
+        guard editJob == nil else {
+            NSSound.beep()
+            return
         }
-        return Int(fixed)
+        guard core.rowCount() >= Self.backgroundRows else {
+            do {
+                finishEdit(actionName, try core.applyEdit(request: request), done)
+            } catch {
+                presentEditError(error)
+            }
+            return
+        }
+        let job: EditJob
+        do {
+            job = try core.beginEdit(request: request)
+        } catch {
+            presentEditError(error)
+            return
+        }
+        editJob = job
+        editStatus = Self.status(of: request)
+        post(.progress)
+        let progress = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in self?.post(.progress) }
+        RunLoop.main.add(progress, forMode: .common)
+        let core = core
+        let started = Date()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            _ = job.run()
+            DispatchQueue.main.async {
+                progress.invalidate()
+                // Always finished, so the core takes changes again; a reopened document has
+                // another core, and the old one is let go.
+                let applying = Date()
+                let result = Result { try core.finishEdit(job: job) }
+                #if DEBUG
+                NSLog("COMMA edit \(actionName): %.2f s in the background, %.3f s applying",
+                      applying.timeIntervalSince(started), Date().timeIntervalSince(applying))
+                #endif
+                guard let self, self.core === core else { return }
+                self.editJob = nil
+                self.editStatus = nil
+                switch result {
+                case .success(let result?):
+                    self.finishEdit(actionName, result, done)
+                case .success(nil):
+                    self.post(.progress)
+                case .failure(let error):
+                    self.post(.progress)
+                    self.presentEditError(error)
+                }
+            }
+        }
+    }
+
+    private static func status(of request: EditRequest) -> String {
+        switch request {
+        case .replaceAll: L("Replacing…")
+        case .transform: L("Changing text…")
+        case .fillEmpty: L("Filling empty cells…")
+        case .fixGarbled: L("Fixing garbled text…")
+        case .addFormulaColumn, .fillWithFormula: L("Computing the column…")
+        case .splitColumn: L("Splitting the column…")
+        case .mergeColumns: L("Merging columns…")
+        case .removeDuplicates: L("Removing duplicates…")
+        }
+    }
+
+    /// Stops the change running off the main thread; the file stays as it was.
+    func cancelEdit() {
+        editJob?.cancel()
+    }
+
+    private func finishEdit(_ actionName: String, _ result: EditResult, _ done: (EditResult) -> Void) {
+        if result.changed {
+            registerUndo()
+            undoManager?.setActionName(actionName)
+        }
+        post(.structure)
+        done(result)
     }
 
     // MARK: Repair
@@ -493,7 +559,7 @@ final class CSVDocument: NSDocument {
     func setView(_ spec: ViewSpec, shown: @escaping () -> Void = {}) throws {
         viewJob?.cancel()
         viewJob = nil
-        if core.rowCount() < Self.backgroundViewRows {
+        if core.rowCount() < Self.backgroundRows {
             try core.setView(spec: spec)
             post(.structure)
             shown()
@@ -605,6 +671,9 @@ final class CSVDocument: NSDocument {
         case .Busy:
             userInfo[NSLocalizedDescriptionKey] = L("The file is still being read.")
             userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Changes and saving are possible once the whole file is read; the progress is in the status bar.")
+        case .Editing:
+            userInfo[NSLocalizedDescriptionKey] = L("Another change is being made.")
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Wait until it ends or cancel it in the status bar.")
         case .InvalidDelimiter(let message), .Export(let message):
             userInfo[NSLocalizedDescriptionKey] = message
         case .Formula(let problem):

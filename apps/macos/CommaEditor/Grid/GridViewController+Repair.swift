@@ -80,8 +80,10 @@ extension GridViewController {
     /// Data ▸ Fix Garbled Text: the selected cells, or the whole file with the header.
     @objc func fixGarbledText(_ sender: Any?) {
         let range = selection.flatMap { $0.isSingleCell ? nil : $0.range }
-        if document.fixGarbledText(range) == 0 {
-            NSSound.beep()
+        document.fixGarbledText(range) { fixed in
+            if fixed == 0 {
+                NSSound.beep()
+            }
         }
     }
 

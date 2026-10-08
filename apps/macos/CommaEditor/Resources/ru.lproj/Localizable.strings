@@ -439,3 +439,14 @@
 "The file is still being read" = "Файл ещё читается";
 "Searching…" = "Поиск…";
 "Exporting…" = "Экспорт…";
+"Replacing…" = "Замена…";
+"Changing text…" = "Изменение текста…";
+"Filling empty cells…" = "Заполнение пустых ячеек…";
+"Fixing garbled text…" = "Исправление кракозябр…";
+"Computing the column…" = "Вычисление колонки…";
+"Splitting the column…" = "Разделение колонки…";
+"Merging columns…" = "Объединение колонок…";
+"Removing duplicates…" = "Удаление повторов…";
+"Another change is being made." = "Выполняется другое изменение.";
+"Another change is being made" = "Выполняется другое изменение";
+"Wait until it ends or cancel it in the status bar." = "Дождитесь его окончания или отмените его в строке состояния.";

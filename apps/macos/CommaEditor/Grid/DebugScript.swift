@@ -7,9 +7,10 @@ import SwiftUI
 /// `sort=<column>:a|d`, `filter=<column|*>:<op>:<value>`, `find=<text>`, `replace`, `exportexcel`,
 /// `select=<row>,<column>:<row>,<column>`, `paste=<text>`, `filldown`, `action=<selector>`,
 /// `exportas=<0 JSON…4 XLSX>`, `fixall=<0 unclosed quote…3 extra fields>`, `save`,
-/// `cardedit=<column>:<value>` (types into the record card and leaves the field),
+/// `replaceall=<text>`, `cardedit=<column>:<value>` (types into the record card and leaves the field),
 /// `lines=<n>` (text wrapping), `endedit`, `dump` (logs the geometry of the tables),
-/// `formula=<text>` and `formulaapply` (the computed column sheet), `wait=<seconds>`.
+/// `formula=<text>` and `formulaapply` (the computed column sheet), `cancel` (stops background
+/// work), `undo`, `wait=<seconds>`.
 /// Example: `open --env COMMA_DEBUG_SCRIPT='sort=2:d;find=lon' -a CommaEditor file.csv`
 @MainActor
 enum DebugScript {
@@ -53,6 +54,10 @@ enum DebugScript {
                 grid.findBarQueryDidChange(grid.findBar)
             case "replace":
                 grid.showFindAndReplaceBar(nil)
+            case "replaceall":
+                // replaceall=<replacement>, for the text in the find field.
+                grid.findBar.replaceField.stringValue = argument
+                grid.findBarReplaceAll(grid.findBar)
             case "select" where parts.count == 2:
                 // select=<row>,<column>:<row>,<column> (anchor:cursor)
                 let cell = { (text: String) -> GridCell in
@@ -109,6 +114,10 @@ enum DebugScript {
                     let widths = table.tableColumns.map { "\($0.identifier.rawValue)=\(Int($0.width))" }
                     NSLog("COMMA table frame=\(table.frame) clip=\(table.enclosingScrollView?.frame ?? .zero) \(widths)")
                 }
+            case "cancel":
+                grid.cancelBackgroundWork(nil)
+            case "undo":
+                grid.undo(nil)
             case "save":
                 grid.document.save(nil)
             case "exportexcel":

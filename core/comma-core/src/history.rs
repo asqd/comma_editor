@@ -2,13 +2,16 @@
 //! swaps the records back, so undo and redo are the same operation run in opposite orders.
 
 use crate::document::Record;
+use crate::edit::drop_later;
 
-pub(crate) struct Splice {
-    at: usize,
-    /// Number of records this splice currently occupies in the document.
-    len: usize,
-    /// Records that the next toggle puts back.
-    other: Vec<Record>,
+pub(crate) enum Splice {
+    /// `len` records at `at`; `other` holds the records that the next toggle puts there instead.
+    Range { at: usize, len: usize, other: Vec<Record> },
+    /// Records replaced in place at `rows`; `other` holds the ones the next toggle swaps back.
+    Swap { rows: Vec<usize>, other: Vec<Record> },
+    /// Records at ascending `rows` (positions in the list that holds them) taken out of the list
+    /// when `removed`, or put back in. One pass over the list either way, however scattered.
+    Remove { rows: Vec<usize>, other: Vec<Record>, removed: bool },
 }
 
 impl Splice {
@@ -21,14 +24,65 @@ impl Splice {
     ) -> Self {
         let len = insert.len();
         let other = records.splice(at..at + remove, insert).collect();
-        Self { at, len, other }
+        Self::Range { at, len, other }
+    }
+
+    /// Puts each record at its row, which must all differ, and returns the applied splice.
+    pub(crate) fn swap(records: &mut [Record], updates: Vec<(usize, Record)>) -> Self {
+        let (rows, other) = updates
+            .into_iter()
+            .map(|(row, record)| (row, std::mem::replace(&mut records[row], record)))
+            .unzip();
+        Self::Swap { rows, other }
+    }
+
+    /// Removes the records at ascending, distinct `rows` and returns the applied splice.
+    pub(crate) fn remove(records: &mut Vec<Record>, rows: Vec<usize>) -> Self {
+        let mut splice = Self::Remove { rows, other: Vec::new(), removed: false };
+        splice.toggle(records);
+        splice
     }
 
     fn toggle(&mut self, records: &mut Vec<Record>) {
-        let incoming = std::mem::take(&mut self.other);
-        let len = incoming.len();
-        self.other = records.splice(self.at..self.at + self.len, incoming).collect();
-        self.len = len;
+        match self {
+            Self::Range { at, len, other } => {
+                let incoming = std::mem::take(other);
+                let count = incoming.len();
+                *other = records.splice(*at..*at + *len, incoming).collect();
+                *len = count;
+            }
+            Self::Swap { rows, other } => {
+                for (&row, record) in rows.iter().zip(other.iter_mut()) {
+                    std::mem::swap(&mut records[row], record);
+                }
+            }
+            Self::Remove { rows, other, removed } => {
+                let old = std::mem::take(records);
+                if *removed {
+                    let mut back = std::mem::take(other).into_iter();
+                    let mut kept = old.into_iter();
+                    let mut next = rows.iter().peekable();
+                    let total = kept.len() + back.len();
+                    records.reserve_exact(total);
+                    for position in 0..total {
+                        let from_back = next.next_if(|&&row| row == position).is_some();
+                        records.extend(if from_back { back.next() } else { kept.next() });
+                    }
+                } else {
+                    records.reserve_exact(old.len() - rows.len());
+                    other.reserve_exact(rows.len());
+                    let mut next = rows.iter().peekable();
+                    for (position, record) in old.into_iter().enumerate() {
+                        if next.next_if(|&&row| row == position).is_some() {
+                            other.push(record);
+                        } else {
+                            records.push(record);
+                        }
+                    }
+                }
+                *removed = !*removed;
+            }
+        }
     }
 }
 
@@ -59,7 +113,10 @@ pub(crate) struct History {
 impl History {
     pub fn record(&mut self, transaction: Transaction) {
         self.undo.push(transaction);
-        self.redo.clear();
+        let redo = std::mem::take(&mut self.redo);
+        if !redo.is_empty() {
+            drop_later(redo);
+        }
     }
 
     pub fn can_undo(&self) -> bool {

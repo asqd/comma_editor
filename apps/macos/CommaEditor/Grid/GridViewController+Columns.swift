@@ -47,8 +47,10 @@ extension GridViewController {
             guard let self else { return }
             // An empty separator splits at runs of whitespace.
             let (pattern, isRegex) = separator.isEmpty ? (#"\s+"#, true) : (separator, regex)
-            if self.document.splitColumn(column, separator: pattern, regex: isRegex) == 0 {
-                self.inform(L("Nothing to split"), L("No value in this column contains the separator."))
+            self.document.splitColumn(column, separator: pattern, regex: isRegex) { [weak self] added in
+                if added == 0 {
+                    self?.inform(L("Nothing to split"), L("No value in this column contains the separator."))
+                }
             }
         }
     }
@@ -80,11 +82,12 @@ extension GridViewController {
             checkbox: L("Ignore case and surrounding spaces")
         ) { [weak self] _, normalize in
             guard let self else { return }
-            let removed = self.document.removeDuplicates(columns: byColumns ? selectedColumns : [], normalize: normalize)
-            self.inform(
-                removed == 0 ? L("No duplicates found") : L("Rows removed: %@", Self.format(removed)),
-                removed == 0 ? "" : L("Choose Edit ▸ Undo to bring them back.")
-            )
+            self.document.removeDuplicates(columns: byColumns ? selectedColumns : [], normalize: normalize) { [weak self] removed in
+                self?.inform(
+                    removed == 0 ? L("No duplicates found") : L("Rows removed: %@", Self.format(removed)),
+                    removed == 0 ? "" : L("Choose Edit ▸ Undo to bring them back.")
+                )
+            }
         }
     }
 

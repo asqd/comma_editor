@@ -3,12 +3,11 @@
 //! Windows-1252. The text is turned back into the bytes it came from and read correctly;
 //! a fix is kept only when the result reads more naturally.
 
-use std::sync::Arc;
 use encoding_rs::{Encoding, KOI8_R, WINDOWS_1251, WINDOWS_1252};
 
-use crate::document::{Document, Field, Record};
+use crate::document::Document;
+use crate::edit::{Edit, Prepared, Progress, map_rows};
 use crate::error::Result;
-use crate::history::Splice;
 use crate::range::CellRange;
 
 enum Source {
@@ -142,40 +141,22 @@ impl Document {
     /// Fixes garbled values in a range of visible cells, or in the whole file, header
     /// included, as one undoable step. Returns the number of fixed cells.
     pub fn fix_garbled_text(&mut self, range: Option<CellRange>) -> Result<usize> {
+        Ok(self.apply_edit(&Edit::FixGarbled { range })?.count)
+    }
+
+    pub(crate) fn prepare_fix_garbled(&self, range: Option<CellRange>, progress: &Progress) -> Result<Option<Prepared>> {
         if let Some(range) = range {
             self.check_range(&range)?;
-            return Ok(self.edit_range_parallel(range.rows(), range.columns(), |_, _, value| fix_garbled(value)));
+            let columns: Vec<usize> = range.columns().collect();
+            return Ok(self.cell_updates(range.rows(), &columns, progress, |_, _, value| fix_garbled(value)));
         }
-        let mut changed = 0;
-        let mut updates = Vec::new();
-        for row in 0..self.records.len() {
-            let values = self.values(row);
-            if !values.iter().any(|value| fix_garbled(value).is_some()) {
-                continue;
-            }
-            let record = &self.records[row];
-            let fields: Vec<Field> = self
-                .fields(record)
-                .into_iter()
-                .zip(&values)
-                .map(|(field, value)| match fix_garbled(value) {
-                    Some(fixed) => {
-                        changed += 1;
-                        Field::Text(fixed)
-                    }
-                    None => field,
-                })
-                .collect();
-            updates.push((row, Record::modified(fields, record.term())));
-        }
-        let splices: Vec<Splice> = updates
-            .into_iter()
-            .map(|(row, record)| Splice::apply(Arc::make_mut(&mut self.records), row, 1, vec![record]))
-            .collect();
-        if !splices.is_empty() {
-            self.commit(splices, self.column_count(), false);
-        }
-        Ok(changed)
+        let rows = 0..self.records.len();
+        progress.expect(rows.len());
+        let columns = 0..self.column_count();
+        Ok(map_rows(rows, progress, |row| {
+            self.updated_record(row, columns.clone(), |_, value| fix_garbled(value))
+        })
+        .map(|updates| Prepared::rows(updates, self.column_count(), None)))
     }
 }
 
