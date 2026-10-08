@@ -23,6 +23,11 @@ final class WorkbookDocument: CSVDocument {
     /// The layout of the shown sheet: column widths, hidden columns, frozen panes.
     var layout: SheetLayout? { loaded[sheetIndex]?.layout }
 
+    /// After the last change: formulas that read themselves, and ones CommaEditor does not
+    /// compute, which Excel computes when it opens the file.
+    private(set) var circularFormulas = 0
+    private(set) var formulasNotComputed = 0
+
     /// The sheet being read, if one is.
     var loadingSheetIndex: Int? { loading?.index }
 
@@ -114,7 +119,31 @@ final class WorkbookDocument: CSVDocument {
 
     private func show(_ sheet: LoadedSheet, at index: Int) {
         sheetIndex = index
+        // A sheet read just now may have formulas that read cells edited on other sheets.
+        _ = tableDidChange()
         replaceCore(sheet.document, keepsUndo: true)
+    }
+
+    // MARK: Formulas
+
+    override func tableDidChange() -> Bool {
+        guard let workbook, !isLegacyFormat else { return false }
+        let sheets = loaded.map { SheetToSave(index: UInt64($0.key), document: $0.value.document) }
+        do {
+            let report = try workbook.recalculate(sheets: sheets, now: Self.serialNow())
+            circularFormulas = Int(report.circular)
+            formulasNotComputed = Int(report.notComputed)
+            return report.sheets.contains(UInt64(sheetIndex))
+        } catch {
+            presentEditError(error)
+            return false
+        }
+    }
+
+    /// Now as Excel counts days: from 1900, in local time.
+    static func serialNow() -> Double {
+        let seconds = Date().timeIntervalSince1970 + Double(TimeZone.current.secondsFromGMT())
+        return seconds / 86_400 + 25_569
     }
 
     /// Undo and redo show the sheet whose change they undo.

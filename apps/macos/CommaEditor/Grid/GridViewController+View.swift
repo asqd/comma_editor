@@ -412,6 +412,10 @@ extension GridViewController: NSMenuItemValidation {
             return false
         }
         if info.isSheet, let action = menuItem.action {
+            // Only after the last column: columns added at the end move nothing.
+            if action == #selector(insertColumnRight(_:)) {
+                return activeColumn == columnCount - 1
+            }
             if Self.columnActions.contains(action) {
                 return false
             }

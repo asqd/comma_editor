@@ -588,6 +588,12 @@ final class GridViewController: NSViewController {
         if let searchSummary, findContainer.isHidden {
             parts.insert(searchSummary, at: 0)
         }
+        if let workbook, workbook.circularFormulas > 0 {
+            parts.insert("⚠︎ " + L("Circular references: %@", Self.format(workbook.circularFormulas)), at: 0)
+        }
+        if let workbook, workbook.formulasNotComputed > 0 {
+            parts.append(L("Formulas Excel will compute: %@", Self.format(workbook.formulasNotComputed)))
+        }
         if let steps = document.recordedStepCount {
             parts.insert("● " + L("Recording a recipe: %@ steps", Self.format(steps)), at: 0)
         }
@@ -724,9 +730,10 @@ final class GridViewController: NSViewController {
         guard let (table, index) = location(ofDataColumn: activeColumn) else { return }
         scrollToCell(row: row, column: activeColumn)
         table.editColumn(index, row: row, with: nil, select: true)
-        // The editor starts from the real value, not from the marks of invisible characters.
+        // The editor starts from the real value, not from the marks of invisible characters;
+        // for a cell with a formula, from the formula.
         if let editor = view.window?.firstResponder as? NSTextView, editor.isFieldEditor {
-            editor.string = value(row: row, column: activeColumn)
+            editor.string = formula(row: row, column: activeColumn) ?? value(row: row, column: activeColumn)
             editor.selectAll(nil)
         }
         if let text, let editor = view.window?.firstResponder as? NSTextView {

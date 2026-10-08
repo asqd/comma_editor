@@ -97,20 +97,30 @@ impl Document {
         Ok(self.apply_prepared(prepared).count)
     }
 
-    /// Copies the top row of the range into the rows below it.
+    /// Copies the top row of the range into the rows below it. In a sheet of a workbook a
+    /// formula is copied as Excel fills it down: its relative references move with the row.
     pub fn fill_down(&mut self, range: CellRange) -> Result<usize> {
         self.check_range(&range)?;
         let top = self.visible_record_checked(range.top)?;
-        let source: Vec<String> = range
+        let source: Vec<(String, Option<String>)> = range
             .columns()
-            .map(|column| self.value_at(top, column).into_owned())
+            .map(|column| (self.value_at(top, column).into_owned(), self.formula(top, column)))
+            .collect();
+        let offsets: Vec<i64> = (range.top + 1..range.bottom + 1)
+            .map(|row| self.visible_record(row).map_or(0, |record| record as i64 - top as i64))
             .collect();
         Ok(self.edit_range(
             Vec::new(),
             range.top + 1..range.bottom + 1,
             range.columns(),
             false,
-            |_, column, _| Some(source[column - range.left].clone()),
+            |row, column, _| {
+                let (value, formula) = &source[column - range.left];
+                Some(match formula {
+                    Some(formula) => format!("={}", crate::xlsx::shift_formula(formula, offsets[row - range.top - 1], 0)),
+                    None => value.clone(),
+                })
+            },
         ))
     }
 
@@ -132,9 +142,6 @@ impl Document {
         }
         if height == 0 || width == 0 {
             return Ok(None);
-        }
-        if left + width > self.column_count() {
-            self.check_structure(crate::error::SheetStructure::ColumnsFixed)?;
         }
 
         let mut splices = Vec::new();
@@ -183,15 +190,20 @@ impl Document {
             for column in columns.clone() {
                 let current = self.value_at(record, column);
                 let Some(new_value) = value(row, column, &current) else { continue };
-                if current == new_value {
-                    continue;
-                }
+                let unchanged = current == new_value;
                 drop(current);
+                // `=…` in a sheet of a workbook is a formula.
+                let field = match self.formula_field(&new_value) {
+                    Some(cell) if self.formula(record, column).as_deref() == Some(cell.formula.as_str()) => continue,
+                    Some(cell) => Field::Formula(Box::new(cell)),
+                    None if unchanged && self.formula(record, column).is_none() => continue,
+                    None => Field::Text(new_value),
+                };
                 let fields = fields.get_or_insert_with(|| self.fields(&self.records[record]));
                 if fields.len() <= column {
                     fields.resize(column + 1, Field::Text(String::new()));
                 }
-                fields[column] = Field::Text(new_value);
+                fields[column] = field;
                 columns_after = columns_after.max(column + 1);
                 changed += 1;
             }

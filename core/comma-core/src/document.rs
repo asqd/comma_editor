@@ -55,7 +55,7 @@ pub(crate) enum Field {
     Formula(Box<FormulaField>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FormulaField {
     /// The formula without its leading `=`, as Excel writes it in the file.
     pub formula: String,
@@ -63,6 +63,23 @@ pub(crate) struct FormulaField {
     pub value: String,
     /// The range an array formula fills, such as `C1:C3`.
     pub array: Option<String>,
+    /// The result itself, for formulas that read this cell and for saving.
+    pub computed: Computed,
+    /// Read from the file: saving keeps its formula as the file writes it, shared or not.
+    pub from_file: bool,
+}
+
+/// The result of a formula.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Computed {
+    Number(f64),
+    Text(String),
+    Bool(bool),
+    /// An error such as `#DIV/0!`.
+    Error(String),
+    /// Not known: a formula entered with a function CommaEditor does not compute, or one the
+    /// file kept no result for. Excel computes it when it opens the file.
+    Unknown,
 }
 
 impl Record {
@@ -162,6 +179,9 @@ pub(crate) struct SheetSource {
     pub rows: usize,
     /// How values were shown when read, so that saving can tell which ones changed.
     pub locale: crate::xlsx::DisplayLocale,
+    /// Shared by the sheets of a workbook: a formula was entered, which may refer to rows of
+    /// any sheet, so rows no longer move.
+    pub formulas_entered: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Summary of a document for the UI. Encoding, BOM, delimiter and line endings are those the
@@ -317,7 +337,7 @@ impl Document {
     /// cell, conditional format, validation, table or chart refers to them. Rows can always
     /// be added at the end.
     pub fn sheet_rows_fixed(&self) -> bool {
-        self.sheet.as_ref().is_some_and(|sheet| sheet.rows_fixed)
+        self.sheet.as_ref().is_some_and(|sheet| sheet.rows_fixed || sheet.formulas_entered.load(Ordering::Relaxed))
     }
 
     /// Fails if a sheet cannot take a change to its rows or columns.
@@ -350,6 +370,28 @@ impl Document {
     /// Whether a row of a sheet may differ from the row of the file it was read from.
     pub(crate) fn row_edited(&self, row: usize) -> bool {
         self.records.get(row).is_none_or(Record::is_edited)
+    }
+
+    /// Writes computed results of formulas, as `(row, column, value shown, result)`. Results
+    /// follow from the cells they read, so they are not undone: computing again after an undo
+    /// brings back the earlier ones. The rows count as edited, so saving writes them.
+    pub(crate) fn set_formula_results(&mut self, results: Vec<(usize, usize, String, Computed)>) {
+        if results.is_empty() {
+            return;
+        }
+        let records = Arc::make_mut(&mut self.records);
+        for (row, column, value, computed) in results {
+            let Some(Record::Modified(modified)) = records.get_mut(row) else { continue };
+            if let Some(Field::Formula(cell)) = modified.fields.get_mut(column) {
+                cell.value = value;
+                cell.computed = computed;
+                modified.edited = true;
+            }
+        }
+        self.generation += 1;
+        if self.has_view() {
+            self.refresh_view();
+        }
     }
 
     /// Whether a sheet is as it was read: every row where it was, none edited.
@@ -795,10 +837,32 @@ impl Document {
 
     /// Sets one cell. Returns `false` and records nothing if the cell already holds `value`.
     /// The view keeps its order: an edited row stays where it is until the view is refreshed.
+    /// `=…` written into a sheet of a workbook, as a formula to compute; `None` for other text,
+    /// in a delimited file, or for a formula that does not read, which stays text there.
+    pub(crate) fn formula_field(&self, value: &str) -> Option<FormulaField> {
+        let sheet = self.sheet.as_ref()?;
+        let text = value.strip_prefix('=').filter(|text| !text.trim().is_empty())?;
+        let formula = crate::xlsx::normalize_formula(text).ok()?;
+        sheet.formulas_entered.store(true, Ordering::Relaxed);
+        Some(FormulaField { formula, value: String::new(), array: None, computed: Computed::Unknown, from_file: false })
+    }
+
     pub fn set_cell(&mut self, row: usize, column: usize, value: &str) -> Result<bool> {
         self.check_row(row)?;
         self.check_column(column)?;
-        if self.value_at(row, column) == value {
+        // `=…` in a sheet of a workbook is a formula, kept the way the file writes it.
+        let formula = match (&self.sheet, value.strip_prefix('=')) {
+            (Some(sheet), Some(text)) if !text.trim().is_empty() => {
+                let formula = crate::xlsx::normalize_formula(text).map_err(Error::Formula)?;
+                if self.formula(row, column).as_deref() == Some(formula.as_str()) {
+                    return Ok(false);
+                }
+                sheet.formulas_entered.store(true, Ordering::Relaxed);
+                Some(formula)
+            }
+            _ => None,
+        };
+        if formula.is_none() && self.value_at(row, column) == value && self.formula(row, column).is_none() {
             return Ok(false);
         }
         let record = &self.records[row];
@@ -806,7 +870,16 @@ impl Document {
         if fields.len() <= column {
             fields.resize(column + 1, Field::Text(String::new()));
         }
-        fields[column] = Field::Text(value.to_owned());
+        fields[column] = match formula {
+            Some(formula) => Field::Formula(Box::new(FormulaField {
+                formula,
+                value: String::new(),
+                array: None,
+                computed: Computed::Unknown,
+                from_file: false,
+            })),
+            None => Field::Text(value.to_owned()),
+        };
         let updated = record.with_fields(fields);
         let splice = Splice::apply(Arc::make_mut(&mut self.records), row, 1, vec![updated]);
         self.commit(vec![splice], self.column_count, false);
@@ -881,7 +954,10 @@ impl Document {
     /// continue past `at` change; when appending, full-width rows get a trailing empty field.
     /// Short rows and blank lines stay untouched. Resets the view.
     pub fn insert_column(&mut self, at: usize) -> Result<()> {
-        self.check_structure(SheetStructure::ColumnsFixed)?;
+        // A column added at the end of a sheet moves nothing.
+        if at < self.column_count {
+            self.check_structure(SheetStructure::ColumnsFixed)?;
+        }
         if at > self.column_count {
             return Err(Error::ColumnOutOfRange {
                 column: at,

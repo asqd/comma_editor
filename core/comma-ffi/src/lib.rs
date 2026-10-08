@@ -2079,6 +2079,17 @@ pub struct SheetToSave {
     pub document: Arc<CoreDocument>,
 }
 
+/// What computing formulas again did.
+#[derive(uniffi::Record)]
+pub struct RecalcReport {
+    /// Sheets whose shown values changed.
+    pub sheets: Vec<u64>,
+    /// Formulas that read themselves through other cells; they show 0.
+    pub circular: u64,
+    /// Formulas with a function CommaEditor does not compute; Excel computes them on opening.
+    pub not_computed: u64,
+}
+
 /// An open Excel workbook. Sheets are read one at a time.
 #[derive(uniffi::Object)]
 pub struct CoreWorkbook {
@@ -2127,6 +2138,20 @@ impl CoreWorkbook {
         let edited: Vec<(usize, &core::Document)> =
             sheets.iter().zip(&documents).map(|(sheet, document)| (sheet.index as usize, &**document)).collect();
         Ok(self.inner.to_bytes(&edited)?)
+    }
+
+    /// Computes again the formulas of the given sheets that depend on edited cells, and the
+    /// ones entered. `now` is the date and time as an Excel serial number, for TODAY and NOW.
+    pub fn recalculate(&self, sheets: Vec<SheetToSave>, now: f64) -> Result<RecalcReport, CoreError> {
+        let mut documents = sheets.iter().map(|sheet| sheet.document.whole()).collect::<Result<Vec<_>, _>>()?;
+        let mut edited: Vec<(usize, &mut core::Document)> =
+            sheets.iter().zip(documents.iter_mut()).map(|(sheet, document)| (sheet.index as usize, &mut **document)).collect();
+        let report = self.inner.recalculate(&mut edited, now)?;
+        Ok(RecalcReport {
+            sheets: report.sheets.into_iter().map(|sheet| sheet as u64).collect(),
+            circular: report.circular as u64,
+            not_computed: report.not_computed as u64,
+        })
     }
 
     /// Reads a sheet; call off the main thread for large ones. `None` if `job` was cancelled.

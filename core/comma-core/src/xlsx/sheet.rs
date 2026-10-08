@@ -10,7 +10,7 @@ use super::numfmt::{DisplayLocale, NumberFormat};
 use super::refs::{self, MAX_COLUMNS, MAX_ROWS};
 use super::xml::{self, EventSource, attribute, flag};
 use super::{ColumnLayout, SheetLayout, SheetRange};
-use crate::document::{Field, FormulaField};
+use crate::document::{Computed, Field, FormulaField};
 use crate::edit::Progress;
 use crate::error::Result;
 use crate::profile::date_value;
@@ -24,6 +24,39 @@ pub(crate) struct Context<'a> {
     pub date1904: bool,
 }
 
+/// Values of a sheet as the file stores them, with each cell's style: what formulas compute
+/// with, where what the table shows is rounded or formatted.
+#[derive(Debug, Default)]
+pub(crate) struct RawSheet {
+    /// Rows from the first, each up to its last cell, styled cells without values included.
+    pub rows: Vec<Vec<RawCell>>,
+    pub texts: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RawCell {
+    pub style: u32,
+    pub value: RawValue,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum RawValue {
+    #[default]
+    Empty,
+    Number(f64),
+    /// Index into `RawSheet::texts`.
+    Text(u32),
+    Bool(bool),
+    /// Index into `RawSheet::texts`.
+    Error(u32),
+}
+
+impl RawSheet {
+    pub(crate) fn get(&self, row: usize, column: usize) -> Option<&RawCell> {
+        self.rows.get(row)?.get(column)
+    }
+}
+
 pub(crate) struct SheetContent {
     /// Rows from the first row of the sheet, each up to its last cell with a value.
     pub rows: Vec<Vec<Field>>,
@@ -31,6 +64,8 @@ pub(crate) struct SheetContent {
     /// Formulas, merged cells, conditional formats, validations, links, tables, drawings or
     /// a filter refer to rows of the sheet, so they cannot move.
     pub refers_to_rows: bool,
+    /// When asked for instead of the rows: the values as stored.
+    pub raw: Option<RawSheet>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,15 +122,18 @@ struct Reading {
     next_column: u32,
     cell: Option<Cell>,
     refers_to_rows: bool,
+    raw: Option<RawSheet>,
 }
 
 /// Reads the sheet from `source`, which holds `size` bytes; `None` if `progress` was cancelled.
+/// With `raw`, reads the values as stored instead of as shown.
 pub(crate) fn read_sheet(
     source: &mut impl EventSource,
     size: u64,
     part: &str,
     context: &Context,
     progress: Option<&Progress>,
+    raw: bool,
 ) -> Result<Option<SheetContent>> {
     let mut reading = Reading {
         rows: Vec::new(),
@@ -106,6 +144,7 @@ pub(crate) fn read_sheet(
         next_column: 0,
         cell: None,
         refers_to_rows: false,
+        raw: raw.then(RawSheet::default),
     };
     let mut cells = 0usize;
     let mut reported = 0u64;
@@ -143,7 +182,10 @@ pub(crate) fn read_sheet(
             }
             Next::CellEnd => {
                 if let Some(cell) = &mut reading.cell {
-                    place(&mut reading.rows, cell, context);
+                    match &mut reading.raw {
+                        Some(raw) => place_raw(raw, cell, context),
+                        None => place(&mut reading.rows, cell, context),
+                    }
                 }
                 cells += 1;
                 if cells.is_multiple_of(PROGRESS_STEP)
@@ -164,7 +206,7 @@ pub(crate) fn read_sheet(
         progress.advance(size.saturating_sub(reported) as usize);
     }
     let refers_to_rows = reading.refers_to_rows || !reading.layout.merged.is_empty();
-    Ok(Some(SheetContent { rows: reading.rows, layout: reading.layout, refers_to_rows }))
+    Ok(Some(SheetContent { rows: reading.rows, layout: reading.layout, refers_to_rows, raw: reading.raw }))
 }
 
 impl Reading {
@@ -328,7 +370,16 @@ fn place(rows: &mut Vec<Vec<Field>>, cell: &mut Cell, context: &Context) {
     }
     let value = shown_value(cell, context);
     let field = match cell.formula.take() {
-        Some(formula) => Field::Formula(Box::new(FormulaField { formula, value, array: cell.array.take() })),
+        Some(formula) => {
+            let computed = match raw_value(cell, context, &mut Vec::new()) {
+                RawValue::Number(number) => Computed::Number(number),
+                RawValue::Bool(truth) => Computed::Bool(truth),
+                RawValue::Text(_) => Computed::Text(cell.value.clone()),
+                RawValue::Error(_) => Computed::Error(cell.value.clone()),
+                RawValue::Empty => Computed::Unknown,
+            };
+            Field::Formula(Box::new(FormulaField { formula, value, array: cell.array.take(), computed, from_file: true }))
+        }
         None => Field::Text(value),
     };
     let (row, column) = (cell.row as usize, cell.column as usize);
@@ -343,6 +394,48 @@ fn place(rows: &mut Vec<Vec<Field>>, cell: &mut Cell, context: &Context) {
         fields.resize(column + 1, Field::Text(String::new()));
     }
     fields[column] = field;
+}
+
+/// Puts a cell's stored value and style into its row. Cells with a style only are kept: a
+/// formula typed into one takes its format.
+fn place_raw(raw: &mut RawSheet, cell: &mut Cell, context: &Context) {
+    let value = raw_value(cell, context, &mut raw.texts);
+    let (row, column) = (cell.row as usize, cell.column as usize);
+    if raw.rows.len() <= row {
+        raw.rows.resize_with(row + 1, Vec::new);
+    }
+    let cells = &mut raw.rows[row];
+    if cells.len() <= column {
+        cells.resize(column + 1, RawCell::default());
+    }
+    cells[column] = RawCell { style: cell.style as u32, value };
+}
+
+/// A cell's value as stored, its text added to `texts`.
+fn raw_value(cell: &Cell, context: &Context, texts: &mut Vec<String>) -> RawValue {
+    let mut text = |value: String| {
+        texts.push(value);
+        texts.len() as u32 - 1
+    };
+    let raw = cell.value.trim();
+    match cell.kind {
+        _ if cell.value.is_empty() => RawValue::Empty,
+        CellType::SharedString => {
+            let shared = raw.parse::<usize>().ok().and_then(|index| context.strings.get(index)).cloned().unwrap_or_default();
+            RawValue::Text(text(shared))
+        }
+        CellType::InlineString | CellType::FormulaString => RawValue::Text(text(cell.value.clone())),
+        CellType::Boolean => RawValue::Bool(raw == "1" || raw == "true"),
+        CellType::Error => RawValue::Error(text(cell.value.clone())),
+        CellType::Date => match date_value(raw) {
+            Some(days) => RawValue::Number(days + if context.date1904 { 24_107.0 } else { 25_569.0 }),
+            None => RawValue::Text(text(cell.value.clone())),
+        },
+        CellType::Number => match raw.parse::<f64>() {
+            Ok(number) => RawValue::Number(number),
+            Err(_) => RawValue::Text(text(cell.value.clone())),
+        },
+    }
 }
 
 fn shown_value(cell: &Cell, context: &Context) -> String {

@@ -575,6 +575,8 @@
 "The cells of sheet “%@” are missing from the file." = "Ячеек листа «%@» в файле нет.";
 "Rows of this sheet cannot be inserted, deleted or moved." = "На этом листе нельзя вставлять, удалять и перемещать строки.";
 "Formulas, merged cells, conditional formats, tables or charts of the workbook refer to them, and CommaEditor does not move such references yet. Rows can be added at the end." = "На строки ссылаются формулы, объединённые ячейки, условное форматирование, таблицы или диаграммы книги, а сдвигать такие ссылки CommaEditor пока не умеет. Добавлять строки в конец можно.";
-"Columns of a workbook cannot be inserted, deleted or moved yet." = "В книгах Excel пока нельзя вставлять, удалять и перемещать колонки.";
+"Columns of a workbook cannot be inserted, deleted or moved yet." = "В книгах Excel пока нельзя вставлять, удалять и перемещать колонки, только добавлять в конец.";
 "Values in the columns can be changed. To change the columns, export the sheet as CSV." = "Значения в колонках менять можно. Чтобы изменить сами колонки, экспортируйте лист в CSV.";
 "Excel 97–2003 workbooks can only be read. Export the sheet as XLSX or CSV to change it." = "Книги Excel 97–2003 можно только читать. Чтобы изменить лист, экспортируйте его в XLSX или CSV.";
+"Circular references: %@" = "Циклических ссылок: %@";
+"Formulas Excel will compute: %@" = "Формул вычислит Excel: %@";

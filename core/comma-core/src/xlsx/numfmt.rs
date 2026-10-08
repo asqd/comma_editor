@@ -535,13 +535,13 @@ fn push_plain(out: &mut String, token: &Token) {
 /// A positive number as decimal digits: `digits` with the point after `point` of them, rounded
 /// to the 15 significant digits Excel keeps.
 #[derive(Clone, Debug)]
-struct Decimal {
+pub(crate) struct Decimal {
     digits: Vec<u8>,
     point: i32,
 }
 
 impl Decimal {
-    fn new(value: f64) -> Self {
+    pub(crate) fn new(value: f64) -> Self {
         let value = value.abs();
         if value == 0.0 {
             return Self { digits: Vec::new(), point: 0 };
@@ -558,7 +558,7 @@ impl Decimal {
 
     /// Integer and fraction digits with `places` digits after the point, rounded half away
     /// from zero. The integer part is empty below one.
-    fn fixed(&self, places: usize) -> (String, String) {
+    pub(crate) fn fixed(&self, places: usize) -> (String, String) {
         let mut digits = self.digits.clone();
         let mut point = self.point;
         let keep = point + places as i32;

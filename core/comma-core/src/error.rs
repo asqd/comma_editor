@@ -62,7 +62,8 @@ pub enum SheetStructure {
     /// validations, tables or charts refer to them.
     #[error("rows of this sheet cannot be inserted, deleted or moved: other parts of the workbook refer to them")]
     RowsFixed,
-    /// Columns of a workbook cannot be inserted, deleted or moved yet.
+    /// Columns of a workbook cannot be inserted, deleted or moved yet; they can be added at
+    /// the end.
     #[error("columns of a workbook cannot be inserted, deleted or moved")]
     ColumnsFixed,
 }

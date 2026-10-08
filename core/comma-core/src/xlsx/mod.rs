@@ -3,6 +3,7 @@
 //! numbers and dates in the cell's number format, shared and formatted strings as text, and
 //! cells with a formula keeping it along with its last result.
 
+mod calc;
 mod numfmt;
 mod package;
 mod refs;
@@ -19,6 +20,9 @@ use std::sync::{Arc, Mutex};
 
 use quick_xml::events::Event;
 
+pub use calc::Recalculation;
+pub(crate) use calc::normalize as normalize_formula;
+pub(crate) use refs::shift_formula;
 pub use numfmt::DisplayLocale;
 pub use refs::{cell_name, column_letters};
 
@@ -121,6 +125,10 @@ pub struct Workbook {
     /// The part with the list of sheets, and the calculation chain if there is one.
     workbook_part: String,
     calc_chain: Option<String>,
+    /// What computing formulas keeps between edits.
+    calc: Mutex<calc::CalcState>,
+    /// Shared with every sheet read: a formula was entered somewhere.
+    formulas_entered: Arc<std::sync::atomic::AtomicBool>,
 }
 
 enum Source {
@@ -150,6 +158,8 @@ impl Workbook {
                 formulas: Mutex::default(),
                 workbook_part: String::new(),
                 calc_chain: None,
+                calc: Mutex::default(),
+                formulas_entered: Arc::default(),
             });
         }
         if !bytes.starts_with(b"PK")
@@ -240,6 +250,8 @@ impl Workbook {
             formulas: Mutex::default(),
             workbook_part,
             calc_chain,
+            calc: Mutex::default(),
+            formulas_entered: Arc::default(),
         })
     }
 
@@ -282,7 +294,12 @@ impl Workbook {
                 let formats = book.styles.formats(locale);
                 let context = Context { strings: &[], formats: &formats, locale, date1904: self.date1904 };
                 let (rows, layout) = book.read_sheet(index, &entry.name, &context)?;
-                let source = SheetSource { rows_fixed: true, rows: rows.len(), locale: locale.clone() };
+                let source = SheetSource {
+                    rows_fixed: true,
+                    rows: rows.len(),
+                    locale: locale.clone(),
+                    formulas_entered: Arc::clone(&self.formulas_entered),
+                };
                 return Ok(Some(Sheet { name: entry.name.clone(), document: Document::from_sheet(rows, source), layout }));
             }
         };
@@ -297,9 +314,9 @@ impl Workbook {
             let mut bytes = Vec::new();
             input.read_to_end(&mut bytes)?;
             let text = xml::decode(bytes);
-            sheet::read_sheet(&mut xml::reader(&text), text.len() as u64, part, &context, Some(progress))?
+            sheet::read_sheet(&mut xml::reader(&text), text.len() as u64, part, &context, Some(progress), false)?
         } else {
-            sheet::read_sheet(&mut xml::Stream::new(input), size, part, &context, Some(progress))?
+            sheet::read_sheet(&mut xml::Stream::new(input), size, part, &context, Some(progress), false)?
         };
         let Some(content) = content else {
             return Ok(None);
@@ -309,7 +326,10 @@ impl Workbook {
         let rows = content.rows.len();
         Ok(Some(Sheet {
             name: entry.name.clone(),
-            document: Document::from_sheet(content.rows, SheetSource { rows_fixed, rows, locale: locale.clone() }),
+            document: Document::from_sheet(
+                content.rows,
+                SheetSource { rows_fixed, rows, locale: locale.clone(), formulas_entered: Arc::clone(&self.formulas_entered) },
+            ),
             layout: content.layout,
         }))
     }

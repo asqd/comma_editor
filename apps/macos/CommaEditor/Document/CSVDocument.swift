@@ -585,6 +585,7 @@ class CSVDocument: NSDocument {
         if result.changed {
             registerUndo()
             undoManager?.setActionName(actionName)
+            _ = tableDidChange()
         }
         post(.structure)
         done(result)
@@ -672,8 +673,15 @@ class CSVDocument: NSDocument {
         }
         registerUndo()
         undoManager?.setActionName(actionName)
-        post(change)
+        // Cells computed from the changed ones may have changed too.
+        post(tableDidChange() ? .structure : change)
         return true
+    }
+
+    /// After a change, an undo or a redo: computes what depends on the changed cells, and says
+    /// whether other cells of the shown table changed with them. A file has nothing to compute.
+    func tableDidChange() -> Bool {
+        false
     }
 
     // The core keeps the history; the undo manager only drives it, so NSDocument tracks
@@ -687,6 +695,7 @@ class CSVDocument: NSDocument {
             document.show(core)
             guard core.undo() else { return }
             document.registerRedo()
+            _ = document.tableDidChange()
             document.post(.structure)
         }
     }
@@ -697,6 +706,7 @@ class CSVDocument: NSDocument {
             document.show(core)
             guard core.redo() else { return }
             document.registerUndo()
+            _ = document.tableDidChange()
             document.post(.structure)
         }
     }

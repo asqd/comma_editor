@@ -13,7 +13,7 @@ use quick_xml::events::Event;
 use super::refs::MAX_ROWS;
 use super::sheet::{self, Context, cell_attributes};
 use super::{Source, Workbook, xml};
-use crate::document::{Document, Field};
+use crate::document::{Computed, Document, Field};
 use crate::error::{Result, WorkbookError};
 use crate::profile::date_value;
 use crate::view::parse_number;
@@ -178,17 +178,25 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, document: &Document, contex
                 }
                 continue;
             }
-            if let Some(cell) = cell_span
-                && has_formula(&xml[cell.start..cell.end])
-            {
-                formulas_changed = true;
-            }
+            let had_formula = cell_span.is_some_and(|cell| has_formula(&xml[cell.start..cell.end]));
             let style = cell_span.and_then(|cell| attribute_value(&xml[cell.start..cell.tag_end], "s"));
             let format = style
                 .as_deref()
                 .and_then(|style| style.parse::<usize>().ok())
                 .and_then(|style| context.formats.get(style))
                 .unwrap_or(&context.formats[0]);
+            if let Some(Field::Formula(formula)) = now {
+                // A formula read keeps its element as the file has it; an entered one is new.
+                let element = match cell_span {
+                    Some(cell) if formula.from_file => formula_element(&xml[cell.start..cell.end], &prefix),
+                    _ => None,
+                };
+                formulas_changed |= !formula.from_file;
+                let element = element.unwrap_or_else(|| format!("<{prefix}f>{}</{prefix}f>", escape_text(&formula.formula)));
+                body.push_str(&write_formula_cell(&prefix, &reference, style.as_deref(), &element, &formula.computed));
+                continue;
+            }
+            formulas_changed |= had_formula;
             let text = now.map(value).unwrap_or_default();
             body.push_str(&write_cell(&prefix, &reference, style.as_deref(), text, format, context.locale, context.date1904));
         }
@@ -330,7 +338,7 @@ fn original_rows(
         fragment.push_str(&xml[span.start..span.end]);
     }
     fragment.push_str("</sheetData>");
-    let content = sheet::read_sheet(&mut xml::reader(&fragment), fragment.len() as u64, part, context, None)?;
+    let content = sheet::read_sheet(&mut xml::reader(&fragment), fragment.len() as u64, part, context, None, false)?;
     Ok(content.map(|content| content.rows).unwrap_or_default())
 }
 
@@ -363,12 +371,15 @@ fn value(field: &Field) -> &str {
     }
 }
 
-/// Whether a cell is as the file has it. A cell with a formula is: edits only ever replace
-/// formulas with values, and rows with formulas do not move. Its formula may be shared with a
-/// cell in another row, which reading the row alone does not see.
+/// Whether a cell is as the file has it. A formula read from the file is when its result
+/// shows the same: its formula may be shared with a cell in another row, which reading the row
+/// alone does not see, but edits never change a formula read, only replace it. A formula
+/// entered here never is.
 fn same_cell(was: Option<&Field>, now: Option<&Field>) -> bool {
-    if now.is_some_and(|field| matches!(field, Field::Formula(_))) {
-        return true;
+    if let Some(Field::Formula(cell)) = now
+        && !cell.from_file
+    {
+        return false;
     }
     was.map(value).unwrap_or_default() == now.map(value).unwrap_or_default()
 }
@@ -471,7 +482,7 @@ fn dimension(tag: &str, last_row: usize, last_column: usize) -> String {
 
 /// What a value typed into a cell is stored as.
 #[derive(Debug, PartialEq)]
-enum Typed<'a> {
+pub(crate) enum Typed<'a> {
     Number(f64),
     Bool(bool),
     Text(&'a str),
@@ -480,7 +491,7 @@ enum Typed<'a> {
 /// A value as a cell of the given format holds it: a number when the text reads as one the
 /// way the format shows numbers (or as a plain number), a date in a date cell, true or false,
 /// otherwise text as it is.
-fn typed<'a>(text: &'a str, format: &NumberFormat, locale: &DisplayLocale, date1904: bool) -> Typed<'a> {
+pub(crate) fn typed<'a>(text: &'a str, format: &NumberFormat, locale: &DisplayLocale, date1904: bool) -> Typed<'a> {
     let trimmed = text.trim();
     for (word, truth) in [(locale.true_text.as_str(), true), ("TRUE", true), (locale.false_text.as_str(), false), ("FALSE", false)] {
         if trimmed.eq_ignore_ascii_case(word) || trimmed.to_lowercase() == word.to_lowercase() {
@@ -570,6 +581,33 @@ fn write_cell(
             )
         }
     }
+}
+
+/// A cell with a formula and its result: `t` says what kind of result it is, and a result not
+/// known is left out for Excel to compute.
+fn write_formula_cell(prefix: &str, reference: &str, style: Option<&str>, element: &str, computed: &Computed) -> String {
+    let style = style.map(|style| format!(" s=\"{style}\"")).unwrap_or_default();
+    let (kind, value) = match computed {
+        Computed::Number(number) => ("", Some(xml_number(*number))),
+        Computed::Text(text) => (" t=\"str\"", Some(escape_text(text))),
+        Computed::Bool(truth) => (" t=\"b\"", Some(u8::from(*truth).to_string())),
+        Computed::Error(code) => (" t=\"e\"", Some(escape_text(code))),
+        Computed::Unknown => ("", None),
+    };
+    let value = value.map(|value| format!("<{prefix}v>{value}</{prefix}v>")).unwrap_or_default();
+    format!("<{prefix}c r=\"{reference}\"{style}{kind}>{element}{value}</{prefix}c>")
+}
+
+/// The `<f>` element of a cell's XML, as it is.
+fn formula_element(cell: &str, prefix: &str) -> Option<String> {
+    let start = find_element(cell, "f")?;
+    let tag_end = start + cell[start..].find('>')? + 1;
+    if cell[start..tag_end].ends_with("/>") {
+        return Some(cell[start..tag_end].to_owned());
+    }
+    let closing = format!("</{prefix}f>");
+    let end = tag_end + cell[tag_end..].find(&closing)? + closing.len();
+    Some(cell[start..end].to_owned())
 }
 
 /// A number as XML Schema writes a double: the shortest text that reads back the same.
