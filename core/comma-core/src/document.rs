@@ -80,6 +80,25 @@ impl Record {
     pub(crate) fn modified(fields: Vec<Field>, term: Terminator) -> Self {
         Self::Modified(Box::new(Modified { fields, term }))
     }
+
+    /// Bytes the record holds besides itself.
+    pub(crate) fn heap_size(&self) -> usize {
+        match self {
+            Self::Original { .. } => 0,
+            Self::Long(_) => size_of::<(usize, usize, Terminator)>(),
+            Self::Modified(modified) => {
+                let texts: usize = modified
+                    .fields
+                    .iter()
+                    .map(|field| match field {
+                        Field::Text(text) => text.capacity(),
+                        Field::Raw { .. } => 0,
+                    })
+                    .sum();
+                size_of::<Modified>() + modified.fields.capacity() * size_of::<Field>() + texts
+            }
+        }
+    }
 }
 
 /// Summary of a document for the UI. Encoding, BOM, delimiter and line endings are those the
@@ -817,6 +836,11 @@ impl Document {
         self.history.can_redo()
     }
 
+    /// Memory the undo history may hold; older steps are dropped past it, the last one stays.
+    pub fn set_undo_memory_limit(&mut self, bytes: usize) {
+        self.history.set_limit(bytes);
+    }
+
     pub fn undo(&mut self) -> bool {
         match self.history.undo(Arc::make_mut(&mut self.records)) {
             Some(reverted) => {
@@ -869,6 +893,7 @@ impl Document {
             structural,
             trailing_before: self.trailing_newline,
             trailing_after,
+            bytes: 0,
         });
         self.column_count = columns_after;
         self.trailing_newline = trailing_after;

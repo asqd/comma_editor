@@ -1321,6 +1321,11 @@ impl CoreDocument {
         }
     }
 
+    /// Whether the core has a step to undo: old steps of large changes are dropped to save memory.
+    pub fn can_undo(&self) -> bool {
+        self.lock().can_undo()
+    }
+
     pub fn undo(&self) -> bool {
         self.edit().is_ok_and(|mut document| document.undo())
     }

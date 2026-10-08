@@ -121,3 +121,31 @@ fn scattered_duplicates_are_removed_and_restored_exactly() {
     assert!(document.undo());
     assert_eq!(saved(&document), text);
 }
+
+#[test]
+fn undo_history_keeps_to_its_memory_limit() {
+    let original = many_rows();
+    let all = CellRange { top: 0, left: 0, bottom: 39_999, right: 2 };
+    let steps = [TextTransform::Uppercase, TextTransform::Lowercase, TextTransform::Capitalize];
+
+    let mut document = open(&original);
+    for transform in steps {
+        document.transform_range(all, transform).unwrap();
+    }
+    for _ in steps {
+        assert!(document.undo());
+    }
+    assert_eq!(saved(&document), original);
+
+    // Each step holds the 40 000 rows it replaced; a small limit keeps only the last one.
+    let mut document = open(&original);
+    document.set_undo_memory_limit(1 << 20);
+    for transform in steps {
+        document.transform_range(all, transform).unwrap();
+    }
+    let last = saved(&document);
+    assert!(document.undo());
+    assert!(!document.can_undo());
+    assert!(document.redo());
+    assert_eq!(saved(&document), last);
+}

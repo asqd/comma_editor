@@ -71,7 +71,7 @@ extension GridViewController {
         guard let undoManager = document.undoManager else { return false }
         if menuItem.action == #selector(undo(_:)) {
             menuItem.title = undoManager.undoMenuItemTitle
-            return !document.isBusy && undoManager.canUndo
+            return !document.isBusy && undoManager.canUndo && core.canUndo()
         }
         menuItem.title = undoManager.redoMenuItemTitle
         return !document.isBusy && undoManager.canRedo

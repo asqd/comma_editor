@@ -43,6 +43,17 @@ impl Splice {
         splice
     }
 
+    /// Bytes the splice holds.
+    pub(crate) fn heap_size(&self) -> usize {
+        let (rows, other) = match self {
+            Self::Range { other, .. } => (0, other),
+            Self::Swap { rows, other } | Self::Remove { rows, other, .. } => (rows.capacity(), other),
+        };
+        rows * size_of::<usize>()
+            + other.capacity() * size_of::<Record>()
+            + other.iter().map(Record::heap_size).sum::<usize>()
+    }
+
     fn toggle(&mut self, records: &mut Vec<Record>) {
         match self {
             Self::Range { at, len, other } => {
@@ -95,6 +106,8 @@ pub(crate) struct Transaction {
     /// Whether the file ends with a line break, before and after.
     pub trailing_before: bool,
     pub trailing_after: bool,
+    /// Bytes the splices hold; set when recorded.
+    pub bytes: usize,
 }
 
 /// What an undo or redo changed.
@@ -104,18 +117,52 @@ pub(crate) struct Reverted {
     pub trailing_newline: bool,
 }
 
-#[derive(Default)]
+/// Memory the undo history holds at most by default. A change to a whole large file keeps the
+/// rows as they were, which can take gigabytes.
+pub(crate) const UNDO_MEMORY_LIMIT: usize = 1 << 30;
+
 pub(crate) struct History {
     undo: Vec<Transaction>,
     redo: Vec<Transaction>,
+    /// Bytes held by the transactions in both lists, as counted when they were recorded.
+    bytes: usize,
+    limit: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self { undo: Vec::new(), redo: Vec::new(), bytes: 0, limit: UNDO_MEMORY_LIMIT }
+    }
 }
 
 impl History {
-    pub fn record(&mut self, transaction: Transaction) {
+    /// Adds a transaction. The oldest ones are dropped while the history holds more than its
+    /// limit; the new one always stays.
+    pub fn record(&mut self, mut transaction: Transaction) {
+        transaction.bytes = transaction.splices.iter().map(Splice::heap_size).sum();
+        self.bytes += transaction.bytes;
         self.undo.push(transaction);
         let redo = std::mem::take(&mut self.redo);
         if !redo.is_empty() {
+            self.bytes -= redo.iter().map(|transaction| transaction.bytes).sum::<usize>();
             drop_later(redo);
+        }
+        self.trim();
+    }
+
+    pub fn set_limit(&mut self, bytes: usize) {
+        self.limit = bytes;
+        self.trim();
+    }
+
+    fn trim(&mut self) {
+        let mut dropped = 0;
+        while self.bytes > self.limit && self.undo.len() - dropped > 1 {
+            self.bytes -= self.undo[dropped].bytes;
+            dropped += 1;
+        }
+        if dropped > 0 {
+            drop_later(self.undo.drain(..dropped).collect::<Vec<_>>());
         }
     }
 

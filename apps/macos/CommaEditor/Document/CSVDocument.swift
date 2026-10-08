@@ -616,10 +616,11 @@ final class CSVDocument: NSDocument {
     }
 
     // The core keeps the history; the undo manager only drives it, so NSDocument tracks
-    // unsaved changes and the Edit menu shows the right titles.
+    // unsaved changes and the Edit menu shows the right titles. The core drops the oldest steps
+    // of large changes to save memory; the menu then stops at the oldest step the core has.
     private func registerUndo() {
         undoManager?.registerUndo(withTarget: self) { document in
-            _ = document.core.undo()
+            guard document.core.undo() else { return }
             document.registerRedo()
             document.post(.structure)
         }
@@ -627,7 +628,7 @@ final class CSVDocument: NSDocument {
 
     private func registerRedo() {
         undoManager?.registerUndo(withTarget: self) { document in
-            _ = document.core.redo()
+            guard document.core.redo() else { return }
             document.registerUndo()
             document.post(.structure)
         }
