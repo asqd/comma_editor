@@ -94,7 +94,7 @@ extension GridViewController {
     // MARK: Dialogs
 
     /// A sheet with an optional text field and checkbox; `completion` gets their values on OK.
-    private func ask(
+    func ask(
         _ title: String,
         _ message: String,
         text: String? = nil,
@@ -138,7 +138,7 @@ extension GridViewController {
         }
     }
 
-    private func inform(_ title: String, _ message: String) {
+    func inform(_ title: String, _ message: String) {
         guard let window = view.window else { return }
         let alert = NSAlert()
         alert.messageText = title

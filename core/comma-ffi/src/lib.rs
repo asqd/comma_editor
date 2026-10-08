@@ -37,6 +37,11 @@ pub enum CoreError {
     /// A change runs in the background; others wait until it ends.
     #[error("another change is being made")]
     Editing,
+    /// A step of a recipe failed; `step` counts from 0. `column` is a column the file lacks.
+    #[error("step {step}: {message}")]
+    Recipe { step: u64, column: Option<String>, message: String },
+    #[error("{message}")]
+    InvalidRecipe { message: String },
 }
 
 impl From<core::Error> for CoreError {
@@ -66,6 +71,15 @@ impl From<core::Error> for CoreError {
             },
             core::Error::Export(message) => Self::Export { message },
             core::Error::Formula(error) => Self::Formula { problem: error.into() },
+            core::Error::UnknownColumn(ref column) => Self::Recipe { step: 0, column: Some(column.clone()), message: error.to_string() },
+            core::Error::InvalidRecipe(message) => Self::InvalidRecipe { message },
+            core::Error::Recipe { step, source } => {
+                let column = match source.as_ref() {
+                    core::Error::UnknownColumn(column) => Some(column.clone()),
+                    _ => None,
+                };
+                Self::Recipe { step: step as u64, column, message: source.to_string() }
+            }
         }
     }
 }
@@ -762,6 +776,16 @@ pub struct CoreDocument {
     indexer: Mutex<Option<core::Indexer>>,
     /// An edit job runs, from `begin_edit` to `finish_edit`.
     editing: AtomicBool,
+    /// Steps recorded for a recipe, while recording.
+    recorder: Mutex<Option<Recorder>>,
+}
+
+/// Recipe steps recorded so far, each with the change it repeats, so undo and redo take the
+/// step out and put it back.
+#[derive(Default)]
+struct Recorder {
+    steps: Vec<(core::RecipeStep, u64)>,
+    undone: Vec<(core::RecipeStep, u64)>,
 }
 
 /// How far indexing of a large file has come.
@@ -805,6 +829,7 @@ pub enum EditRequest {
     SplitColumn { column: u64, separator: String, regex: bool },
     MergeColumns { columns: Vec<u64>, separator: String },
     RemoveDuplicates { columns: Vec<u64>, normalize: bool },
+    ApplyRecipe { recipe: Arc<CoreRecipe> },
 }
 
 impl From<EditRequest> for core::Edit {
@@ -820,6 +845,7 @@ impl From<EditRequest> for core::Edit {
             EditRequest::SplitColumn { column, separator, regex } => Self::SplitColumn { column: column as usize, separator, regex },
             EditRequest::MergeColumns { columns: list, separator } => Self::MergeColumns { columns: columns(list), separator },
             EditRequest::RemoveDuplicates { columns: list, normalize } => Self::RemoveDuplicates { columns: columns(list), normalize },
+            EditRequest::ApplyRecipe { recipe } => Self::Recipe(recipe.get()),
         }
     }
 }
@@ -846,7 +872,8 @@ impl From<core::EditOutcome> for EditResult {
 /// A change computed off the document; see `CoreDocument::begin_edit`.
 #[derive(uniffi::Object)]
 pub struct EditJob {
-    task: Mutex<Option<core::EditTask>>,
+    /// The task, and the recipe step that repeats it while recording.
+    task: Mutex<Option<(core::EditTask, Option<core::RecipeStep>)>>,
     progress: core::Progress,
 }
 
@@ -855,7 +882,7 @@ impl EditJob {
     /// Computes the change; call off the main thread. Returns `false` when cancelled.
     pub fn run(&self) -> bool {
         let mut task = self.task.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        task.as_mut().is_some_and(|task| task.run(&self.progress))
+        task.as_mut().is_some_and(|(task, _)| task.run(&self.progress))
     }
 
     pub fn cancel(&self) {
@@ -881,6 +908,7 @@ impl CoreDocument {
             inner: Mutex::new(document),
             indexer: Mutex::new(indexer),
             editing: AtomicBool::new(false),
+            recorder: Mutex::new(None),
         })
     }
 
@@ -901,6 +929,27 @@ impl CoreDocument {
             return Err(CoreError::Editing);
         }
         Ok(document)
+    }
+
+    fn recorder(&self) -> MutexGuard<'_, Option<Recorder>> {
+        self.recorder.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The step that repeats a change about to be made, while recording.
+    fn step(&self, make: impl FnOnce() -> Option<core::RecipeStep>) -> Option<core::RecipeStep> {
+        if self.recorder().is_some() { make() } else { None }
+    }
+
+    /// Records `step` if the change made after `before` was recorded as a new undo step.
+    fn record(&self, document: &core::Document, before: Option<u64>, step: Option<core::RecipeStep>) {
+        let (Some(step), Some(change)) = (step, document.last_change_id()) else { return };
+        if Some(change) == before {
+            return;
+        }
+        if let Some(recorder) = self.recorder().as_mut() {
+            recorder.steps.push((step, change));
+            recorder.undone.clear();
+        }
     }
 
     /// The document for a save or an export, which must wait until indexing is done. A
@@ -972,9 +1021,11 @@ impl CoreDocument {
     /// `finish_edit`, other changes fail with `Editing`; reading, saving and exporting work.
     pub fn begin_edit(&self, request: EditRequest) -> Result<Arc<EditJob>, CoreError> {
         let document = self.edit()?;
-        let task = document.begin_edit(request.into());
+        let edit: core::Edit = request.into();
+        let step = self.step(|| document.recipe_step_for_edit(&edit));
+        let task = document.begin_edit(edit);
         self.editing.store(true, Ordering::Release);
-        Ok(Arc::new(EditJob { task: Mutex::new(Some(task)), progress: core::Progress::default() }))
+        Ok(Arc::new(EditJob { task: Mutex::new(Some((task, step))), progress: core::Progress::default() }))
     }
 
     /// Applies a job as one undoable step and lets other changes run again. `None` when it
@@ -983,13 +1034,22 @@ impl CoreDocument {
         let task = job.task.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).take();
         let mut document = self.lock();
         self.editing.store(false, Ordering::Release);
-        let Some(task) = task else { return Ok(None) };
-        Ok(document.finish_edit(task)?.map(Into::into))
+        let Some((task, step)) = task else { return Ok(None) };
+        let before = document.last_change_id();
+        let result = document.finish_edit(task)?;
+        self.record(&document, before, step);
+        Ok(result.map(Into::into))
     }
 
     /// Makes a change to many rows at once, for tables small enough not to need a job.
     pub fn apply_edit(&self, request: EditRequest) -> Result<EditResult, CoreError> {
-        Ok(self.edit()?.apply_edit(&request.into())?.into())
+        let edit: core::Edit = request.into();
+        let mut document = self.edit()?;
+        let step = self.step(|| document.recipe_step_for_edit(&edit));
+        let before = document.last_change_id();
+        let result = document.apply_edit(&edit)?;
+        self.record(&document, before, step);
+        Ok(result.into())
     }
 
     /// Whether an edit job runs.
@@ -1048,7 +1108,13 @@ impl CoreDocument {
 
     /// Returns `false` if the cell already held `value` and nothing was recorded.
     pub fn set_cell(&self, row: u64, column: u64, value: String) -> Result<bool, CoreError> {
-        Ok(self.edit()?.set_cell(row as usize, column as usize, &value)?)
+        let (row, column) = (row as usize, column as usize);
+        let mut document = self.edit()?;
+        let step = self.step(|| document.recipe_step_for_set_cell(row, column, &value));
+        let before = document.last_change_id();
+        let changed = document.set_cell(row, column, &value)?;
+        self.record(&document, before, step);
+        Ok(changed)
     }
 
     pub fn insert_rows(&self, at: u64, count: u64) -> Result<(), CoreError> {
@@ -1057,7 +1123,12 @@ impl CoreDocument {
 
     pub fn delete_rows(&self, rows: Vec<u64>) -> Result<(), CoreError> {
         let rows: Vec<usize> = rows.into_iter().map(|row| row as usize).collect();
-        Ok(self.edit()?.delete_rows(&rows)?)
+        let mut document = self.edit()?;
+        let step = self.step(|| document.recipe_step_for_delete_rows(&rows));
+        let before = document.last_change_id();
+        document.delete_rows(&rows)?;
+        self.record(&document, before, step);
+        Ok(())
     }
 
     /// Moves rows to stand before row `to` (an index before the move), keeping their order.
@@ -1068,15 +1139,31 @@ impl CoreDocument {
 
     /// Moves column `from` to index `to` of the resulting columns. Resets the view.
     pub fn move_column(&self, from: u64, to: u64) -> Result<bool, CoreError> {
-        Ok(self.edit()?.move_column(from as usize, to as usize)?)
+        let (from, to) = (from as usize, to as usize);
+        let mut document = self.edit()?;
+        let step = self.step(|| Some(document.recipe_step_for_move_column(from, to)));
+        let before = document.last_change_id();
+        let moved = document.move_column(from, to)?;
+        self.record(&document, before, step);
+        Ok(moved)
     }
 
     pub fn insert_column(&self, at: u64) -> Result<(), CoreError> {
-        Ok(self.edit()?.insert_column(at as usize)?)
+        let mut document = self.edit()?;
+        let step = self.step(|| Some(document.recipe_step_for_insert_column(at as usize)));
+        let before = document.last_change_id();
+        document.insert_column(at as usize)?;
+        self.record(&document, before, step);
+        Ok(())
     }
 
     pub fn delete_column(&self, at: u64) -> Result<(), CoreError> {
-        Ok(self.edit()?.delete_column(at as usize)?)
+        let mut document = self.edit()?;
+        let step = self.step(|| Some(document.recipe_step_for_delete_column(at as usize)));
+        let before = document.last_change_id();
+        document.delete_column(at as usize)?;
+        self.record(&document, before, step);
+        Ok(())
     }
 
     // Visible rows: data rows as the current sort and filters show them.
@@ -1120,7 +1207,12 @@ impl CoreDocument {
 
     /// Reorders the file by the current sort; returns `false` if there was nothing to apply.
     pub fn apply_sort(&self) -> Result<bool, CoreError> {
-        Ok(self.edit()?.apply_sort()?)
+        let mut document = self.edit()?;
+        let step = self.step(|| document.recipe_step_for_apply_sort());
+        let before = document.last_change_id();
+        let sorted = document.apply_sort()?;
+        self.record(&document, before, step);
+        Ok(sorted)
     }
 
     pub fn find(
@@ -1291,7 +1383,13 @@ impl CoreDocument {
 
     /// Applies the recommended fix to every problem of one kind; returns the rows fixed.
     pub fn fix_all(&self, kind: ProblemKind) -> u64 {
-        self.edit().map_or(0, |mut document| document.fix_all(kind.into()) as u64)
+        let Ok(mut document) = self.edit() else { return 0 };
+        let kind = kind.into();
+        let step = self.step(|| Some(document.recipe_step_for_fix_rows(kind)));
+        let before = document.last_change_id();
+        let fixed = document.fix_all(kind);
+        self.record(&document, before, step);
+        fixed as u64
     }
 
     /// The row as written in the file, cut to `max_chars` characters.
@@ -1327,11 +1425,32 @@ impl CoreDocument {
     }
 
     pub fn undo(&self) -> bool {
-        self.edit().is_ok_and(|mut document| document.undo())
+        let Ok(mut document) = self.edit() else { return false };
+        let change = document.last_change_id();
+        if !document.undo() {
+            return false;
+        }
+        // Undoing a recorded change takes its step out of the recipe.
+        if let Some(recorder) = self.recorder().as_mut()
+            && recorder.steps.last().is_some_and(|(_, id)| Some(*id) == change)
+        {
+            recorder.undone.extend(recorder.steps.pop());
+        }
+        true
     }
 
     pub fn redo(&self) -> bool {
-        self.edit().is_ok_and(|mut document| document.redo())
+        let Ok(mut document) = self.edit() else { return false };
+        if !document.redo() {
+            return false;
+        }
+        let change = document.last_change_id();
+        if let Some(recorder) = self.recorder().as_mut()
+            && recorder.undone.last().is_some_and(|(_, id)| Some(*id) == change)
+        {
+            recorder.steps.extend(recorder.undone.pop());
+        }
+        true
     }
 
     /// The format the file had when it was opened.
@@ -1589,5 +1708,142 @@ impl CoreDocument {
             },
             progress: core::Progress::default(),
         }))
+    }
+}
+
+// Recipes.
+
+/// A recipe: steps that repeat changes on another file, found by column names.
+#[derive(uniffi::Object)]
+pub struct CoreRecipe {
+    inner: Mutex<core::Recipe>,
+}
+
+/// One step of a recipe for a list: a kind (`replace`, `uppercase`…) and its arguments.
+#[derive(uniffi::Record)]
+pub struct RecipeStepInfo {
+    pub kind: String,
+    pub arguments: Vec<String>,
+    /// The filter that selected the rows the step works on when it was recorded.
+    pub filters: Vec<RecipeFilterInfo>,
+}
+
+/// A filter condition: `op` is `contains`, `equals`, `greater_than`…; any column when `None`.
+#[derive(uniffi::Record)]
+pub struct RecipeFilterInfo {
+    pub column: Option<String>,
+    pub op: String,
+    pub value: String,
+}
+
+impl CoreRecipe {
+    fn get(&self) -> core::Recipe {
+        self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+    }
+
+    fn with<T>(&self, change: impl FnOnce(&mut core::Recipe) -> T) -> T {
+        change(&mut self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+}
+
+#[uniffi::export]
+impl CoreRecipe {
+    #[uniffi::constructor]
+    pub fn from_json(json: String) -> Result<Arc<Self>, CoreError> {
+        Ok(Arc::new(Self { inner: Mutex::new(core::Recipe::from_json(&json)?) }))
+    }
+
+    pub fn to_json(&self) -> String {
+        self.get().to_json()
+    }
+
+    pub fn name(&self) -> String {
+        self.get().name
+    }
+
+    pub fn set_name(&self, name: String) {
+        self.with(|recipe| recipe.name = name);
+    }
+
+    pub fn steps(&self) -> Vec<RecipeStepInfo> {
+        self.get()
+            .steps
+            .iter()
+            .map(|step| {
+                let (kind, arguments) = step.describe();
+                let filters = step
+                    .filter_conditions()
+                    .into_iter()
+                    .map(|(column, op, value)| RecipeFilterInfo { column, op: op.to_owned(), value })
+                    .collect();
+                RecipeStepInfo { kind: kind.to_owned(), arguments, filters }
+            })
+            .collect()
+    }
+
+    pub fn remove_step(&self, index: u64) {
+        self.with(|recipe| {
+            if (index as usize) < recipe.steps.len() {
+                recipe.steps.remove(index as usize);
+            }
+        });
+    }
+
+    /// The recipe as a Python script with pandas reading `input` and writing `output`.
+    pub fn to_pandas(&self, input: String, output: String, delimiter: String) -> String {
+        self.get().to_pandas(&input, &output, delimiter.chars().next().unwrap_or(','))
+    }
+}
+
+#[uniffi::export]
+impl CoreDocument {
+    /// Starts recording changes as recipe steps; an earlier recording is dropped.
+    pub fn start_recording(&self) {
+        *self.recorder() = Some(Recorder::default());
+    }
+
+    /// Ends recording and returns the steps recorded.
+    pub fn stop_recording(&self) -> Option<Arc<CoreRecipe>> {
+        let recorder = self.recorder().take()?;
+        let steps = recorder.steps.into_iter().map(|(step, _)| step).collect();
+        Some(Arc::new(CoreRecipe { inner: Mutex::new(core::Recipe { name: String::new(), steps }) }))
+    }
+
+    /// Steps recorded so far; `None` when not recording.
+    pub fn recorded_step_count(&self) -> Option<u64> {
+        self.recorder().as_ref().map(|recorder| recorder.steps.len() as u64)
+    }
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::*;
+
+    fn column(document: &CoreDocument, column: u64) -> CellRange {
+        let rows = document.lock().visible_row_count() as u64;
+        CellRange { top: 0, left: column, bottom: rows - 1, right: column }
+    }
+
+    #[test]
+    fn undo_and_redo_take_steps_out_and_back() {
+        let document = CoreDocument::from_bytes(b"a,b\nx,y\nz,w\n".to_vec());
+        document.start_recording();
+        document.apply_edit(EditRequest::Transform { range: column(&document, 0), transform: TextTransform::Uppercase }).unwrap();
+        // A single cell does not repeat on another file.
+        document.set_cell(1, 1, "q".into()).unwrap();
+        document.delete_column(1).unwrap();
+        assert_eq!(document.recorded_step_count(), Some(2));
+        assert!(document.undo());
+        assert_eq!(document.recorded_step_count(), Some(1));
+        // Undoing the cell edit, which was not recorded, keeps the steps.
+        assert!(document.undo());
+        assert_eq!(document.recorded_step_count(), Some(1));
+        assert!(document.redo());
+        assert!(document.redo());
+        assert_eq!(document.recorded_step_count(), Some(2));
+        let recipe = document.stop_recording().unwrap();
+        let kinds: Vec<String> = recipe.steps().into_iter().map(|step| step.kind).collect();
+        assert_eq!(kinds, ["uppercase", "delete_column"]);
+        assert_eq!(document.recorded_step_count(), None);
     }
 }

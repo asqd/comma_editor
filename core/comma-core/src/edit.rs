@@ -14,6 +14,7 @@ use crate::error::Result;
 use crate::formula::FormulaReport;
 use crate::history::Splice;
 use crate::range::CellRange;
+use crate::recipe::Recipe;
 use crate::search::SearchQuery;
 
 /// A change to many rows; each is one undoable step.
@@ -37,6 +38,8 @@ pub enum Edit {
     MergeColumns { columns: Vec<usize>, separator: String },
     /// Delete visible rows that repeat an earlier one in `columns` (all when empty).
     RemoveDuplicates { columns: Vec<usize>, normalize: bool },
+    /// Run the steps of a recipe over every row.
+    Recipe(Recipe),
 }
 
 /// What an edit did.
@@ -56,6 +59,9 @@ pub struct Progress {
     cancelled: AtomicBool,
     done: AtomicUsize,
     total: AtomicUsize,
+    /// Work done in parts, such as the steps of a recipe: the part running and their number.
+    part: AtomicUsize,
+    parts: AtomicUsize,
 }
 
 impl Progress {
@@ -70,10 +76,23 @@ impl Progress {
     /// Share of the work done, from 0 to 1.
     pub fn fraction(&self) -> f64 {
         let total = self.total.load(Ordering::Relaxed);
-        if total == 0 {
-            return 0.0;
+        let inner = if total == 0 {
+            0.0
+        } else {
+            (self.done.load(Ordering::Relaxed) as f64 / total as f64).min(1.0)
+        };
+        match self.parts.load(Ordering::Relaxed) {
+            0 => inner,
+            parts => ((self.part.load(Ordering::Relaxed) as f64 + inner) / parts as f64).min(1.0),
         }
-        (self.done.load(Ordering::Relaxed) as f64 / total as f64).min(1.0)
+    }
+
+    /// Starts part `part` of `parts`; the work counted so far belongs to the parts before.
+    pub(crate) fn begin_part(&self, part: usize, parts: usize) {
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(0, Ordering::Relaxed);
+        self.part.store(part, Ordering::Relaxed);
+        self.parts.store(parts, Ordering::Relaxed);
     }
 
     /// Adds `steps` to the work to do.
@@ -217,7 +236,7 @@ impl Document {
     }
 
     /// The change an edit makes; `Ok(None)` when cancelled.
-    fn prepare_edit(&self, edit: &Edit, progress: &Progress) -> Result<Option<Prepared>> {
+    pub(crate) fn prepare_edit(&self, edit: &Edit, progress: &Progress) -> Result<Option<Prepared>> {
         match edit {
             Edit::ReplaceAll { query, replacement } => self.prepare_replace_all(query, replacement, progress),
             Edit::Transform { range, transform } => {
@@ -232,6 +251,7 @@ impl Document {
             Edit::SplitColumn { column, separator, regex } => self.prepare_split(*column, separator, *regex, progress),
             Edit::MergeColumns { columns, separator } => self.prepare_merge(columns, separator, progress),
             Edit::RemoveDuplicates { columns, normalize } => self.prepare_duplicates(columns, *normalize, progress),
+            Edit::Recipe(recipe) => self.prepare_recipe(recipe, progress),
         }
     }
 

@@ -108,6 +108,8 @@ pub(crate) struct Transaction {
     pub trailing_after: bool,
     /// Bytes the splices hold; set when recorded.
     pub bytes: usize,
+    /// Tells the transaction apart from all others of the document; set when recorded.
+    pub id: u64,
 }
 
 /// What an undo or redo changed.
@@ -127,11 +129,12 @@ pub(crate) struct History {
     /// Bytes held by the transactions in both lists, as counted when they were recorded.
     bytes: usize,
     limit: usize,
+    next_id: u64,
 }
 
 impl Default for History {
     fn default() -> Self {
-        Self { undo: Vec::new(), redo: Vec::new(), bytes: 0, limit: UNDO_MEMORY_LIMIT }
+        Self { undo: Vec::new(), redo: Vec::new(), bytes: 0, limit: UNDO_MEMORY_LIMIT, next_id: 1 }
     }
 }
 
@@ -140,6 +143,8 @@ impl History {
     /// limit; the new one always stays.
     pub fn record(&mut self, mut transaction: Transaction) {
         transaction.bytes = transaction.splices.iter().map(Splice::heap_size).sum();
+        transaction.id = self.next_id;
+        self.next_id += 1;
         self.bytes += transaction.bytes;
         self.undo.push(transaction);
         let redo = std::mem::take(&mut self.redo);
@@ -148,6 +153,11 @@ impl History {
             drop_later(redo);
         }
         self.trim();
+    }
+
+    /// The transaction the next undo reverts.
+    pub fn last_id(&self) -> Option<u64> {
+        self.undo.last().map(|transaction| transaction.id)
     }
 
     pub fn set_limit(&mut self, bytes: usize) {

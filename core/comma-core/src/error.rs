@@ -30,6 +30,16 @@ pub enum Error {
 
     #[error("{0}")]
     Formula(crate::formula::FormulaError),
+
+    #[error("there is no column “{0}”")]
+    UnknownColumn(String),
+
+    #[error("{0}")]
+    InvalidRecipe(String),
+
+    /// A step of a recipe failed; `step` counts from 0.
+    #[error("step {}: {source}", step + 1)]
+    Recipe { step: usize, source: Box<Error> },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -549,6 +549,9 @@ final class GridViewController: NSViewController {
         if let searchSummary, findContainer.isHidden {
             parts.insert(searchSummary, at: 0)
         }
+        if let steps = document.recordedStepCount {
+            parts.insert("● " + L("Recording a recipe: %@ steps", Self.format(steps)), at: 0)
+        }
         documentToolbar?.update(sortActive: !spec.sort.isEmpty, filterActive: !spec.filters.isEmpty)
         updateBusyState()
         statusLabel.stringValue = parts.joined(separator: "   ·   ")

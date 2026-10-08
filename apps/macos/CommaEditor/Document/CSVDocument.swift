@@ -453,6 +453,28 @@ final class CSVDocument: NSDocument {
         edit(L("Garbled Text Fix"), .fixGarbled(range: range)) { done(Int($0.count)) }
     }
 
+    // MARK: Recipes
+
+    /// Steps recorded so far; `nil` when not recording.
+    var recordedStepCount: Int? {
+        core.recordedStepCount().map { Int($0) }
+    }
+
+    func startRecording() {
+        core.startRecording()
+        post(.progress)
+    }
+
+    func stopRecording() -> CoreRecipe? {
+        defer { post(.progress) }
+        return core.stopRecording()
+    }
+
+    /// Runs the steps of a recipe over the whole table as one undoable step.
+    func applyRecipe(_ recipe: CoreRecipe) {
+        edit(L("Recipe"), .applyRecipe(recipe: recipe))
+    }
+
     // MARK: Changes to many rows
 
     /// Makes a change to many rows as one undoable step. Large tables are changed off the main
@@ -523,6 +545,7 @@ final class CSVDocument: NSDocument {
         case .splitColumn: L("Splitting the column…")
         case .mergeColumns: L("Merging columns…")
         case .removeDuplicates: L("Removing duplicates…")
+        case .applyRecipe: L("Applying the recipe…")
         }
     }
 
@@ -679,6 +702,14 @@ final class CSVDocument: NSDocument {
         case .Busy:
             userInfo[NSLocalizedDescriptionKey] = L("The file is still being read.")
             userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Changes and saving are possible once the whole file is read; the progress is in the status bar.")
+        case .Recipe(let step, let column, let message):
+            userInfo[NSLocalizedDescriptionKey] = L("Step %lld of the recipe failed. The table did not change.", Int64(step) + 1)
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = column.map {
+                L("This file has no column “%@”. Recipes find columns by their names; rename the column or remove the step in Recipes ▸ Manage Recipes.", $0)
+            } ?? message
+        case .InvalidRecipe(let message):
+            userInfo[NSLocalizedDescriptionKey] = L("The recipe file cannot be read.")
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = message
         case .Editing:
             userInfo[NSLocalizedDescriptionKey] = L("Another change is being made.")
             userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Wait until it ends or cancel it in the status bar.")

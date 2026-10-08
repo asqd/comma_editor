@@ -836,6 +836,12 @@ impl Document {
         self.history.can_redo()
     }
 
+    /// Tells apart the change the next undo reverts, so that what follows a change (such as a
+    /// recorded recipe step) can follow its undo and redo. `None` with nothing to undo.
+    pub fn last_change_id(&self) -> Option<u64> {
+        self.history.last_id()
+    }
+
     /// Memory the undo history may hold; older steps are dropped past it, the last one stays.
     pub fn set_undo_memory_limit(&mut self, bytes: usize) {
         self.history.set_limit(bytes);
@@ -894,6 +900,7 @@ impl Document {
             trailing_before: self.trailing_newline,
             trailing_after,
             bytes: 0,
+            id: 0,
         });
         self.column_count = columns_after;
         self.trailing_newline = trailing_after;

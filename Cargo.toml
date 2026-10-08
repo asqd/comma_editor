@@ -19,6 +19,8 @@ memchr = "2.8"
 memmap2 = "0.9"
 rayon = "1.10"
 regex = "1.13"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 rust_xlsxwriter = { version = "0.99", default-features = false }
 thiserror = "2"
 uniffi = "0.32"

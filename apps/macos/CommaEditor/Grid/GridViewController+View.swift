@@ -412,6 +412,11 @@ extension GridViewController: NSMenuItemValidation {
         switch menuItem.action {
         case #selector(undo(_:)), #selector(redo(_:)):
             return validateUndo(menuItem)
+        case #selector(toggleRecipeRecording(_:)):
+            menuItem.title = document.recordedStepCount == nil ? L("Start Recording") : L("Stop Recording…")
+            return !document.isIndexing
+        case #selector(applySavedRecipe(_:)):
+            return !document.isBusy
         case #selector(deleteRows(_:)), #selector(delete(_:)), #selector(copy(_:)), #selector(cut(_:)):
             return selection != nil
         case #selector(trimSpaces(_:)), #selector(collapseSpaces(_:)), #selector(makeUppercase(_:)),

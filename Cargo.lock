@@ -204,6 +204,8 @@ dependencies = [
  "rayon",
  "regex",
  "rust_xlsxwriter",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 

@@ -126,6 +126,25 @@ enum DebugScript {
             case "diff":
                 // diff=filter:<segment>, diff=key:<column or -1>, diff=case, diff=open
                 DiffWindowController.debugStep(argument)
+            case "recipestart":
+                grid.document.startRecording()
+            case "recipesave":
+                // recipesave=<name>: stops recording and saves without the name dialog.
+                if let recipe = grid.document.stopRecording() {
+                    recipe.setName(name: argument)
+                    _ = try? RecipeStore.shared.save(recipe)
+                }
+            case "recipeapply":
+                // recipeapply=<recipe name>:<open file name>, or this table without a file name.
+                let documents = NSDocumentController.shared.documents.compactMap { $0 as? CSVDocument }
+                let target = parts.count > 1
+                    ? documents.first { $0.fileURL?.lastPathComponent == parts[1] }
+                    : grid.document
+                if let recipe = RecipeStore.shared.all().first(where: { $0.name == parts[0] })?.recipe {
+                    target?.applyRecipe(recipe)
+                }
+            case "recipes":
+                grid.manageRecipes(nil)
             case "cancel":
                 grid.cancelBackgroundWork(nil)
             case "undo":

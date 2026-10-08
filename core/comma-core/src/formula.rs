@@ -657,6 +657,103 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (year, month, day)
 }
 
+// MARK: Python
+
+/// The formula as a Python expression over a pandas row `r`, using the helpers `num`, `text`,
+/// `truth`, `compare` and `round_half` that `Recipe::to_pandas` defines. `None` when it uses a
+/// function without a close Python equivalent, or does not compile.
+pub(crate) fn python_expression(text: &str) -> Option<String> {
+    let names = std::cell::RefCell::new(Vec::<String>::new());
+    let resolve = |name: &str| -> Option<usize> {
+        let mut names = names.borrow_mut();
+        names.push(name.trim().to_owned());
+        Some(names.len() - 1)
+    };
+    let formula = Formula::compile(text, &resolve).ok()?;
+    python(&formula.expr, &names.borrow())
+}
+
+fn python_string(text: &str) -> String {
+    let mut out = String::from("\"");
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn python(expr: &Expr, names: &[String]) -> Option<String> {
+    let go = |expr: &Expr| python(expr, names);
+    let all = |arguments: &[Expr]| arguments.iter().map(go).collect::<Option<Vec<String>>>();
+    Some(match expr {
+        Expr::Number(number) => format!("{number}"),
+        Expr::Text(text) => python_string(text),
+        Expr::Column(index) => {
+            let name = &names[*index];
+            match name.strip_prefix('#').and_then(|n| n.parse::<usize>().ok()).filter(|&n| n > 0) {
+                Some(n) => format!("r.iloc[{}]", n - 1),
+                None => format!("r[{}]", python_string(name)),
+            }
+        }
+        Expr::Negate(inner) => format!("(-num({}))", go(inner)?),
+        Expr::Not(inner) => format!("(not truth({}))", go(inner)?),
+        Expr::Binary(op, left, right) => {
+            let (a, b) = (go(left)?, go(right)?);
+            match op {
+                BinaryOp::Or => format!("(truth({a}) or truth({b}))"),
+                BinaryOp::And => format!("(truth({a}) and truth({b}))"),
+                BinaryOp::Eq => format!("(compare({a}, {b}) == 0)"),
+                BinaryOp::Ne => format!("(compare({a}, {b}) != 0)"),
+                BinaryOp::Lt => format!("(compare({a}, {b}) < 0)"),
+                BinaryOp::Le => format!("(compare({a}, {b}) <= 0)"),
+                BinaryOp::Gt => format!("(compare({a}, {b}) > 0)"),
+                BinaryOp::Ge => format!("(compare({a}, {b}) >= 0)"),
+                BinaryOp::Concat => format!("(text({a}) + text({b}))"),
+                BinaryOp::Add => format!("(num({a}) + num({b}))"),
+                BinaryOp::Sub => format!("(num({a}) - num({b}))"),
+                BinaryOp::Mul => format!("(num({a}) * num({b}))"),
+                BinaryOp::Div => format!("(num({a}) / num({b}))"),
+                BinaryOp::Rem => format!("(num({a}) % num({b}))"),
+            }
+        }
+        Expr::Call(function, arguments) => {
+            let a = all(arguments)?;
+            let numbers = || a.iter().map(|x| format!("num({x})")).collect::<Vec<_>>().join(", ");
+            match *function {
+                "IF" => format!("({} if truth({}) else {})", a[1], a[0], a[2]),
+                "ROUND" => format!("round_half(num({}), {})", a[0], a.get(1).map_or("0".to_owned(), |d| format!("num({d})"))),
+                "ABS" => format!("abs(num({}))", a[0]),
+                "MIN" => format!("min([{}])", numbers()),
+                "MAX" => format!("max([{}])", numbers()),
+                "SUM" => format!("sum([{}])", numbers()),
+                "LEN" => format!("float(len(text({})))", a[0]),
+                "UPPER" => format!("text({}).upper()", a[0]),
+                "LOWER" => format!("text({}).lower()", a[0]),
+                "TRIM" => format!("text({}).strip()", a[0]),
+                "LEFT" => format!("text({})[:max(int(num({})), 0)]", a[0], a[1]),
+                "RIGHT" => format!("(text({0})[-int(num({1})):] if int(num({1})) > 0 else \"\")", a[0], a[1]),
+                "MID" => format!(
+                    "text({0})[max(int(num({1})), 1) - 1:max(int(num({1})), 1) - 1 + max(int(num({2})), 0)]",
+                    a[0], a[1], a[2]
+                ),
+                "REPLACE" => format!("(text({0}).replace(text({1}), text({2})) if text({1}) else text({0}))", a[0], a[1], a[2]),
+                "CONTAINS" => format!("(text({1}).lower() in text({0}).lower())", a[0], a[1]),
+                "CONCAT" => format!("\"\".join([{}])", a.iter().map(|x| format!("text({x})")).collect::<Vec<_>>().join(", ")),
+                "COALESCE" => format!("next((v for v in [{}] if text(v) != \"\"), \"\")", a.join(", ")),
+                "ISEMPTY" => format!("(text({}).strip() == \"\")", a[0]),
+                _ => return None,
+            }
+        }
+    })
+}
+
 // MARK: Document
 
 impl Document {

@@ -16,7 +16,8 @@ pub struct SortKey {
     pub ascending: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FilterOp {
     Contains,
     NotContains,

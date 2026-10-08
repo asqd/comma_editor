@@ -10,7 +10,8 @@ use crate::edit::{BLOCK, Change, Edit, EditOutcome, Prepared, Progress, drop_lat
 use crate::error::{Error, Result};
 use crate::range::CellRange;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TextTransform {
     /// Remove spaces at both ends.
     Trim,

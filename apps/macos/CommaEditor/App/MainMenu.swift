@@ -16,6 +16,7 @@ enum MainMenu {
             (L("Edit"), makeEditMenu()),
             (L("Table"), makeTableMenu()),
             (L("Data"), makeDataMenu()),
+            (L("Recipes"), RecipesMenu.shared.menu),
             (L("View"), makeViewMenu()),
             (L("Window"), windowMenu),
             (L("Help"), helpMenu),

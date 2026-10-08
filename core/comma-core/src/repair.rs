@@ -18,7 +18,8 @@ use crate::history::Splice;
 use crate::parser::{self, QuotedSpan, Terminator};
 use crate::profile::{ValueKind, classify};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProblemKind {
     /// A quote opens a value and never closes: the rest of the file became one value.
     UnclosedQuote,
