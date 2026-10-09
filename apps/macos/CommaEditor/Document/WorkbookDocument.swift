@@ -124,6 +124,113 @@ final class WorkbookDocument: CSVDocument {
         replaceCore(sheet.document, keepsUndo: true)
     }
 
+    // MARK: Rows and columns
+
+    /// Whether inserting and deleting rows here goes through the workbook, which moves the
+    /// references to them: their own does not when something refers to them.
+    private var rowsMoveReferences: Bool {
+        let info = core.info()
+        return info.sheetRowsFixed && !info.sheetStructureLocked
+    }
+
+    @discardableResult
+    override func insertRows(beforeVisibleRow visibleRow: Int, count: Int) -> Bool {
+        let row = Int(core.insertionRow(visibleRow: UInt64(visibleRow)))
+        // Rows added at the end move nothing.
+        guard rowsMoveReferences, row < Int(core.rowCount()) else {
+            return super.insertRows(beforeVisibleRow: visibleRow, count: count)
+        }
+        return restructure(L("Row Insertion"), .rows, insert: true, runs: [(row, count)])
+    }
+
+    @discardableResult
+    override func deleteRows(visibleRows: [Int]) -> Bool {
+        guard rowsMoveReferences else { return super.deleteRows(visibleRows: visibleRows) }
+        let rows = visibleRows.compactMap { core.visibleRecord(visibleRow: UInt64($0)).map { Int($0) } }
+        return restructure(L("Row Deletion"), .rows, insert: false, runs: Self.runs(of: rows))
+    }
+
+    @discardableResult
+    override func insertColumn(at column: Int) -> Bool {
+        guard column < Int(core.columnCount()), !core.info().sheetStructureLocked else {
+            return super.insertColumn(at: column)
+        }
+        return restructure(L("Column Insertion"), .columns, insert: true, runs: [(column, 1)])
+    }
+
+    @discardableResult
+    override func deleteColumn(at column: Int) -> Bool {
+        guard !core.info().sheetStructureLocked else { return super.deleteColumn(at: column) }
+        return restructure(L("Column Deletion"), .columns, insert: false, runs: [(column, 1)])
+    }
+
+    /// Runs of consecutive rows `(first, count)`, the last first, so deleting one leaves the
+    /// others where they are.
+    private static func runs(of rows: [Int]) -> [(Int, Int)] {
+        var runs: [(Int, Int)] = []
+        for row in Set(rows).sorted() {
+            if let last = runs.last, last.0 + last.1 == row {
+                runs[runs.count - 1].1 += 1
+            } else {
+                runs.append((row, 1))
+            }
+        }
+        return runs.reversed()
+    }
+
+    /// Inserts or deletes rows or columns of the shown sheet through the workbook, which moves
+    /// references to them in every sheet. Every sheet is read first, so no formula is missed.
+    /// The sheets changed take one undo step together.
+    private func restructure(_ actionName: String, _ axis: SheetAxis, insert: Bool, runs: [(Int, Int)]) -> Bool {
+        guard !runs.isEmpty, let workbook, !isLegacyFormat else { return false }
+        guard !isBusy else {
+            NSSound.beep()
+            return false
+        }
+        do {
+            try loadEverySheet()
+        } catch {
+            presentEditError(error)
+            return false
+        }
+        let sheets = loaded.map { SheetToSave(index: UInt64($0.key), document: $0.value.document) }
+        var changed: [UInt64] = []
+        do {
+            for (at, count) in runs {
+                let index = UInt64(sheetIndex)
+                changed += insert
+                    ? try workbook.insert(sheets: sheets, index: index, axis: axis, at: UInt64(at), count: UInt64(count))
+                    : try workbook.delete(sheets: sheets, index: index, axis: axis, at: UInt64(at), count: UInt64(count))
+            }
+        } catch {
+            presentEditError(error)
+            return false
+        }
+        guard !changed.isEmpty else { return false }
+        // The shown sheet's step is registered first, so undoing ends on it.
+        let order = [UInt64(sheetIndex)] + changed.filter { $0 != UInt64(sheetIndex) }
+        for sheet in order {
+            guard let table = loaded[Int(sheet)]?.document else { continue }
+            for _ in changed.filter({ $0 == sheet }) {
+                registerUndo(of: table)
+            }
+        }
+        undoManager?.setActionName(actionName)
+        _ = tableDidChange()
+        post(.structure)
+        return true
+    }
+
+    /// Reads the sheets not read yet, here and now.
+    private func loadEverySheet() throws {
+        guard let workbook else { return }
+        for (index, sheet) in sheets.enumerated() where sheet.isTable && loaded[index] == nil {
+            if let read = try workbook.readSheet(index: UInt64(index), locale: Self.displayLocale, job: SheetJob()) {
+                loaded[index] = read
+            }
+        }
+    }
+
     // MARK: Formulas
 
     override func tableDidChange() -> Bool {

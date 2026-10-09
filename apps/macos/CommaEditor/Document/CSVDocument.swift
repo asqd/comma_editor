@@ -689,23 +689,24 @@ class CSVDocument: NSDocument {
     // of large changes to save memory; the menu then stops at the oldest step the core has.
     //
     // Each step undoes the table it was made on: in a workbook, the sheet shows again first.
-    private func registerUndo() {
-        let core = core
+    /// Registers the undo of the last change of a table: the shown one unless another is given,
+    /// as when one change of a workbook changes several sheets.
+    func registerUndo(of table: CoreDocument? = nil) {
+        let core = table ?? core
         undoManager?.registerUndo(withTarget: self) { document in
             document.show(core)
             guard core.undo() else { return }
-            document.registerRedo()
+            document.registerRedo(of: core)
             _ = document.tableDidChange()
             document.post(.structure)
         }
     }
 
-    private func registerRedo() {
-        let core = core
+    private func registerRedo(of core: CoreDocument) {
         undoManager?.registerUndo(withTarget: self) { document in
             document.show(core)
             guard core.redo() else { return }
-            document.registerUndo()
+            document.registerUndo(of: core)
             _ = document.tableDidChange()
             document.post(.structure)
         }

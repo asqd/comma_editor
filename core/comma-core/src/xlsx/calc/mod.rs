@@ -33,7 +33,7 @@ pub(crate) struct CalcState {
     raw: HashMap<usize, Arc<RawSheet>>,
     /// Rows edited since the workbook was opened, by sheet. They stay after an undo, so that
     /// formulas reading them are computed back.
-    touched: HashMap<usize, BTreeSet<u32>>,
+    pub(crate) touched: HashMap<usize, BTreeSet<u32>>,
 }
 
 /// What computing again did.

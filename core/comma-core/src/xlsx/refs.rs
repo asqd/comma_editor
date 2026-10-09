@@ -264,6 +264,171 @@ fn skip_brackets(bytes: &[u8], start: usize) -> usize {
     bytes.len()
 }
 
+/// How rows or columns of a sheet moved: a range `first..=last` as it is now, or `None` when
+/// all of it was deleted.
+pub(crate) type Mapping<'a> = &'a dyn Fn(u32, u32) -> Option<(u32, u32)>;
+
+/// Where rows and columns of one sheet went, for the references to it.
+pub(crate) struct Remap<'a> {
+    /// The sheet, in lower case.
+    pub sheet: &'a str,
+    pub rows: Mapping<'a>,
+    pub columns: Mapping<'a>,
+}
+
+impl Remap<'_> {
+    /// Rows `top..=bottom` moved as rows move after inserting `count` before `at`, or deleting
+    /// `count` from `at`; a range that loses all its rows is gone. Ranges grow when rows are
+    /// inserted inside them and shrink when rows inside are deleted, as in Excel.
+    pub(crate) fn shift(top: u32, bottom: u32, at: u32, count: u32, insert: bool) -> Option<(u32, u32)> {
+        if insert {
+            let moved = |index: u32| if index >= at { index + count } else { index };
+            return Some((moved(top), moved(bottom)));
+        }
+        let end = at + count;
+        let first = if top < at { top } else if top >= end { top - count } else { at };
+        let last = if bottom < at { bottom } else if bottom >= end { bottom - count } else if at == 0 { return None } else { at - 1 };
+        (bottom >= top && first <= last && !(top >= at && bottom < end)).then_some((first, last))
+    }
+}
+
+/// A formula of sheet `own` (lower case) with its references to `remap.sheet` moved where the
+/// rows and columns went. A reference to cells that were deleted becomes `#REF!`. References to
+/// other sheets, text, names and functions stay as they are.
+pub(crate) fn remap_formula(formula: &str, own: &str, remap: &Remap) -> String {
+    let bytes = formula.as_bytes();
+    let mut out = String::with_capacity(formula.len() + 8);
+    let mut i = 0;
+    // The sheet the next reference is on, when it names one.
+    let mut sheet: Option<String> = None;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        match byte {
+            b'"' => {
+                let end = skip_quoted(bytes, i, b'"');
+                out.push_str(&formula[i..end]);
+                sheet = None;
+                i = end;
+            }
+            b'\'' => {
+                let end = skip_quoted(bytes, i, b'\'');
+                out.push_str(&formula[i..end]);
+                if bytes.get(end) == Some(&b'!') {
+                    sheet = Some(formula[i + 1..end - 1].replace("''", "'").to_lowercase());
+                }
+                i = end;
+            }
+            b'!' => {
+                out.push('!');
+                i += 1;
+            }
+            b'[' => {
+                let end = skip_brackets(bytes, i);
+                out.push_str(&formula[i..end]);
+                i = end;
+            }
+            _ if is_word_byte(byte) => {
+                let end = i + formula[i..].find(|c: char| !is_word_char(c)).unwrap_or(formula.len() - i);
+                let word = &formula[i..end];
+                let next = bytes.get(end).copied();
+                if next == Some(b'!') {
+                    out.push_str(word);
+                    sheet = Some(word.to_lowercase());
+                    i = end;
+                    continue;
+                }
+                if next == Some(b'(') {
+                    out.push_str(word);
+                    sheet = None;
+                    i = end;
+                    continue;
+                }
+                let target = sheet.take().unwrap_or_else(|| own.to_owned());
+                let applies = target == remap.sheet;
+                // A range: `A1:B2`, `A:C` or `2:5`.
+                let (second, second_end) = if next == Some(b':') {
+                    let second_end = end + 1 + formula[end + 1..].find(|c: char| !is_word_char(c)).unwrap_or(formula.len() - end - 1);
+                    (Some(&formula[end + 1..second_end]), second_end)
+                } else {
+                    (None, end)
+                };
+                match applies.then(|| remap_reference(word, second, remap)).flatten() {
+                    Some(Some(text)) => {
+                        out.push_str(&text);
+                        i = second_end;
+                    }
+                    Some(None) => {
+                        out.push_str("#REF!");
+                        i = second_end;
+                    }
+                    None => {
+                        out.push_str(word);
+                        i = end;
+                    }
+                }
+            }
+            _ => {
+                if !byte.is_ascii_whitespace() {
+                    sheet = None;
+                }
+                let end = i + formula[i..].chars().next().map_or(1, char::len_utf8);
+                out.push_str(&formula[i..end]);
+                i = end;
+            }
+        }
+    }
+    out
+}
+
+/// A reference moved: `None` if the text is not a reference, `Some(None)` if its cells were
+/// deleted.
+fn remap_reference(first: &str, second: Option<&str>, remap: &Remap) -> Option<Option<String>> {
+    let row_of = |text: &str| {
+        let (fixed, digits) = strip_dollar(text);
+        Some((parse_row(digits)?, fixed))
+    };
+    let column_of = |text: &str| {
+        let (fixed, letters) = strip_dollar(text);
+        Some((column_index(letters)?, fixed))
+    };
+    let name_row = |row: u32, fixed: bool| format!("{}{}", dollar(fixed), row + 1);
+    let name_column = |column: u32, fixed: bool| format!("{}{}", dollar(fixed), column_letters(column));
+    match second {
+        None => {
+            let cell = CellRef::parse(first)?;
+            let rows = (remap.rows)(cell.row, cell.row);
+            let columns = (remap.columns)(cell.column, cell.column);
+            Some(rows.zip(columns).map(|((row, _), (column, _))| {
+                format!("{}{}", name_column(column, cell.column_fixed), name_row(row, cell.row_fixed))
+            }))
+        }
+        Some(second) => {
+            if let (Some(a), Some(b)) = (CellRef::parse(first), CellRef::parse(second)) {
+                let rows = (remap.rows)(a.row.min(b.row), a.row.max(b.row));
+                let columns = (remap.columns)(a.column.min(b.column), a.column.max(b.column));
+                return Some(rows.zip(columns).map(|((top, bottom), (left, right))| {
+                    format!(
+                        "{}{}:{}{}",
+                        name_column(left, a.column_fixed),
+                        name_row(top, a.row_fixed),
+                        name_column(right, b.column_fixed),
+                        name_row(bottom, b.row_fixed)
+                    )
+                }));
+            }
+            if let (Some(a), Some(b)) = (row_of(first), row_of(second)) {
+                return Some((remap.rows)(a.0.min(b.0), a.0.max(b.0)).map(|(top, bottom)| format!("{}:{}", name_row(top, a.1), name_row(bottom, b.1))));
+            }
+            if let (Some(a), Some(b)) = (column_of(first), column_of(second)) {
+                return Some(
+                    (remap.columns)(a.0.min(b.0), a.0.max(b.0)).map(|(left, right)| format!("{}:{}", name_column(left, a.1), name_column(right, b.1))),
+                );
+            }
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +464,52 @@ mod tests {
         assert_eq!(shift_formula("1E5+A1+1.5E3", 1, 0), "1E5+A2+1.5E3");
         assert_eq!(shift_formula("SALES2024+TAX_RATE", 1, 0), "SALES2024+TAX_RATE");
         assert_eq!(shift_formula("IF(A1=\"x\",#N/A,A1)", 1, 0), "IF(A2=\"x\",#N/A,A2)");
+    }
+
+    fn insert_rows(at: u32, count: u32) -> impl Fn(u32, u32) -> Option<(u32, u32)> {
+        move |top, bottom| Remap::shift(top, bottom, at, count, true)
+    }
+
+    fn delete_rows(at: u32, count: u32) -> impl Fn(u32, u32) -> Option<(u32, u32)> {
+        move |top, bottom| Remap::shift(top, bottom, at, count, false)
+    }
+
+    fn same(top: u32, bottom: u32) -> Option<(u32, u32)> {
+        Some((top, bottom))
+    }
+
+    #[test]
+    fn rows_inserted_move_references_to_their_sheet() {
+        let rows = insert_rows(4, 2); // before row 5
+        let remap = Remap { sheet: "data", rows: &rows, columns: &same };
+        assert_eq!(remap_formula("A4+A5+$B$10", "data", &remap), "A4+A7+$B$12");
+        assert_eq!(remap_formula("SUM(A2:A10)", "data", &remap), "SUM(A2:A12)");
+        assert_eq!(remap_formula("SUM(A5:A10)", "data", &remap), "SUM(A7:A12)");
+        assert_eq!(remap_formula("Data!A5+Other!A5+'Data'!A5", "summary", &remap), "Data!A7+Other!A5+'Data'!A7");
+        assert_eq!(remap_formula("A5", "summary", &remap), "A5");
+        assert_eq!(remap_formula("SUM(5:6)+SUM(A:A)+\"A5\"", "data", &remap), "SUM(7:8)+SUM(A:A)+\"A5\"");
+    }
+
+    #[test]
+    fn rows_deleted_shrink_ranges_and_break_references_to_them() {
+        let rows = delete_rows(4, 2); // rows 5 and 6
+        let remap = Remap { sheet: "data", rows: &rows, columns: &same };
+        assert_eq!(remap_formula("A4+A7", "data", &remap), "A4+A5");
+        assert_eq!(remap_formula("A5*2", "data", &remap), "#REF!*2");
+        assert_eq!(remap_formula("SUM(A2:A10)", "data", &remap), "SUM(A2:A8)");
+        assert_eq!(remap_formula("SUM(A5:A10)", "data", &remap), "SUM(A5:A8)");
+        assert_eq!(remap_formula("SUM(A5:A6)", "data", &remap), "SUM(#REF!)");
+        assert_eq!(remap_formula("SUM(A2:A5)", "data", &remap), "SUM(A2:A4)");
+    }
+
+    #[test]
+    fn columns_inserted_and_deleted() {
+        let columns = insert_rows(1, 1); // before column B
+        let remap = Remap { sheet: "data", rows: &same, columns: &columns };
+        assert_eq!(remap_formula("A1+B1+$C$2+SUM(A:C)", "data", &remap), "A1+C1+$D$2+SUM(A:D)");
+        let columns = delete_rows(1, 1);
+        let remap = Remap { sheet: "data", rows: &same, columns: &columns };
+        assert_eq!(remap_formula("A1+B1+C1+SUM(A1:C1)", "data", &remap), "A1+#REF!+B1+SUM(A1:B1)");
     }
 
     #[test]

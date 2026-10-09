@@ -1,6 +1,8 @@
 //! Undo and redo. Every edit is a set of splices over the record list; applying a splice again
 //! swaps the records back, so undo and redo are the same operation run in opposite orders.
 
+use std::sync::Arc;
+
 use crate::document::Record;
 use crate::edit::drop_later;
 
@@ -101,6 +103,10 @@ pub(crate) struct Transaction {
     pub splices: Vec<Splice>,
     pub columns_before: usize,
     pub columns_after: usize,
+    /// For a sheet of a workbook: the column of the file each column was read from, before
+    /// and after; see `Document::column_origins`.
+    pub origins_before: Arc<Vec<u32>>,
+    pub origins_after: Arc<Vec<u32>>,
     /// Rows were added, removed or reordered, so row indices no longer line up.
     pub structural: bool,
     /// Whether the file ends with a line break, before and after.
@@ -115,6 +121,7 @@ pub(crate) struct Transaction {
 /// What an undo or redo changed.
 pub(crate) struct Reverted {
     pub columns: usize,
+    pub column_origins: Arc<Vec<u32>>,
     pub structural: bool,
     pub trailing_newline: bool,
 }
@@ -155,6 +162,11 @@ impl History {
         self.trim();
     }
 
+    /// The transaction just recorded.
+    pub fn last_mut(&mut self) -> Option<&mut Transaction> {
+        self.undo.last_mut()
+    }
+
     /// The transaction the next undo reverts.
     pub fn last_id(&self) -> Option<u64> {
         self.undo.last().map(|transaction| transaction.id)
@@ -192,6 +204,7 @@ impl History {
         }
         let reverted = Reverted {
             columns: transaction.columns_before,
+            column_origins: Arc::clone(&transaction.origins_before),
             structural: transaction.structural,
             trailing_newline: transaction.trailing_before,
         };
@@ -207,6 +220,7 @@ impl History {
         }
         let reverted = Reverted {
             columns: transaction.columns_after,
+            column_origins: Arc::clone(&transaction.origins_after),
             structural: transaction.structural,
             trailing_newline: transaction.trailing_after,
         };

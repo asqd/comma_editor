@@ -5,9 +5,10 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::Ordering;
 
 use super::numfmt::{DisplayLocale, NumberFormat};
-use super::refs::{cell_name, parse_range};
+use super::refs::{Remap, cell_name, parse_range, remap_formula};
 use quick_xml::events::Event;
 
 use super::refs::MAX_ROWS;
@@ -57,7 +58,8 @@ impl Workbook {
             let Some(spans) = scan_rows(&text) else {
                 return Err(WorkbookError::MissingCells { sheet: entry.name.clone() }.into());
             };
-            if let Some(patched) = patch_sheet(&text, &spans, part, document, &context)? {
+            let own = entry.name.to_lowercase();
+            if let Some(patched) = patch_sheet(&text, &spans, part, &own, document, &context)? {
                 formulas_changed |= patched.formulas_changed;
                 replaced.insert(part.to_lowercase(), patched.xml.into_bytes());
             }
@@ -66,9 +68,22 @@ impl Workbook {
             return package.write_with(&HashMap::new(), &HashSet::new());
         }
 
-        // Excel recomputes formulas when it opens the file, as values they use may have changed.
+        // Excel recomputes formulas when it opens the file, as values they use may have changed;
+        // defined names follow rows and columns that moved.
         let workbook_part = self.workbook_part.as_str();
-        let workbook = package.read_text(workbook_part)?.unwrap_or_default();
+        let mut workbook = package.read_text(workbook_part)?.unwrap_or_default();
+        let maps: Vec<(String, AxisMap, AxisMap)> = sheets
+            .iter()
+            .filter_map(|&(index, document)| {
+                let (rows, columns) = (AxisMap::rows(document), AxisMap::columns(document));
+                let name = self.sheets.get(index)?.name.to_lowercase();
+                (!rows.is_identity() || !columns.is_identity()).then_some((name, rows, columns))
+            })
+            .collect();
+        if !maps.is_empty() {
+            let changes: Vec<(String, &AxisMap, &AxisMap)> = maps.iter().map(|(name, rows, columns)| (name.clone(), rows, columns)).collect();
+            workbook = remap_defined_names(&workbook, &changes);
+        }
         replaced.insert(workbook_part.to_lowercase(), compute_on_load(&workbook).into_bytes());
 
         // The calculation chain lists cells with formulas; one that lost its formula would make
@@ -89,22 +104,30 @@ impl Workbook {
 }
 
 /// The sheet's XML with the document's cells, or `None` if nothing changed.
-fn patch_sheet(xml: &str, spans: &Spans, part: &str, document: &Document, context: &Context) -> Result<Option<PatchedSheet>> {
+fn patch_sheet(xml: &str, spans: &Spans, part: &str, own: &str, document: &Document, context: &Context) -> Result<Option<PatchedSheet>> {
     let Some((data_start, data_end)) = spans.sheet_data else {
         return Ok(None);
     };
     let read_rows = document.sheet.as_ref().map_or(0, |sheet| sheet.rows);
+    // Formulas moved with rows or columns are all written on their own, shared ones too.
+    let formulas_moved = document.sheet.as_ref().is_some_and(|sheet| sheet.formulas_moved.load(Ordering::Relaxed));
+    let rows_map = AxisMap::rows(document);
+    let columns_map = AxisMap::columns(document);
+    let columns_moved = !columns_map.is_identity();
     let prefix = element_prefix(xml, data_start, spans.sheet_data_empty);
     let rows_by_index: HashMap<u32, &RowSpan> = spans.rows.iter().map(|span| (span.row, span)).collect();
     let row_count = document.row_count();
+    let has_formula = |row: usize| document.row_fields(row).iter().any(|field| matches!(field, Field::Formula(_)));
+    // Whether a row of the document is the row of the file at the same place, unchanged.
+    let untouched = |row: usize| !(document.row_edited(row) || columns_moved || (formulas_moved && has_formula(row)));
 
-    // Values the file had in the rows that were edited, read from those rows only.
-    let edited: Vec<u32> = (0..row_count)
-        .filter(|&row| document.row_edited(row))
+    // Values the file had in the rows written anew, read from those rows only.
+    let rewritten: Vec<u32> = (0..row_count)
+        .filter(|&row| !untouched(row))
         .filter_map(|row| document.row_origin(row))
         .map(|origin| origin as u32)
         .collect();
-    let originals = original_rows(xml, &edited, &rows_by_index, part, context)?;
+    let originals = original_rows(xml, &rewritten, &rows_by_index, part, context)?;
 
     let mut used: HashSet<u32> = HashSet::new();
     let mut body = String::with_capacity(data_end.saturating_sub(data_start) + 1024);
@@ -129,8 +152,8 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, document: &Document, contex
             last_column = last_column.max(column);
         }
         let number = (row + 1).to_string();
-        if !document.row_edited(row) && origin.is_some() {
-            // Not edited: the row of the file, moved here if it moved.
+        if untouched(row) && origin.is_some() {
+            // The row of the file, moved here if it moved.
             if let Some(span) = span {
                 if origin == Some(row) {
                     body.push_str(&xml[span.start..span.end]);
@@ -142,7 +165,10 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, document: &Document, contex
             continue;
         }
         let before = origin.and_then(|origin| originals.get(origin)).map(Vec::as_slice).unwrap_or(&[]);
-        if origin == Some(row) && same_row(before, &current) {
+        // Where each column of the document was in the file.
+        let original_column = |column: usize| if columns_moved { document.column_origin(column) } else { Some(column) };
+        let same_place = origin == Some(row) && !columns_moved && !(formulas_moved && has_formula(row));
+        if same_place && same_row(before, &current) {
             if let Some(span) = span {
                 body.push_str(&xml[span.start..span.end]);
             }
@@ -150,6 +176,7 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, document: &Document, contex
         }
         changed = true;
         let has_values = current.iter().any(|field| !value(field).is_empty());
+        let cells = span.map(|span| cell_spans(xml, span)).unwrap_or_default();
         if span.is_none() && !has_values {
             continue;
         }
@@ -160,16 +187,23 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, document: &Document, contex
             }
             None => body.push_str(&format!("<{prefix}row r=\"{number}\">")),
         }
-        let cells = span.map(|span| cell_spans(xml, span)).unwrap_or_default();
-        let mut columns: BTreeSet<u32> = cells.iter().map(|cell| cell.column).collect();
-        columns.extend(current.iter().enumerate().filter(|(_, field)| !value(field).is_empty()).map(|(column, _)| column as u32));
+        // Columns of the document that have a value or a cell of the file.
+        let mut columns: BTreeSet<usize> = current.iter().enumerate().filter(|(_, field)| !value(field).is_empty()).map(|(column, _)| column).collect();
+        for column in 0..document.column_count().max(current.len()) {
+            if original_column(column).is_some_and(|original| cells.iter().any(|cell| cell.column as usize == original)) {
+                columns.insert(column);
+            }
+        }
         for column in columns {
-            let cell_span = cells.iter().find(|cell| cell.column == column);
-            let now = current.get(column as usize);
-            let reference = cell_name(row as u32, column);
-            if same_cell(before.get(column as usize), now) {
+            let original = original_column(column);
+            let cell_span = original.and_then(|original| cells.iter().find(|cell| cell.column as usize == original));
+            let was = original.and_then(|original| before.get(original));
+            let now = current.get(column);
+            let reference = cell_name(row as u32, column as u32);
+            let rewrite_formula = formulas_moved && now.is_some_and(|field| matches!(field, Field::Formula(_)));
+            if !rewrite_formula && same_cell(was, now) {
                 if let Some(cell) = cell_span {
-                    if origin == Some(row) {
+                    if origin == Some(row) && original == Some(column) {
                         body.push_str(&xml[cell.start..cell.end]);
                     } else {
                         body.push_str(&set_attribute(&xml[cell.start..cell.tag_end], "r", Some(&reference)));
@@ -178,7 +212,7 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, document: &Document, contex
                 }
                 continue;
             }
-            let had_formula = cell_span.is_some_and(|cell| has_formula(&xml[cell.start..cell.end]));
+            let had_formula = cell_span.is_some_and(|cell| has_formula_xml(&xml[cell.start..cell.end]));
             let style = cell_span.and_then(|cell| attribute_value(&xml[cell.start..cell.tag_end], "s"));
             let format = style
                 .as_deref()
@@ -186,13 +220,17 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, document: &Document, contex
                 .and_then(|style| context.formats.get(style))
                 .unwrap_or(&context.formats[0]);
             if let Some(Field::Formula(formula)) = now {
-                // A formula read keeps its element as the file has it; an entered one is new.
+                // A formula read keeps its element as the file has it, unless formulas moved;
+                // an entered one is new.
                 let element = match cell_span {
-                    Some(cell) if formula.from_file => formula_element(&xml[cell.start..cell.end], &prefix),
+                    Some(cell) if formula.from_file && !formulas_moved => formula_element(&xml[cell.start..cell.end], &prefix),
                     _ => None,
                 };
-                formulas_changed |= !formula.from_file;
-                let element = element.unwrap_or_else(|| format!("<{prefix}f>{}</{prefix}f>", escape_text(&formula.formula)));
+                formulas_changed |= !formula.from_file || formulas_moved;
+                let element = element.unwrap_or_else(|| match &formula.array {
+                    Some(range) => format!("<{prefix}f t=\"array\" ref=\"{range}\">{}</{prefix}f>", escape_text(&formula.formula)),
+                    None => format!("<{prefix}f>{}</{prefix}f>", escape_text(&formula.formula)),
+                });
                 body.push_str(&write_formula_cell(&prefix, &reference, style.as_deref(), &element, &formula.computed));
                 continue;
             }
@@ -202,36 +240,292 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, document: &Document, contex
         }
         body.push_str(&format!("</{prefix}row>"));
     }
-    // Rows of the file past the rows read hold formatting only; they stay. Other rows of the
-    // file no row came from were deleted.
+    // Rows of the file past the rows read hold formatting only; they move as rows above them
+    // were inserted or deleted. Other rows of the file no row came from were deleted.
     for span in spans.rows.iter().filter(|span| !used.contains(&span.row)) {
         if span.row as usize >= read_rows {
-            body.push_str(&xml[span.start..span.end]);
+            match rows_map.index(span.row) {
+                Some(row) if row == span.row => body.push_str(&xml[span.start..span.end]),
+                Some(row) if row as usize >= row_count => {
+                    changed = true;
+                    push_moved_row(&mut body, xml, span, row, &prefix);
+                }
+                _ => changed = true,
+            }
         } else {
             changed = true;
-            formulas_changed |= has_formula(&xml[span.start..span.end]);
+            formulas_changed |= has_formula_xml(&xml[span.start..span.end]);
         }
     }
     if !changed {
         return Ok(None);
     }
 
+    // References outside the cells move where rows and columns went.
+    let moved = !rows_map.is_identity() || columns_moved;
+    let rows = |first: u32, last: u32| rows_map.range(first, last);
+    let columns = |first: u32, last: u32| columns_map.range(first, last);
+    let remap = Remap { sheet: own, rows: &rows, columns: &columns };
+    let outside = |text: &str| if moved { remap_parts(text, own, &remap) } else { text.to_owned() };
     let mut out = String::with_capacity(xml.len() + body.len() / 8);
     match spans.dimension {
         Some((start, end)) if end <= data_start => {
-            out.push_str(&xml[..start]);
+            out.push_str(&outside(&xml[..start]));
             out.push_str(&dimension(&xml[start..end], last_row, last_column));
-            out.push_str(&xml[end..data_start]);
+            out.push_str(&outside(&xml[end..data_start]));
         }
-        _ => out.push_str(&xml[..data_start]),
+        _ => out.push_str(&outside(&xml[..data_start])),
     }
     if spans.sheet_data_empty {
         out.push_str(&format!("<{prefix}sheetData>{body}</{prefix}sheetData>"));
     } else {
         out.push_str(&body);
     }
-    out.push_str(&xml[data_end..]);
+    out.push_str(&outside(&xml[data_end..]));
     Ok(Some(PatchedSheet { xml: out, formulas_changed }))
+}
+
+/// Where rows or columns of the file are in the document: each one read, and those past them,
+/// which move as many places as were inserted, less those deleted, before the last one read.
+pub(crate) struct AxisMap {
+    new_of_old: Vec<Option<u32>>,
+    tail: i64,
+}
+
+impl AxisMap {
+    fn rows(document: &Document) -> Self {
+        let read = document.sheet.as_ref().map_or(0, |sheet| sheet.rows);
+        Self::new((0..document.row_count()).map(|row| document.row_origin(row)), read)
+    }
+
+    fn columns(document: &Document) -> Self {
+        let read = document.column_origins.len();
+        Self::new((0..read.max(document.column_count())).map(|column| document.column_origin(column)), read)
+    }
+
+    fn new(origins: impl Iterator<Item = Option<usize>>, read: usize) -> Self {
+        let mut new_of_old = vec![None; read];
+        let mut last_placed = None;
+        let mut placed = Vec::new();
+        for (index, origin) in origins.enumerate() {
+            match origin {
+                Some(origin) if origin < read => {
+                    new_of_old[origin] = Some(index as u32);
+                    last_placed = Some(index);
+                }
+                _ => placed.push(index),
+            }
+        }
+        let inserted = placed.iter().filter(|&&index| last_placed.is_some_and(|last| index < last)).count() as i64;
+        let deleted = new_of_old.iter().filter(|new| new.is_none()).count() as i64;
+        Self { new_of_old, tail: inserted - deleted }
+    }
+
+    fn is_identity(&self) -> bool {
+        self.tail == 0 && self.new_of_old.iter().enumerate().all(|(old, new)| *new == Some(old as u32))
+    }
+
+    /// Where one row or column went.
+    fn index(&self, old: u32) -> Option<u32> {
+        match self.new_of_old.get(old as usize) {
+            Some(new) => *new,
+            None => u32::try_from(i64::from(old) + self.tail).ok(),
+        }
+    }
+
+    /// Where a range went: from its first row left to its last; `None` if none is left.
+    fn range(&self, first: u32, last: u32) -> Option<(u32, u32)> {
+        let read = self.new_of_old.len() as u32;
+        let mut top = None;
+        let mut index = first;
+        while index <= last {
+            if let Some(new) = self.index(index) {
+                top = Some(new);
+                break;
+            }
+            if index >= read {
+                break;
+            }
+            index += 1;
+        }
+        let mut bottom = None;
+        let mut index = last;
+        loop {
+            if let Some(new) = self.index(index) {
+                bottom = Some(new);
+                break;
+            }
+            if index <= first {
+                break;
+            }
+            index = if index > read { read.max(first) } else { index - 1 };
+        }
+        top.zip(bottom).filter(|(top, bottom)| top <= bottom)
+    }
+}
+
+/// Elements outside the cells whose attributes name cells, and the attributes.
+const CELL_ATTRIBUTES: [(&str, &str); 12] = [
+    ("mergeCell", "ref"),
+    ("hyperlink", "ref"),
+    ("autoFilter", "ref"),
+    ("sortState", "ref"),
+    ("sortCondition", "ref"),
+    ("conditionalFormatting", "sqref"),
+    ("dataValidation", "sqref"),
+    ("ignoredError", "sqref"),
+    ("protectedRange", "sqref"),
+    ("selection", "sqref"),
+    ("selection", "activeCell"),
+    ("pane", "topLeftCell"),
+];
+
+/// XML outside the cells of a sheet with its references moved: merged cells, conditional
+/// formats and their formulas, validations, links, filters, the selection, column widths. An
+/// element whose cells were all deleted goes, as a merged range that is left one cell.
+fn remap_parts(xml: &str, own: &str, remap: &Remap) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut at = 0;
+    while let Some(offset) = xml[at..].find('<') {
+        let start = at + offset;
+        out.push_str(&xml[at..start]);
+        let Some(length) = xml[start..].find('>') else { break };
+        let tag_end = start + length + 1;
+        let tag = &xml[start..tag_end];
+        if tag.starts_with("</") || tag.starts_with("<?") || tag.starts_with("<!") {
+            out.push_str(tag);
+            at = tag_end;
+            continue;
+        }
+        let name: String = tag[1..].chars().take_while(|c| !c.is_whitespace() && *c != '>' && *c != '/').collect();
+        let (prefix, local) = match name.rsplit_once(':') {
+            Some((prefix, local)) => (format!("{prefix}:"), local.to_owned()),
+            None => (String::new(), name.clone()),
+        };
+        let empty = tag.ends_with("/>");
+        // The end of the element, children and all.
+        let element_end = || if empty { Some(tag_end) } else { xml[tag_end..].find(&format!("</{prefix}{local}>")).map(|offset| tag_end + offset + local.len() + prefix.len() + 3) };
+        if matches!(local.as_str(), "formula" | "formula1" | "formula2") && !empty {
+            let Some(end) = element_end() else { break };
+            let closing = format!("</{prefix}{local}>");
+            let inner = &xml[tag_end..end - closing.len()];
+            out.push_str(tag);
+            out.push_str(&escape_text(&remap_formula(&unescape(inner), own, remap)));
+            out.push_str(&closing);
+            at = end;
+            continue;
+        }
+        if local == "col" {
+            let column = |name: &str| attribute_value(tag, name).and_then(|value| value.parse::<u32>().ok());
+            if let (Some(min), Some(max)) = (column("min"), column("max")) {
+                // Widths of columns deleted go.
+                if let Some((first, last)) = (remap.columns)(min - 1, max - 1) {
+                    let tag = set_attribute(tag, "min", Some(&(first + 1).to_string()));
+                    out.push_str(&set_attribute(&tag, "max", Some(&(last + 1).to_string())));
+                }
+                at = tag_end;
+                continue;
+            }
+        }
+        let mut tag = tag.to_owned();
+        let mut gone = false;
+        for (element, attribute) in CELL_ATTRIBUTES {
+            if element != local {
+                continue;
+            }
+            let Some(old) = attribute_value(&tag, attribute) else { continue };
+            let parts: Vec<String> = old
+                .split_whitespace()
+                .map(|range| remap_formula(range, own, remap))
+                .filter(|range| !range.contains("#REF!"))
+                .collect();
+            let merged_into_one = local == "mergeCell" && parts.first().is_some_and(|range| !range.contains(':') || {
+                let (first, last) = range.split_once(':').unwrap_or_default();
+                first.trim_start_matches('$') == last.trim_start_matches('$')
+            });
+            if parts.is_empty() || merged_into_one {
+                gone = true;
+                break;
+            }
+            tag = set_attribute(&tag, attribute, Some(&parts.join(" ")));
+        }
+        if gone && local != "selection" && local != "pane" {
+            let Some(end) = element_end() else { break };
+            at = end;
+            continue;
+        }
+        out.push_str(&tag);
+        at = tag_end;
+    }
+    out.push_str(&xml[at..]);
+    drop_empty_containers(out)
+}
+
+/// Lists left without items, which the schema does not allow, go; the others count what is
+/// left in them.
+fn drop_empty_containers(mut xml: String) -> String {
+    for (container, item) in [("mergeCells", "mergeCell"), ("dataValidations", "dataValidation"), ("hyperlinks", "hyperlink")] {
+        let Some(start) = find_element(&xml, container) else { continue };
+        let Some(tag_length) = xml[start..].find('>') else { continue };
+        let tag_end = start + tag_length + 1;
+        if xml[start..tag_end].ends_with("/>") {
+            continue;
+        }
+        let name: String = xml[start + 1..].chars().take_while(|c| !c.is_whitespace() && *c != '>' && *c != '/').collect();
+        let prefix = name.rsplit_once(':').map(|(prefix, _)| format!("{prefix}:")).unwrap_or_default();
+        let closing = format!("</{prefix}{container}>");
+        let Some(offset) = xml[tag_end..].find(&closing) else { continue };
+        let end = tag_end + offset + closing.len();
+        let inner = &xml[tag_end..end - closing.len()];
+        let mut count = 0;
+        let mut rest = inner;
+        while let Some(at) = find_element(rest, item) {
+            count += 1;
+            rest = &rest[at + 1..];
+        }
+        if count == 0 {
+            xml.replace_range(start..end, "");
+        } else if attribute_value(&xml[start..tag_end], "count").is_some() {
+            let tag = set_attribute(&xml[start..tag_end], "count", Some(&count.to_string()));
+            xml.replace_range(start..tag_end, &tag);
+        }
+    }
+    xml
+}
+
+fn unescape(text: &str) -> String {
+    text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+}
+
+/// Defined names of `workbook.xml` with references to the sheets that changed moved.
+fn remap_defined_names(workbook: &str, changes: &[(String, &AxisMap, &AxisMap)]) -> String {
+    let mut out = String::with_capacity(workbook.len());
+    let mut at = 0;
+    while let Some(offset) = find_element(&workbook[at..], "definedName") {
+        let start = at + offset;
+        let Some(length) = workbook[start..].find('>') else { break };
+        let tag_end = start + length + 1;
+        let Some(close) = workbook[tag_end..].find("</") else { break };
+        let inner_end = tag_end + close;
+        out.push_str(&workbook[at..tag_end]);
+        let mut text = unescape(&workbook[tag_end..inner_end]);
+        for (sheet, rows_map, columns_map) in changes {
+            let rows = |first: u32, last: u32| rows_map.range(first, last);
+            let columns = |first: u32, last: u32| columns_map.range(first, last);
+            let remap = Remap { sheet, rows: &rows, columns: &columns };
+            // A defined name has no sheet of its own: references to cells name theirs.
+            text = remap_formula(&text, "", &remap);
+        }
+        out.push_str(&escape_text(&text));
+        at = inner_end;
+    }
+    out.push_str(&workbook[at..]);
+    out
+}
+
+/// Whether the XML of a cell or row holds a formula.
+fn has_formula_xml(xml: &str) -> bool {
+    super::has_formula(xml.as_bytes()).unwrap_or(true)
 }
 
 /// Where `<sheetData>` and its rows are in the XML of a sheet, found by their tags without
@@ -356,11 +650,6 @@ fn push_moved_row(body: &mut String, xml: &str, span: &RowSpan, row: u32, prefix
         body.push_str(&xml[cell.tag_end..cell.end]);
     }
     body.push_str(&format!("</{prefix}row>"));
-}
-
-/// Whether the XML of a cell or row holds a formula.
-fn has_formula(xml: &str) -> bool {
-    super::has_formula(xml.as_bytes()).unwrap_or(true)
 }
 
 fn value(field: &Field) -> &str {

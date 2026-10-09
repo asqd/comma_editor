@@ -62,8 +62,10 @@ pub(crate) struct SheetContent {
     pub rows: Vec<Vec<Field>>,
     pub layout: SheetLayout,
     /// Formulas, merged cells, conditional formats, validations, links, tables, drawings or
-    /// a filter refer to rows of the sheet, so they cannot move.
+    /// a filter refer to rows of the sheet, so they cannot move on their own.
     pub refers_to_rows: bool,
+    /// Tables, drawings or comments are anchored to cells: rows and columns stay where they are.
+    pub locked: bool,
     /// When asked for instead of the rows: the values as stored.
     pub raw: Option<RawSheet>,
 }
@@ -122,6 +124,7 @@ struct Reading {
     next_column: u32,
     cell: Option<Cell>,
     refers_to_rows: bool,
+    locked: bool,
     raw: Option<RawSheet>,
 }
 
@@ -144,6 +147,7 @@ pub(crate) fn read_sheet(
         next_column: 0,
         cell: None,
         refers_to_rows: false,
+        locked: false,
         raw: raw.then(RawSheet::default),
     };
     let mut cells = 0usize;
@@ -206,7 +210,7 @@ pub(crate) fn read_sheet(
         progress.advance(size.saturating_sub(reported) as usize);
     }
     let refers_to_rows = reading.refers_to_rows || !reading.layout.merged.is_empty();
-    Ok(Some(SheetContent { rows: reading.rows, layout: reading.layout, refers_to_rows, raw: reading.raw }))
+    Ok(Some(SheetContent { rows: reading.rows, layout: reading.layout, refers_to_rows, locked: reading.locked, raw: reading.raw }))
 }
 
 impl Reading {
@@ -243,8 +247,11 @@ impl Reading {
             }
             "v" if !empty => return Next::Value,
             "is" if !empty => return Next::InlineString,
-            "conditionalFormatting" | "dataValidation" | "hyperlink" | "tablePart" | "drawing" | "legacyDrawing"
-            | "autoFilter" => self.refers_to_rows = true,
+            "conditionalFormatting" | "dataValidation" | "hyperlink" | "autoFilter" => self.refers_to_rows = true,
+            "tablePart" | "drawing" | "legacyDrawing" => {
+                self.refers_to_rows = true;
+                self.locked = true;
+            }
             "f" => {
                 self.refers_to_rows = true;
                 let owned = |name: &str| attribute(element, name).map(|value| value.into_owned());

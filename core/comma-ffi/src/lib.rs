@@ -407,8 +407,12 @@ pub struct DocumentInfo {
     /// A sheet of an Excel workbook: rows end at their last value, cells may hold formulas,
     /// and columns cannot be inserted, deleted or moved.
     pub is_sheet: bool,
-    /// Rows of the sheet cannot be inserted, deleted or moved, only added at the end.
+    /// Rows of the sheet cannot be inserted, deleted or moved on their own, only added at the
+    /// end; inserting and deleting them through the workbook moves references to them.
     pub sheet_rows_fixed: bool,
+    /// Rows and columns of the sheet stay where they are: tables, drawings, comments, charts or
+    /// pivot tables are anchored to them.
+    pub sheet_structure_locked: bool,
 }
 
 #[derive(uniffi::Record)]
@@ -1139,6 +1143,7 @@ impl CoreDocument {
             detection_confident: info.detection_confident,
             is_sheet: document.is_sheet(),
             sheet_rows_fixed: document.sheet_rows_fixed(),
+            sheet_structure_locked: document.sheet_structure_locked(),
         }
     }
 
@@ -2090,6 +2095,21 @@ pub struct RecalcReport {
     pub not_computed: u64,
 }
 
+#[derive(uniffi::Enum)]
+pub enum SheetAxis {
+    Rows,
+    Columns,
+}
+
+impl From<SheetAxis> for core::Axis {
+    fn from(axis: SheetAxis) -> Self {
+        match axis {
+            SheetAxis::Rows => Self::Rows,
+            SheetAxis::Columns => Self::Columns,
+        }
+    }
+}
+
 /// An open Excel workbook. Sheets are read one at a time.
 #[derive(uniffi::Object)]
 pub struct CoreWorkbook {
@@ -2154,9 +2174,36 @@ impl CoreWorkbook {
         })
     }
 
+    /// Inserts `count` rows or columns before `at` in sheet `index`, moving references in the
+    /// given sheets, which must be every sheet with formulas. Returns the sheets changed; each
+    /// took one undoable step.
+    pub fn insert(&self, sheets: Vec<SheetToSave>, index: u64, axis: SheetAxis, at: u64, count: u64) -> Result<Vec<u64>, CoreError> {
+        self.restructure(sheets, index, axis, at, count, true)
+    }
+
+    /// Deletes `count` rows or columns from `at` in sheet `index`; see `insert`.
+    pub fn delete(&self, sheets: Vec<SheetToSave>, index: u64, axis: SheetAxis, at: u64, count: u64) -> Result<Vec<u64>, CoreError> {
+        self.restructure(sheets, index, axis, at, count, false)
+    }
+
     /// Reads a sheet; call off the main thread for large ones. `None` if `job` was cancelled.
     pub fn read_sheet(&self, index: u64, locale: DisplayLocale, job: Arc<SheetJob>) -> Result<Option<LoadedSheet>, CoreError> {
         let sheet = self.inner.read_sheet_with_progress(index as usize, &locale.into(), &job.progress)?;
         Ok(sheet.map(|sheet| LoadedSheet { document: CoreDocument::wrap(sheet.document), layout: sheet.layout.into() }))
+    }
+}
+
+impl CoreWorkbook {
+    fn restructure(&self, sheets: Vec<SheetToSave>, index: u64, axis: SheetAxis, at: u64, count: u64, insert: bool) -> Result<Vec<u64>, CoreError> {
+        let mut documents = sheets.iter().map(|sheet| sheet.document.edit()).collect::<Result<Vec<_>, _>>()?;
+        let mut edited: Vec<(usize, &mut core::Document)> =
+            sheets.iter().zip(documents.iter_mut()).map(|(sheet, document)| (sheet.index as usize, &mut **document)).collect();
+        let (index, at, count, axis) = (index as usize, at as usize, count as usize, axis.into());
+        let changed = if insert {
+            self.inner.insert(&mut edited, index, axis, at, count)?
+        } else {
+            self.inner.delete(&mut edited, index, axis, at, count)?
+        };
+        Ok(changed.into_iter().map(|sheet| sheet as u64).collect())
     }
 }

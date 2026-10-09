@@ -9,6 +9,7 @@ mod package;
 mod refs;
 mod save;
 mod sheet;
+mod structure;
 mod styles;
 mod xls;
 mod xml;
@@ -21,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use quick_xml::events::Event;
 
 pub use calc::Recalculation;
+pub use structure::Axis;
 pub(crate) use calc::normalize as normalize_formula;
 pub(crate) use refs::shift_formula;
 pub use numfmt::DisplayLocale;
@@ -120,6 +122,8 @@ pub struct Workbook {
     active: usize,
     /// Defined names, charts or pivot tables refer to cells of any sheet.
     refers_to_cells: bool,
+    /// Charts or pivot tables do: rows and columns stay where they are.
+    locked: bool,
     /// Whether each sheet part holds a formula, found out once when needed.
     formulas: Mutex<HashMap<String, bool>>,
     /// The part with the list of sheets, and the calculation chain if there is one.
@@ -155,6 +159,7 @@ impl Workbook {
                 date1904: opened.date1904,
                 active,
                 refers_to_cells: true,
+                locked: true,
                 formulas: Mutex::default(),
                 workbook_part: String::new(),
                 calc_chain: None,
@@ -239,14 +244,15 @@ impl Workbook {
         };
         let active = first_shown(&sheets, active);
         let calc_chain = target("calcChain");
-        let refers_to_cells = defined_names
-            || package.part_names().any(|name| name.starts_with("xl/charts/") || name.starts_with("xl/pivotcache"));
+        let locked = package.part_names().any(|name| name.starts_with("xl/charts/") || name.starts_with("xl/pivotcache"));
+        let refers_to_cells = defined_names || locked;
         Ok(Self {
             source: Source::Xlsx { package, strings, styles },
             sheets,
             date1904,
             active,
             refers_to_cells,
+            locked,
             formulas: Mutex::default(),
             workbook_part,
             calc_chain,
@@ -296,6 +302,8 @@ impl Workbook {
                 let (rows, layout) = book.read_sheet(index, &entry.name, &context)?;
                 let source = SheetSource {
                     rows_fixed: true,
+                    structure_locked: true,
+                    formulas_moved: Arc::default(),
                     rows: rows.len(),
                     locale: locale.clone(),
                     formulas_entered: Arc::clone(&self.formulas_entered),
@@ -328,7 +336,14 @@ impl Workbook {
             name: entry.name.clone(),
             document: Document::from_sheet(
                 content.rows,
-                SheetSource { rows_fixed, rows, locale: locale.clone(), formulas_entered: Arc::clone(&self.formulas_entered) },
+                SheetSource {
+                    rows_fixed,
+                    structure_locked: content.locked || self.locked,
+                    formulas_moved: Arc::default(),
+                    rows,
+                    locale: locale.clone(),
+                    formulas_entered: Arc::clone(&self.formulas_entered),
+                },
             ),
             layout: content.layout,
         }))

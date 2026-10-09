@@ -1,0 +1,193 @@
+//! Inserting and deleting rows and columns of a sheet of a workbook, with every reference to
+//! the cells that move moved too: in formulas of all sheets here, and, when saving, in merged
+//! cells, conditional formats, validations, links, filters and defined names.
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use super::Workbook;
+use super::refs::{Remap, remap_formula};
+use crate::document::{Document, Field, FormulaField, NO_ORIGIN, Record};
+use crate::error::{Error, Result, SheetStructure};
+use crate::history::Splice;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    Rows,
+    Columns,
+}
+
+impl Workbook {
+    /// Inserts `count` empty rows or columns before `at` in sheet `index` (a document among
+    /// `sheets`, which must hold every sheet with formulas), moving references to the cells after
+    /// them. Each document changed takes one undoable step; returns the sheets changed.
+    pub fn insert(&self, sheets: &mut [(usize, &mut Document)], index: usize, axis: Axis, at: usize, count: usize) -> Result<Vec<usize>> {
+        self.restructure(sheets, index, axis, at, count, true)
+    }
+
+    /// Deletes `count` rows or columns from `at` in sheet `index`; see `insert`. References to
+    /// cells deleted become `#REF!`.
+    pub fn delete(&self, sheets: &mut [(usize, &mut Document)], index: usize, axis: Axis, at: usize, count: usize) -> Result<Vec<usize>> {
+        self.restructure(sheets, index, axis, at, count, false)
+    }
+
+    fn restructure(
+        &self,
+        sheets: &mut [(usize, &mut Document)],
+        index: usize,
+        axis: Axis,
+        at: usize,
+        count: usize,
+        insert: bool,
+    ) -> Result<Vec<usize>> {
+        let name = self.sheets.get(index).map(|sheet| sheet.name.to_lowercase()).ok_or(Error::RowOutOfRange { row: index, rows: self.sheets.len() })?;
+        let Some(position) = sheets.iter().position(|(sheet, _)| *sheet == index) else {
+            return Ok(Vec::new());
+        };
+        let change = if axis == Axis::Rows { SheetStructure::RowsFixed } else { SheetStructure::ColumnsFixed };
+        if sheets[position].1.sheet_structure_locked() {
+            return Err(Error::SheetStructure(change));
+        }
+        let (length, limit) = match axis {
+            Axis::Rows => (sheets[position].1.row_count(), super::refs::MAX_ROWS),
+            Axis::Columns => (sheets[position].1.column_count(), super::refs::MAX_COLUMNS),
+        };
+        if count == 0 || at > length || (!insert && at + count > length) || (insert && length + count > limit as usize) {
+            return Ok(Vec::new());
+        }
+        let (at32, count32) = (at as u32, count as u32);
+        let shift = move |first: u32, last: u32| Remap::shift(first, last, at32, count32, insert);
+        let same = |first: u32, last: u32| Some((first, last));
+        let remap = match axis {
+            Axis::Rows => Remap { sheet: &name, rows: &shift, columns: &same },
+            Axis::Columns => Remap { sheet: &name, rows: &same, columns: &shift },
+        };
+
+        let mut changed = Vec::new();
+        for (sheet, document) in sheets.iter_mut() {
+            let own = self.sheets.get(*sheet).map(|entry| entry.name.to_lowercase()).unwrap_or_default();
+            if *sheet == index {
+                restructure_sheet(document, &own, &remap, axis, at, count, insert);
+                changed.push(*sheet);
+            } else if remap_formulas(document, &own, &remap) {
+                changed.push(*sheet);
+            }
+        }
+
+        // Rows edited before move with them, so that what reads them is still computed again.
+        if axis == Axis::Rows {
+            let mut state = self.calc.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(touched) = state.touched.get_mut(&index) {
+                *touched = touched.iter().filter_map(|&row| shift(row, row).map(|(row, _)| row)).collect();
+            }
+        }
+        Ok(changed)
+    }
+}
+
+/// The formulas of a record with references moved; `None` if none changed.
+fn remapped(fields: &[Field], own: &str, remap: &Remap) -> Option<Vec<Field>> {
+    let mut changed = false;
+    let fields: Vec<Field> = fields
+        .iter()
+        .map(|field| match field {
+            Field::Formula(cell) => {
+                let formula = remap_formula(&cell.formula, own, remap);
+                let array = cell.array.as_ref().map(|range| remap_formula(range, own, remap));
+                if formula == cell.formula && array == cell.array {
+                    return field.clone();
+                }
+                changed = true;
+                Field::Formula(Box::new(FormulaField { formula, array, from_file: false, ..(**cell).clone() }))
+            }
+            field => field.clone(),
+        })
+        .collect();
+    changed.then_some(fields)
+}
+
+/// Moves references in the formulas of a sheet other than the one that changed. Returns
+/// whether any moved.
+fn remap_formulas(document: &mut Document, own: &str, remap: &Remap) -> bool {
+    let mut splices = Vec::new();
+    let rows: Vec<usize> = document.formula_cells().map(|(row, _, _)| row).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    for row in rows {
+        let record = &document.records[row];
+        let Some(fields) = remapped(&document.fields(record), own, remap) else { continue };
+        let updated = record.with_fields(fields);
+        splices.push(Splice::apply(Arc::make_mut(&mut document.records), row, 1, vec![updated]));
+    }
+    if splices.is_empty() {
+        return false;
+    }
+    let columns = document.column_count();
+    document.commit(splices, columns, false);
+    mark_formulas_moved(document);
+    true
+}
+
+/// Inserts or deletes rows or columns of the sheet that changed, with references in its own
+/// formulas moved, as one undoable step.
+fn restructure_sheet(document: &mut Document, own: &str, remap: &Remap, axis: Axis, at: usize, count: usize, insert: bool) {
+    let mut formulas_moved = false;
+    let mut records: Vec<Record> = document
+        .records
+        .iter()
+        .map(|record| {
+            let mut fields = document.fields(record);
+            if let Some(moved) = remapped(&fields, own, remap) {
+                fields = moved;
+                formulas_moved = true;
+            }
+            if axis == Axis::Columns {
+                if insert && fields.len() > at {
+                    fields.splice(at..at, std::iter::repeat_n(Field::Text(String::new()), count));
+                } else if !insert && fields.len() > at {
+                    fields.drain(at..(at + count).min(fields.len()));
+                }
+            }
+            record.with_fields(fields)
+        })
+        .collect();
+    let columns = document.column_count();
+    match axis {
+        Axis::Rows => {
+            if insert {
+                let width = columns.max(1);
+                let new = (0..count).map(|_| Record::modified(vec![Field::Text(String::new()); width], crate::parser::Terminator::Lf));
+                records.splice(at..at, new);
+            } else {
+                records.drain(at..at + count);
+            }
+            document.replace_records(records, columns, true);
+            document.refresh_view();
+        }
+        Axis::Columns => {
+            let mut origins = (*document.column_origins).clone();
+            if insert {
+                if at < origins.len() {
+                    origins.splice(at..at, std::iter::repeat_n(NO_ORIGIN, count));
+                }
+            } else {
+                let end = (at + count).min(origins.len());
+                if at < end {
+                    origins.drain(at..end);
+                }
+            }
+            let after = if insert { columns + count } else { columns - count };
+            let length = document.records.len();
+            let splice = Splice::apply(Arc::make_mut(&mut document.records), 0, length, records);
+            document.commit_moving_columns(vec![splice], after.max(1), origins);
+            document.reset_view();
+        }
+    }
+    if formulas_moved {
+        mark_formulas_moved(document);
+    }
+}
+
+fn mark_formulas_moved(document: &Document) {
+    if let Some(sheet) = &document.sheet {
+        sheet.formulas_moved.store(true, Ordering::Relaxed);
+    }
+}

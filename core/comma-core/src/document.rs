@@ -173,8 +173,14 @@ impl Record {
 /// What a sheet of a workbook needs to be saved back into it.
 #[derive(Clone, Debug)]
 pub(crate) struct SheetSource {
-    /// Rows cannot be inserted, deleted or moved; see `Document::sheet_rows_fixed`.
+    /// Rows cannot be inserted, deleted or moved on their own; see `Document::sheet_rows_fixed`.
     pub rows_fixed: bool,
+    /// Rows and columns cannot be inserted or deleted even with references moved; see
+    /// `Document::sheet_structure_locked`.
+    pub structure_locked: bool,
+    /// Formulas of this sheet were rewritten when rows or columns moved; saving writes them all
+    /// on their own, since a formula shared by several cells may have changed in some of them.
+    pub formulas_moved: Arc<AtomicBool>,
     /// Rows read from the sheet.
     pub rows: usize,
     /// How values were shown when read, so that saving can tell which ones changed.
@@ -255,6 +261,9 @@ pub struct Document {
     /// For a sheet of a workbook, what saving it back needs; rows of a sheet end at their last
     /// value rather than share a width.
     pub(crate) sheet: Option<Arc<SheetSource>>,
+    /// For a sheet: the column of the file each column was read from, `NO_ORIGIN` for one
+    /// inserted since; columns past the end were added. Empty for a delimited file.
+    pub(crate) column_origins: Arc<Vec<u32>>,
     /// Counts changes to the rows, so work done on a snapshot knows whether it is still current.
     pub(crate) generation: u64,
     /// Rows past the first part of a large file are still being indexed; see `open_partially`.
@@ -285,6 +294,7 @@ impl Document {
             unterminated_quote: false,
             detection_confident: true,
             sheet: None,
+            column_origins: Arc::default(),
             generation: 0,
             indexing: false,
             history: History::default(),
@@ -315,6 +325,7 @@ impl Document {
             return document;
         }
         document.column_count = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
+        document.column_origins = Arc::new((0..document.column_count as u32).collect());
         document.records = Arc::new(
             rows.into_iter()
                 .enumerate()
@@ -340,6 +351,12 @@ impl Document {
         self.sheet.as_ref().is_some_and(|sheet| sheet.rows_fixed || sheet.formulas_entered.load(Ordering::Relaxed))
     }
 
+    /// Whether rows and columns of this sheet stay where they are even when references to them
+    /// move with them: tables, drawings, comments, charts or pivot tables are anchored to them.
+    pub fn sheet_structure_locked(&self) -> bool {
+        self.sheet.as_ref().is_some_and(|sheet| sheet.structure_locked)
+    }
+
     /// Fails if a sheet cannot take a change to its rows or columns.
     pub(crate) fn check_structure(&self, change: SheetStructure) -> Result<()> {
         let fixed = match change {
@@ -360,6 +377,21 @@ impl Document {
                 .collect(),
             _ => Vec::new(),
         }
+    }
+
+    /// The column of the file a column of a sheet was read from; `None` for one added since.
+    pub(crate) fn column_origin(&self, column: usize) -> Option<usize> {
+        self.column_origins.get(column).filter(|&&origin| origin != NO_ORIGIN).map(|&origin| origin as usize)
+    }
+
+    /// Records a change that also moved columns: `origins` is where columns come from after it.
+    pub(crate) fn commit_moving_columns(&mut self, splices: Vec<Splice>, columns_after: usize, origins: Vec<u32>) {
+        self.commit(splices, columns_after, false);
+        let origins = Arc::new(origins);
+        if let Some(transaction) = self.history.last_mut() {
+            transaction.origins_after = Arc::clone(&origins);
+        }
+        self.column_origins = origins;
     }
 
     /// The row of the file a row of a sheet was read from; `None` for a row added since.
@@ -544,6 +576,7 @@ impl Document {
             unterminated_quote: scan.unterminated_quote,
             detection_confident: true,
             sheet: None,
+            column_origins: Arc::default(),
             generation: 0,
             indexing: false,
             history: History::default(),
@@ -705,6 +738,7 @@ impl Document {
             unterminated_quote: self.unterminated_quote,
             detection_confident: self.detection_confident,
             sheet: self.sheet.clone(),
+            column_origins: Arc::clone(&self.column_origins),
             generation: self.generation,
             indexing: self.indexing,
             history: History::default(),
@@ -1097,7 +1131,7 @@ impl Document {
         match self.history.undo(Arc::make_mut(&mut self.records)) {
             Some(reverted) => {
                 self.trailing_newline = reverted.trailing_newline;
-                self.after_history(reverted.columns, reverted.structural);
+                self.after_history(reverted.columns, reverted.column_origins, reverted.structural);
                 true
             }
             None => false,
@@ -1108,14 +1142,15 @@ impl Document {
         match self.history.redo(Arc::make_mut(&mut self.records)) {
             Some(reverted) => {
                 self.trailing_newline = reverted.trailing_newline;
-                self.after_history(reverted.columns, reverted.structural);
+                self.after_history(reverted.columns, reverted.column_origins, reverted.structural);
                 true
             }
             None => false,
         }
     }
 
-    fn after_history(&mut self, columns: usize, structural: bool) {
+    fn after_history(&mut self, columns: usize, column_origins: Arc<Vec<u32>>, structural: bool) {
+        self.column_origins = column_origins;
         self.generation += 1;
         if columns != self.column_count {
             self.column_count = columns;
@@ -1142,6 +1177,8 @@ impl Document {
             splices,
             columns_before: self.column_count,
             columns_after,
+            origins_before: Arc::clone(&self.column_origins),
+            origins_after: Arc::clone(&self.column_origins),
             structural,
             trailing_before: self.trailing_newline,
             trailing_after,

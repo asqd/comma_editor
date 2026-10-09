@@ -412,22 +412,29 @@ extension GridViewController: NSMenuItemValidation {
             return false
         }
         if info.isSheet, let action = menuItem.action {
-            // Only after the last column: columns added at the end move nothing.
-            if action == #selector(insertColumnRight(_:)) {
+            // A workbook inserts and deletes rows and columns with the references to them
+            // moved, unless tables, drawings or comments hold them in place; then only adding
+            // at the end is left. Moving them, sorting into the file and splitting columns wait.
+            let locked = info.sheetStructureLocked
+            switch action {
+            case #selector(insertColumnRight(_:)) where locked:
                 return activeColumn == columnCount - 1
-            }
-            if Self.columnActions.contains(action) {
+            case #selector(insertColumnLeft(_:)), #selector(deleteColumn(_:)) where locked:
                 return false
-            }
-            if info.sheetRowsFixed, Self.rowActions.contains(action) {
+            case #selector(insertColumnLeft(_:)), #selector(insertColumnRight(_:)), #selector(deleteColumn(_:)):
+                break
+            case _ where Self.columnActions.contains(action):
                 return false
-            }
-            // Only below the last row: rows added at the end move nothing.
-            if info.sheetRowsFixed, action == #selector(insertRowAbove(_:)) {
-                return false
-            }
-            if info.sheetRowsFixed, action == #selector(insertRowBelow(_:)) {
+            case #selector(insertRowBelow(_:)) where locked && info.sheetRowsFixed:
                 return activeRow == dataRowCount - 1
+            case #selector(insertRowAbove(_:)), #selector(deleteRows(_:)) where locked && info.sheetRowsFixed:
+                return false
+            case #selector(insertRowAbove(_:)), #selector(insertRowBelow(_:)), #selector(deleteRows(_:)):
+                break
+            case _ where info.sheetRowsFixed && Self.rowActions.contains(action):
+                return false
+            default:
+                break
             }
         }
         let spec = core.viewSpec()
