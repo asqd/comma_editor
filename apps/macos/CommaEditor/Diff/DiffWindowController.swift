@@ -20,6 +20,9 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
     private let leftName: String
     private let url: URL
     private var right: CoreDocument?
+    /// The other file when it is an Excel workbook, and the sheet of it compared.
+    private var workbook: CoreWorkbook?
+    private var sheetIndex = 0
     private var job: DiffJob?
     private var result: DiffResult?
     private var progressTimer: Timer?
@@ -31,6 +34,8 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
     private static let pageSize = 200
 
     private let keyPopup = NSPopUpButton()
+    private let sheetLabel = NSTextField(labelWithString: L("Sheet:"))
+    private let sheetPopup = NSPopUpButton()
     private let caseCheck = NSButton(checkboxWithTitle: L("Ignore case"), target: nil, action: nil)
     private let trimCheck = NSButton(checkboxWithTitle: L("Ignore surrounding spaces"), target: nil, action: nil)
     private let filter = NSSegmentedControl()
@@ -86,6 +91,10 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
     private func makeContent() -> NSView {
         keyPopup.target = self
         keyPopup.action = #selector(optionsChanged(_:))
+        sheetPopup.target = self
+        sheetPopup.action = #selector(sheetChanged(_:))
+        sheetLabel.isHidden = true
+        sheetPopup.isHidden = true
         for check in [caseCheck, trimCheck] {
             check.target = self
             check.action = #selector(optionsChanged(_:))
@@ -94,7 +103,8 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
         openButton.action = #selector(openAsTable(_:))
         openButton.bezelStyle = .push
         let options = NSStackView(views: [
-            NSTextField(labelWithString: L("Match rows by:")), keyPopup, caseCheck, trimCheck, NSView(), openButton,
+            sheetLabel, sheetPopup, NSTextField(labelWithString: L("Match rows by:")), keyPopup, caseCheck, trimCheck,
+            NSView(), openButton,
         ])
         options.spacing = 10
 
@@ -149,7 +159,7 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func setControlsEnabled(_ enabled: Bool) {
-        for control in [keyPopup, caseCheck, trimCheck, filter, openButton] as [NSControl] {
+        for control in [sheetPopup, keyPopup, caseCheck, trimCheck, filter, openButton] as [NSControl] {
             control.isEnabled = enabled
         }
         openButton.isEnabled = enabled && result != nil && rowCount > 0
@@ -157,30 +167,87 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: Reading the other file
 
-    private func readOtherFile() {
+    /// Reads the other file: a delimited file whole, or a sheet of a workbook, the one Excel
+    /// opens at unless `sheet` names another.
+    private func readOtherFile(sheet: Int? = nil) {
         showProgress(L("Reading %@…", url.lastPathComponent), cancellable: false)
+        setControlsEnabled(false)
         let url = url
+        let locale = WorkbookDocument.displayLocale
+        let opened = workbook
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let opened = Result { () throws -> CoreDocument in
-                let document = try CoreDocument.openWith(path: url.path, encoding: nil, delimiter: nil)
-                while document.isIndexing() {
-                    _ = document.continueIndexing(bytes: 64 << 20)
+            let read = Result { () throws -> (CoreDocument, CoreWorkbook?, Int) in
+                guard opened != nil || Self.isWorkbook(url) else {
+                    let document = try CoreDocument.openWith(path: url.path, encoding: nil, delimiter: nil)
+                    while document.isIndexing() {
+                        _ = document.continueIndexing(bytes: 64 << 20)
+                    }
+                    return (document, nil, 0)
                 }
-                return document
+                let workbook = try opened ?? CoreWorkbook.open(path: url.path)
+                let sheets = workbook.sheets()
+                let active = Int(workbook.activeSheet())
+                let index = sheet ?? (sheets.indices.contains(active) && sheets[active].isTable
+                    ? active : sheets.firstIndex(where: \.isTable) ?? 0)
+                guard let loaded = try workbook.readSheet(index: UInt64(index), locale: locale, job: SheetJob()) else {
+                    throw CocoaError(.userCancelled)
+                }
+                return (loaded.document, workbook, index)
             }
             DispatchQueue.main.async {
                 guard let self else { return }
-                switch opened {
-                case .success(let document):
+                switch read {
+                case .success(let (document, workbook, index)):
+                    if workbook != nil {
+                        // A sheet reads as the table it is compared with: its first row names
+                        // the columns when the table's does.
+                        document.setHasHeader(hasHeader: self.left.info().hasHeader)
+                    }
                     self.right = document
+                    self.workbook = workbook
+                    self.sheetIndex = index
+                    self.fillSheetPopup()
                     self.headerRows = (self.left.info().hasHeader ? 1 : 0, document.info().hasHeader ? 1 : 0)
                     self.fillKeyPopup(document)
                     self.compare()
                 case .failure(let error):
                     self.showFinished(CSVDocument.userFacingError(error).localizedDescription)
+                    self.setControlsEnabled(self.right != nil)
                 }
             }
         }
+    }
+
+    /// An Excel workbook by its name or by its first bytes: a ZIP package or an OLE file.
+    private static func isWorkbook(_ url: URL) -> Bool {
+        if ["xlsx", "xlsm", "xls"].contains(url.pathExtension.lowercased()) {
+            return true
+        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        let head = [UInt8]((try? handle.read(upToCount: 4)) ?? Data())
+        return head == [0x50, 0x4B, 0x03, 0x04] || head == [0xD0, 0xCF, 0x11, 0xE0]
+    }
+
+    /// The sheets with cells, shown when the workbook has more than one.
+    private func fillSheetPopup() {
+        sheetPopup.removeAllItems()
+        let sheets = workbook?.sheets() ?? []
+        for (index, sheet) in sheets.enumerated() where sheet.isTable {
+            sheetPopup.addItem(withTitle: sheet.name)
+            sheetPopup.lastItem?.tag = index
+        }
+        sheetPopup.selectItem(withTag: sheetIndex)
+        let hidden = sheetPopup.numberOfItems < 2
+        sheetLabel.isHidden = hidden
+        sheetPopup.isHidden = hidden
+    }
+
+    @objc private func sheetChanged(_ sender: Any?) {
+        let index = sheetPopup.selectedTag()
+        guard index != sheetIndex else { return }
+        job?.cancel()
+        readOtherFile(sheet: index)
     }
 
     /// Columns both tables have, the suggested key selected; "Row Number" compares by position.

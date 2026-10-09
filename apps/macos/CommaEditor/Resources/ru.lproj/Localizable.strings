@@ -37,6 +37,7 @@
 "Rename Column…" = "Переименовать колонку…";
 "First Row Is Header" = "Первая строка — заголовок";
 "CSV Mode" = "Режим CSV";
+"Sheet:" = "Лист:";
 "As Excel shows the sheet: columns lettered A, B, C" = "Как в Excel: столбцы A, B, C";
 "As a CSV file: the first row names the columns" = "Как в CSV: первая строка — названия столбцов";
 "View" = "Вид";
