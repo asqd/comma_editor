@@ -334,8 +334,8 @@ impl Document {
                 })
                 .collect(),
         );
-        document.has_header = document.records.len() > 1
-            && document.row(0).is_ok_and(|row| row.len() == document.column_count && dialect::sniff_header(&row));
+        // Shown as Excel shows it: the first row is a row like the others, columns are
+        // lettered. The app may take the first row as column names.
         document
     }
 

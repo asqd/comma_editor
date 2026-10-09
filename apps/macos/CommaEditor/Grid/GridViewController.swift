@@ -86,6 +86,8 @@ final class GridViewController: NSViewController {
     private var changeObserver: NSObjectProtocol?
     /// Tabs of the sheets of a workbook, above the status bar.
     let sheetTabs = SheetTabsView()
+    /// Beside the tabs: a workbook shown as Excel shows it, or in CSV mode.
+    let sheetMode = NSSegmentedControl(labels: [L("Table"), "CSV"], trackingMode: .selectOne, target: nil, action: nil)
     /// What the table looked like on each sheet of a workbook, to come back to it.
     var sheetStates: [Int: SheetViewState] = [:]
     /// The workbook read and the sheet the table shows.
@@ -538,6 +540,7 @@ final class GridViewController: NSViewController {
             syncFilterBar()
         }
         updateStatus()
+        updateSheetMode()
         refreshProfile()
         refreshCard()
         scheduleProblemCheck()
@@ -835,7 +838,10 @@ final class GridViewController: NSViewController {
 
     @objc func toggleHeaderRow(_ sender: Any?) {
         let fileRow = activeFileRow
-        document.setHasHeader(!info.hasHeader)
+        let hasHeader = !info.hasHeader
+        // The other sheets of a workbook take the setting too: their first row goes or comes back.
+        shiftSheetSelections(by: hasHeader ? -1 : 1)
+        document.setHasHeader(hasHeader)
         reselect(fileRow: fileRow)
     }
 

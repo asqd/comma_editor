@@ -64,7 +64,8 @@ fn reads_a_workbook_written_like_excel() {
 
     let sheet = workbook.read_sheet(0, &russian()).unwrap();
     let document = &sheet.document;
-    assert!(document.has_header());
+    // Shown as Excel shows it until the first row is taken as column names.
+    assert!(!document.has_header());
     assert_eq!(document.column_count(), 7);
     assert_eq!(
         rows(document),
@@ -139,7 +140,7 @@ fn values_of_a_csv_exported_to_xlsx_read_back() {
             .collect()
     };
     assert_eq!(cells(&sheet.document), cells(&original));
-    assert!(sheet.document.has_header());
+    assert!(!sheet.document.has_header());
 }
 
 // MARK: Packages built by hand, for what writers do differently

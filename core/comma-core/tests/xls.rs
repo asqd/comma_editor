@@ -38,7 +38,7 @@ fn shows_values_in_their_number_formats() {
     let workbook = Workbook::from_bytes(SALES.to_vec()).unwrap();
     let sheet = workbook.read_sheet(0, &russian()).unwrap();
     let document = &sheet.document;
-    assert!(document.has_header());
+    assert!(!document.has_header());
     let rows = rows(document);
     assert_eq!(rows[0], ["Товар", "Цена", "Кол-во", "Сумма", "Доля", "Дата", "Время", "Есть"]);
     // The formulas were written without results, so their cells are empty; formulas of .xls

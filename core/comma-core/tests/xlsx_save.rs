@@ -151,6 +151,8 @@ fn rows_of_a_plain_sheet_move_with_their_styles() {
     let workbook = Workbook::from_bytes(plain_book()).unwrap();
     let mut plain = workbook.read_sheet(0, &russian()).unwrap().document;
     assert!(!plain.sheet_rows_fixed());
+    // The first row taken as column names stays on top when the rows are sorted.
+    plain.set_has_header(true);
     plain.set_view(comma_core::ViewSpec { sort: vec![comma_core::SortKey { column: 1, ascending: true }], filters: vec![] }).unwrap();
     assert!(plain.apply_sort().unwrap());
     plain.delete_rows(&[2]).unwrap();

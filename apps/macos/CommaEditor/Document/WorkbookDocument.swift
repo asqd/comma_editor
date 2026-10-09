@@ -31,6 +31,10 @@ final class WorkbookDocument: CSVDocument {
     /// The sheet being read, if one is.
     var loadingSheetIndex: Int? { loading?.index }
 
+    /// CSV mode: the first row of every sheet names the columns, as in a delimited file. Off,
+    /// sheets show as Excel shows them: columns lettered A, B, C, every row a row of cells.
+    private(set) var csvMode = false
+
     /// The name and the share read of a sheet being read.
     var loadingSheet: (name: String, fraction: Double)? {
         loading.map { (sheets[$0.index].name, $0.job.fraction()) }
@@ -63,7 +67,7 @@ final class WorkbookDocument: CSVDocument {
             loading = nil
             self.workbook = workbook
             self.sheets = sheets
-            loaded = [index: sheet]
+            loaded = [index: adopt(sheet)]
             sheetIndex = index
             generation += 1
             replaceCore(sheet.document)
@@ -98,7 +102,7 @@ final class WorkbookDocument: CSVDocument {
                 self.loading = nil
                 switch result {
                 case .success(let sheet?):
-                    self.loaded[index] = sheet
+                    self.loaded[index] = self.adopt(sheet)
                     self.show(sheet, at: index)
                 case .success(nil):
                     self.post(.progress)
@@ -226,9 +230,24 @@ final class WorkbookDocument: CSVDocument {
         guard let workbook else { return }
         for (index, sheet) in sheets.enumerated() where sheet.isTable && loaded[index] == nil {
             if let read = try workbook.readSheet(index: UInt64(index), locale: Self.displayLocale, job: SheetJob()) {
-                loaded[index] = read
+                loaded[index] = adopt(read)
             }
         }
+    }
+
+    /// A sheet just read, shown in the workbook's mode.
+    private func adopt(_ sheet: LoadedSheet) -> LoadedSheet {
+        sheet.document.setHasHeader(hasHeader: csvMode)
+        return sheet
+    }
+
+    /// The header setting is the workbook's: CSV mode on or off for every sheet.
+    override func setHasHeader(_ hasHeader: Bool) {
+        csvMode = hasHeader
+        for sheet in loaded.values {
+            sheet.document.setHasHeader(hasHeader: hasHeader)
+        }
+        post(.structure)
     }
 
     // MARK: Formulas

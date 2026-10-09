@@ -15,19 +15,27 @@ struct SheetViewState {
 extension GridViewController {
     var workbook: WorkbookDocument? { document as? WorkbookDocument }
 
-    /// The tabs and a separator above them; hidden for a delimited file.
+    /// The tabs, the mode beside them and a separator above them; hidden for a delimited file.
     func configureSheetTabs() -> NSView {
         let container = NSView()
         let separator = NSBox()
         separator.boxType = .separator
-        for view in [sheetTabs, separator] {
+        sheetMode.controlSize = .small
+        sheetMode.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        sheetMode.setToolTip(L("As Excel shows the sheet: columns lettered A, B, C"), forSegment: 0)
+        sheetMode.setToolTip(L("As a CSV file: the first row names the columns"), forSegment: 1)
+        sheetMode.target = self
+        sheetMode.action = #selector(chooseSheetMode(_:))
+        for view in [sheetTabs, sheetMode, separator] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
         NSLayoutConstraint.activate([
             sheetTabs.topAnchor.constraint(equalTo: container.topAnchor),
             sheetTabs.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            sheetTabs.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            sheetTabs.trailingAnchor.constraint(equalTo: sheetMode.leadingAnchor, constant: -8),
+            sheetMode.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -8),
+            sheetMode.centerYAnchor.constraint(equalTo: sheetTabs.centerYAnchor),
             separator.topAnchor.constraint(equalTo: sheetTabs.bottomAnchor),
             separator.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: container.trailingAnchor),
@@ -43,6 +51,27 @@ extension GridViewController {
     func updateSheetTabs() {
         guard let workbook else { return }
         sheetTabs.update(sheets: workbook.sheets, selected: workbook.sheetIndex, loading: workbook.loadingSheetIndex)
+        updateSheetMode()
+    }
+
+    func updateSheetMode() {
+        guard let workbook else { return }
+        sheetMode.selectedSegment = workbook.csvMode ? 1 : 0
+        sheetMode.isEnabled = !document.isBusy && info.rowCount > 0
+    }
+
+    /// Selections kept for the sheets not shown, moved by `rows` as their first row stops or
+    /// starts being a row of the table.
+    func shiftSheetSelections(by rows: Int) {
+        sheetStates = sheetStates.mapValues { state in
+            var state = state
+            if var selection = state.selection {
+                selection.anchor.row = max(0, selection.anchor.row + rows)
+                selection.cursor.row = max(0, selection.cursor.row + rows)
+                state.selection = selection
+            }
+            return state
+        }
     }
 
     /// Before the table is first built: the layout of the sheet the workbook opens at.
@@ -110,7 +139,7 @@ extension GridViewController {
     /// Widths, hidden columns and frozen columns as Excel shows the sheet.
     private func initialState(for layout: SheetLayout?) -> SheetViewState {
         let columns = Int(info.columnCount)
-        var state = SheetViewState(widths: [:], hidden: [], frozen: 0, selection: nil, scroll: .zero)
+        var state = SheetViewState(widths: [:], hidden: [], frozen: 0, selection: nil, scroll: topLeft)
         guard let layout else { return state }
         // Widths only when the sheet sets some; otherwise the table's own default.
         if layout.columns.contains(where: { $0.width != nil }) || layout.defaultColumnWidth != nil {
@@ -140,6 +169,13 @@ extension GridViewController {
         return state
     }
 
+    /// The scroll position that shows the first row and column: the column headers lie over
+    /// the top of the content.
+    private var topLeft: NSPoint {
+        let insets = scrollView.contentView.contentInsets
+        return NSPoint(x: -insets.left, y: -insets.top)
+    }
+
     /// Excel measures widths in digits of its default font, Calibri 11; the table's font is
     /// larger, and its cells have more padding.
     static func points(forExcelWidth width: Double) -> CGFloat {
@@ -148,6 +184,16 @@ extension GridViewController {
     }
 
     // MARK: Commands
+
+    @objc func chooseSheetMode(_ sender: NSSegmentedControl) {
+        guard (sender.selectedSegment == 1) != info.hasHeader else { return }
+        guard !document.isBusy else {
+            NSSound.beep()
+            updateSheetMode()
+            return
+        }
+        toggleHeaderRow(sender)
+    }
 
     @objc func nextSheet(_ sender: Any?) {
         workbook?.neighbourSheet(1).map { workbook?.showSheet($0) }

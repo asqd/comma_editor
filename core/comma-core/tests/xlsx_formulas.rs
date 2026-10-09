@@ -201,11 +201,11 @@ fn long_chains_compute() {
 fn filling_down_moves_references_and_pasting_enters_formulas() {
     let (workbook, mut sales) = open(book());
     sales.set_cell(1, 6, "=B2+C2").unwrap();
-    sales.fill_down(comma_core::CellRange { top: 0, left: 6, bottom: 2, right: 6 }).unwrap();
+    // A sheet shows every row, the first included: visible rows are rows of the sheet.
+    sales.fill_down(comma_core::CellRange { top: 1, left: 6, bottom: 3, right: 6 }).unwrap();
     assert_eq!(sales.formula(2, 6).as_deref(), Some("B3+C3"));
     assert_eq!(sales.formula(3, 6).as_deref(), Some("B4+C4"));
-    // Visible row 5 is row 7 of the sheet, below the header.
-    sales.paste(5, 7, &[vec!["=SUM(G2:G4)".to_owned()], vec!["=H7*2".to_owned()], vec!["text".to_owned()]]).unwrap();
+    sales.paste(6, 7, &[vec!["=SUM(G2:G4)".to_owned()], vec!["=H7*2".to_owned()], vec!["text".to_owned()]]).unwrap();
     workbook.recalculate(&mut [(0, &mut sales)], NOW).unwrap();
     assert_eq!(sales.cell(2, 6).unwrap(), "21");
     assert_eq!(sales.cell(6, 7).unwrap(), "42");

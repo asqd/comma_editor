@@ -520,6 +520,7 @@ extension GridViewController: NSMenuItemValidation {
         case #selector(renameColumn(_:)):
             return info.hasHeader && columnCount > 0
         case #selector(toggleHeaderRow(_:)):
+            menuItem.title = workbook == nil ? L("First Row Is Header") : L("CSV Mode")
             menuItem.state = info.hasHeader ? .on : .off
             return info.rowCount > 0
         case #selector(sortAscending(_:)), #selector(sortDescending(_:)):
