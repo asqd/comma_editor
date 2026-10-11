@@ -55,7 +55,8 @@ enum DebugScript {
             let undoManager = grid.document.undoManager
             // Only edits: a new group, even an empty one, clears what Redo would bring back.
             let edits: Set<String> = ["paste", "filldown", "action", "fixall", "cardedit", "replaceall", "formulaapply", "recipeapply", "save", "exportto", "close", "docaction"]
-            let navigates = name == "action" && ["Sheet:", "toggle", "show"].contains { argument.contains($0) }
+            // A command that changes nothing would leave an empty group, which counts as a change.
+            let navigates = name == "action" && !GridViewController.editingActions.contains(Selector(argument))
             let groups = groupsSteps && undoManager?.groupingLevel == 0 && edits.contains(name) && !navigates
             if groups {
                 undoManager?.beginUndoGrouping()
