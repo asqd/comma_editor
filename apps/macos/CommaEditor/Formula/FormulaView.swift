@@ -70,6 +70,8 @@ final class FormulaModel: ObservableObject {
 /// Data ▸ Computed Column: a formula over the columns of each row, with a live preview.
 struct FormulaView: View {
     @ObservedObject var model: FormulaModel
+    /// Back in the formula after a column or function is inserted, so typing goes on there.
+    @FocusState private var editingFormula: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -112,13 +114,17 @@ struct FormulaView: View {
     private var formulaField: some View {
         VStack(alignment: .leading, spacing: 6) {
             TextField("{price} * {qty}", text: $model.formula, axis: .vertical)
+                .focused($editingFormula)
                 .font(.system(.body, design: .monospaced))
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2...5)
             HStack(spacing: 8) {
                 Menu(L("Column")) {
                     ForEach(Array(model.columns.enumerated()), id: \.offset) { _, name in
-                        Button(name) { model.insert("{\(name)}") }
+                        Button(name) {
+                            model.insert("{\(name)}")
+                            editingFormula = true
+                        }
                     }
                 }
                 .fixedSize()
@@ -126,6 +132,7 @@ struct FormulaView: View {
                     ForEach(FormulaHelp.functions, id: \.name) { function in
                         Button("\(function.signature) — \(function.summary)") {
                             model.insert(function.name + "(")
+                            editingFormula = true
                         }
                     }
                 }
@@ -133,6 +140,7 @@ struct FormulaView: View {
                 Spacer()
             }
             .controlSize(.small)
+            .onAppear { editingFormula = true }
             if let problem = model.problem {
                 Label(problem, systemImage: "exclamationmark.triangle.fill")
                     .symbolRenderingMode(.multicolor)
