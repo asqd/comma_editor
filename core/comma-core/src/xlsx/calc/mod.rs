@@ -261,7 +261,9 @@ impl Workbook {
                         continue;
                     }
                     let original = origin.zip(document.column_origin(column)).and_then(|(row, column)| raw.get(row, column));
-                    let format = self.format_of(formats, original.map_or(0, |cell| cell.style));
+                    // A cell of an added row or column formats as its neighbour of the file.
+                    let style = document.format_source(row, column).and_then(|(row, column)| raw.get(row, column)).map_or(0, |cell| cell.style);
+                    let format = self.format_of(formats, style);
                     if let Some(cell) = original
                         && show(&raw_value(Some(cell), &raw), format, locale, self.date1904).0 == *text
                     {
@@ -377,8 +379,8 @@ impl Model<'_> {
 
     /// The style of a cell of a sheet: the one the file gives it.
     fn style(&mut self, document: &Document, sheet: usize, row: u32, column: u32) -> usize {
-        let Some(origin) = document.row_origin(row as usize) else { return 0 };
-        self.raw(sheet).get(origin, column as usize).map_or(0, |cell| cell.style as usize)
+        let Some((row, column)) = document.format_source(row as usize, column as usize) else { return 0 };
+        self.raw(sheet).get(row, column).map_or(0, |cell| cell.style as usize)
     }
 
     fn format(&self, style: u32) -> &NumberFormat {

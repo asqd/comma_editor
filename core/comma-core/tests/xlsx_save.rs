@@ -283,3 +283,21 @@ fn a_typed_value_the_file_already_shows_keeps_the_file_value() {
     assert_eq!(rows(&sheet)[1], ["Coffee", "250,50 ₽", "25,0%", "01.01.2025", "plain"]);
     assert_eq!(sheet.cell_input(1, 1), None);
 }
+
+#[test]
+fn added_rows_and_columns_format_as_their_neighbours() {
+    let workbook = Workbook::from_bytes(formatted_book()).unwrap();
+    let mut sheet = workbook.read_sheet(0, &russian()).unwrap().document;
+    // A row under Tea and a column left of Share, as Excel formats them: as above and left.
+    sheet.insert_rows(2, 1).unwrap();
+    workbook.insert(&mut [(0, &mut sheet)], 0, comma_core::Axis::Columns, 2, 1).unwrap();
+    sheet.set_cell(2, 0, "Milk").unwrap();
+    sheet.set_cell(2, 1, "99").unwrap();
+    sheet.set_cell(2, 2, "5").unwrap();
+    sheet.set_cell(2, 4, "2026-10-01").unwrap();
+    workbook.recalculate(&mut [(0, &mut sheet)], 46000.0).unwrap();
+    assert_eq!(rows(&sheet)[2][..5], ["Milk", "99,00 ₽", "5,00 ₽", "", "01.10.2026"]);
+    let saved = workbook.to_bytes(&[(0, &sheet)]).unwrap();
+    let reopened = Workbook::from_bytes(saved).unwrap().read_sheet(0, &russian()).unwrap().document;
+    assert_eq!(rows(&reopened)[2][..5], ["Milk", "99,00 ₽", "5,00 ₽", "", "01.10.2026"]);
+}

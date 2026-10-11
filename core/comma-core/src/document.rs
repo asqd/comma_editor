@@ -395,6 +395,25 @@ impl Document {
         self.column_origins.get(column).filter(|&&origin| origin != NO_ORIGIN).map(|&origin| origin as usize)
     }
 
+    /// The cell of the file whose formatting a cell of a sheet takes: its own; in a row added
+    /// here, that of the nearest row above (below, at the top) that comes from the file, as
+    /// Excel formats inserted rows and extends a list; in a column inserted among the file's,
+    /// that of the nearest column to the left (right, at the left edge). Columns added after
+    /// the file's have no formatting. `None` when nothing gives one.
+    pub(crate) fn format_source(&self, row: usize, column: usize) -> Option<(usize, usize)> {
+        let rows = self.records.len();
+        let source_row = self
+            .row_origin(row)
+            .or_else(|| (0..row.min(rows)).rev().find_map(|above| self.row_origin(above)))
+            .or_else(|| (row + 1..rows).find_map(|below| self.row_origin(below)))?;
+        let columns = self.column_origins.len();
+        let source_column = self.column_origin(column).or_else(|| {
+            let right = (column + 1..columns).find_map(|right| self.column_origin(right))?;
+            (0..column.min(columns)).rev().find_map(|left| self.column_origin(left)).or(Some(right))
+        })?;
+        Some((source_row, source_column))
+    }
+
     /// Records a change that also moved columns: `origins` is where columns come from after it.
     pub(crate) fn commit_moving_columns(&mut self, splices: Vec<Splice>, columns_after: usize, origins: Vec<u32>) {
         self.commit(splices, columns_after, false);

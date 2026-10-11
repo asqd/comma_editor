@@ -213,7 +213,19 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, own: &str, document: &Docum
                 continue;
             }
             let had_formula = cell_span.is_some_and(|cell| has_formula_xml(&xml[cell.start..cell.end]));
-            let style = cell_span.and_then(|cell| attribute_value(&xml[cell.start..cell.tag_end], "s"));
+            // A cell new to the file in an added row or column takes the style of its
+            // neighbour of the file, as Excel formats inserted rows and columns.
+            let style = match cell_span {
+                Some(cell) => attribute_value(&xml[cell.start..cell.tag_end], "s"),
+                None => document
+                    .format_source(row, column)
+                    .filter(|&source| Some(source) != origin.zip(original))
+                    .and_then(|(source_row, source_column)| {
+                        let span = rows_by_index.get(&(source_row as u32))?;
+                        let cell = cell_spans(xml, span).into_iter().find(|cell| cell.column as usize == source_column)?;
+                        attribute_value(&xml[cell.start..cell.tag_end], "s")
+                    }),
+            };
             let format = style
                 .as_deref()
                 .and_then(|style| style.parse::<usize>().ok())

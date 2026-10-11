@@ -131,14 +131,14 @@ fn circular_and_unknown_formulas() {
     sales.set_cell(6, 0, "=B7+1").unwrap();
     sales.set_cell(6, 1, "=A7+1").unwrap();
     sales.set_cell(6, 2, "=NEWFUNCTION(1)").unwrap();
-    sales.set_cell(6, 3, "=TODAY()").unwrap();
+    sales.set_cell(6, 4, "=TODAY()").unwrap();
     let report = workbook.recalculate(&mut [(0, &mut sales)], NOW).unwrap();
     assert!(report.circular > 0);
     // Both cells of the circle show 0, as in Excel.
     assert_eq!((sales.cell(6, 0).unwrap(), sales.cell(6, 1).unwrap()), ("0".to_owned(), "0".to_owned()));
     assert_eq!(report.not_computed, 1);
     assert_eq!(sales.cell(6, 2).unwrap(), "");
-    assert_eq!(sales.cell(6, 3).unwrap(), "45658");
+    assert_eq!(sales.cell(6, 4).unwrap(), "45658");
 }
 
 #[test]
@@ -165,7 +165,8 @@ fn saving_writes_new_formulas_and_new_results() {
     let saved = workbook.to_bytes(&[(0, &sales)]).unwrap();
     let xml = sheet_xml(&saved, "xl/worksheets/sheet1.xml");
     assert!(xml.contains(r#"<c r="D2" s="1"><f>B2*C2</f><v>200</v></c>"#), "{xml}");
-    assert!(xml.contains(r#"<c r="D6"><f>D5/3</f><v>80</v></c>"#), "{xml}");
+    // A row added under the file's takes the style of the row above, as in Excel.
+    assert!(xml.contains(r#"<c r="D6" s="1"><f>D5/3</f><v>80</v></c>"#), "{xml}");
     // Rows nothing changed stay as they were.
     let original = sheet_xml(&book(), "xl/worksheets/sheet1.xml");
     let row = |xml: &str, number: u32| {
@@ -176,7 +177,7 @@ fn saving_writes_new_formulas_and_new_results() {
 
     let reopened = Workbook::from_bytes(saved).unwrap().read_sheet(0, &russian()).unwrap().document;
     assert_eq!(reopened.formula(5, 3).as_deref(), Some("D5/3"));
-    assert_eq!(reopened.cell(5, 3).unwrap(), "80");
+    assert_eq!(reopened.cell(5, 3).unwrap(), "80,00");
     assert_eq!(reopened.cell(4, 3).unwrap(), "240,00");
 }
 
