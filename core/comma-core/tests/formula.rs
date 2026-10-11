@@ -103,6 +103,13 @@ fn syntax_errors() {
     assert_eq!(compile_error(&document, "1 2"), FormulaErrorKind::UnexpectedText);
     assert_eq!(compile_error(&document, "(1 + 2"), FormulaErrorKind::UnexpectedEnd);
     assert_eq!(compile_error(&document, "1 + 2)"), FormulaErrorKind::UnexpectedText);
+    // A separator out of place is named as it was typed.
+    for (formula, separator) in [("{qty}; 0", ";"), ("{qty}, 0", ",")] {
+        match document.compile_formula(formula) {
+            Err(Error::Formula(error)) => assert_eq!(error.detail, separator, "{formula}"),
+            other => panic!("expected an error for {formula}, got {other:?}"),
+        }
+    }
 }
 
 #[test]

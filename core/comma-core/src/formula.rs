@@ -282,9 +282,16 @@ struct Parser<'a> {
     next: usize,
     end: usize,
     columns: &'a dyn Fn(&str) -> Option<usize>,
+    /// The formula's characters, to name a separator as it was typed: `,` or `;`.
+    text: Vec<char>,
 }
 
 impl Parser<'_> {
+    /// The separator typed at a position.
+    fn separator(&self, position: usize) -> String {
+        self.text.get(position).map_or_else(|| ",".to_owned(), char::to_string)
+    }
+
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.next).map(|(token, _)| token)
     }
@@ -346,7 +353,7 @@ impl Parser<'_> {
             }
             Token::Name(name) => self.call(name, position),
             Token::Close => Err(syntax(FormulaErrorKind::UnexpectedText, position, ")")),
-            Token::Comma => Err(syntax(FormulaErrorKind::UnexpectedText, position, ",")),
+            Token::Comma => Err(syntax(FormulaErrorKind::UnexpectedText, position, self.separator(position))),
             Token::Op(_) => Err(syntax(FormulaErrorKind::UnexpectedText, position, "operator")),
         }
     }
@@ -384,12 +391,12 @@ impl Formula {
     /// Compiles `text`; `columns` resolves a name in braces to a column index.
     pub(crate) fn compile(text: &str, columns: &dyn Fn(&str) -> Option<usize>) -> std::result::Result<Self, FormulaError> {
         let tokens = tokenize(text)?;
-        let mut parser = Parser { tokens, next: 0, end: text.chars().count(), columns };
+        let mut parser = Parser { tokens, next: 0, end: text.chars().count(), columns, text: text.chars().collect() };
         let expr = parser.expression(0)?;
         if let Some((token, position)) = parser.tokens.get(parser.next) {
             let text = match token {
                 Token::Close => ")".to_owned(),
-                Token::Comma => ",".to_owned(),
+                Token::Comma => parser.separator(*position),
                 _ => String::new(),
             };
             return Err(syntax(FormulaErrorKind::UnexpectedText, *position, text));
