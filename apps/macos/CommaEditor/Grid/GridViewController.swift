@@ -1098,7 +1098,7 @@ extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
         cell.identifier = identifier
         cell.wantsLayer = true
 
-        let field = NSTextField(labelWithString: "")
+        let field = GridTextField(labelWithString: "")
         field.translatesAutoresizingMaskIntoConstraints = false
         field.lineBreakMode = .byTruncatingTail
         field.cell?.usesSingleLineMode = true
@@ -1290,6 +1290,22 @@ extension GridViewController: GridTableViewInteraction {
 }
 
 /// A table cell with a text field, which gets a fixed height while text wraps.
+/// The text of a cell. A right click on it is the table's, for the menu of the cell; it would
+/// otherwise start editing and show the menu of the text. While editing, the text keeps its own.
+final class GridTextField: NSTextField {
+    override func rightMouseDown(with event: NSEvent) {
+        var view = superview
+        while let current = view, !(current is NSTableView) {
+            view = current.superview
+        }
+        if let table = view as? NSTableView, currentEditor() == nil {
+            table.rightMouseDown(with: event)
+        } else {
+            super.rightMouseDown(with: event)
+        }
+    }
+}
+
 final class GridCellView: NSTableCellView {
     var wrapHeight: NSLayoutConstraint?
     /// The cell holds a formula: a small corner mark, as spreadsheets mark notes.
