@@ -1,5 +1,6 @@
 //! Rectangular ranges of visible cells: copy, paste, fill and clear, each one undoable step.
 
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -91,9 +92,13 @@ impl Document {
     pub fn fill_range(&mut self, range: CellRange, value: &str) -> Result<usize> {
         self.check_range(&range)?;
         self.check_formulas([value])?;
+        // Cells a merged area hides stay empty: the area's first cell takes the value.
+        let hidden: HashSet<(usize, usize)> = self.hidden_cells(range.rows(), range.columns());
         let columns: Vec<usize> = range.columns().collect();
         let prepared = self
-            .cell_updates(range.rows(), &columns, &Progress::default(), |_, _, _| Some(value.to_owned()))
+            .cell_updates(range.rows(), &columns, &Progress::default(), |row, column, _| {
+                (!hidden.contains(&(row, column))).then(|| value.to_owned())
+            })
             .expect("nothing cancels it");
         Ok(self.apply_prepared(prepared).count)
     }
@@ -145,6 +150,17 @@ impl Document {
         if height == 0 || width == 0 {
             return Ok(None);
         }
+        // A value pasted into a cell a merged area hides is refused, as Excel refuses it.
+        for (offset, values) in grid.iter().enumerate() {
+            for (column_offset, value) in values.iter().enumerate() {
+                if !value.is_empty()
+                    && let Some(record) = self.visible_record(top + offset)
+                    && let Some((row, column)) = self.merged_into(record, left + column_offset)
+                {
+                    return Err(Error::MergedCell { row, column });
+                }
+            }
+        }
 
         let mut splices = Vec::new();
         let mut bottom = (top + height).min(visible);
@@ -176,6 +192,24 @@ impl Document {
     /// Applies `value(row, column, current)` to the cells of visible `rows` × `columns`, row by
     /// row (`None` keeps a cell), and records everything, with `splices` already applied, as one
     /// undoable step.
+    /// Visible rows and columns of cells that merged areas hide.
+    fn hidden_cells(&self, rows: Range<usize>, columns: Range<usize>) -> HashSet<(usize, usize)> {
+        let Some(sheet) = &self.sheet else { return HashSet::new() };
+        if sheet.merged.is_empty() {
+            return HashSet::new();
+        }
+        let mut hidden = HashSet::new();
+        for row in rows {
+            let Some(record) = self.visible_record(row) else { continue };
+            for column in columns.clone() {
+                if self.merged_into(record, column).is_some() {
+                    hidden.insert((row, column));
+                }
+            }
+        }
+        hidden
+    }
+
     /// In a sheet of a workbook `=…` is a formula: values that are formulas that do not read
     /// are refused before anything changes, as typing one is.
     fn check_formulas<'a>(&self, values: impl IntoIterator<Item = &'a str>) -> Result<()> {

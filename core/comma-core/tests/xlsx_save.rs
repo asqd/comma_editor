@@ -301,3 +301,24 @@ fn added_rows_and_columns_format_as_their_neighbours() {
     let reopened = Workbook::from_bytes(saved).unwrap().read_sheet(0, &russian()).unwrap().document;
     assert_eq!(rows(&reopened)[2][..5], ["Milk", "99,00 ₽", "5,00 ₽", "", "01.10.2026"]);
 }
+
+#[test]
+fn cells_a_merged_area_hides_take_no_values() {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.merge_range(0, 0, 0, 2, "Total", &Format::new()).unwrap();
+    sheet.write_number(1, 0, 1).unwrap();
+    sheet.write_number(1, 3, 2).unwrap();
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    let mut document = workbook.read_sheet(0, &russian()).unwrap().document;
+    assert_eq!(document.merged_into(0, 1), Some((0, 0)));
+    assert_eq!(document.merged_into(0, 0), None);
+    assert!(matches!(document.set_cell(0, 2, "x"), Err(Error::MergedCell { row: 0, column: 0 })));
+    assert!(matches!(document.paste(0, 1, &[vec!["y".to_owned()]]), Err(Error::MergedCell { .. })));
+    // Filling the whole area writes its first cell only.
+    document.fill_range(comma_core::CellRange { top: 0, left: 0, bottom: 0, right: 2 }, "Sum").unwrap();
+    assert_eq!((document.cell(0, 0).unwrap(), document.cell(0, 1).unwrap()), ("Sum".to_owned(), String::new()));
+    // Rows inserted above move the area with them.
+    workbook.insert(&mut [(0, &mut document)], 0, comma_core::Axis::Rows, 0, 1).unwrap();
+    assert_eq!(document.merged_into(1, 2), Some((1, 0)));
+}

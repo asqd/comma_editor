@@ -48,6 +48,11 @@ pub enum Error {
     #[error("{0}")]
     SheetStructure(SheetStructure),
 
+    /// A cell hidden by a merged area of a sheet cannot hold a value; the area's first cell,
+    /// at `row` and `column`, does.
+    #[error("the cell is inside a merged area, whose value is in its first cell")]
+    MergedCell { row: usize, column: usize },
+
     /// A step of a recipe failed; `step` counts from 0.
     #[error("step {}: {source}", step + 1)]
     Recipe { step: usize, source: Box<Error> },

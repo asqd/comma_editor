@@ -814,6 +814,12 @@ class CSVDocument: NSDocument {
                 userInfo[NSLocalizedDescriptionKey] = L("Columns of a workbook cannot be inserted, deleted or moved yet.")
                 userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Values in the columns can be changed. To change the columns, export the sheet as CSV.")
             }
+        case .MergedCell(let row, let column):
+            userInfo[NSLocalizedDescriptionKey] = L("This cell is inside a merged area.")
+            userInfo[NSLocalizedRecoverySuggestionErrorKey] = L(
+                "A merged area shows one value, kept in its first cell, %@. Type the value there.",
+                GridViewController.columnLetter(Int(column)) + String(row + 1)
+            )
         case .Workbook(let problem):
             userInfo[NSLocalizedDescriptionKey] = L("The Excel workbook cannot be read.")
             userInfo[NSLocalizedRecoverySuggestionErrorKey] = describe(problem)

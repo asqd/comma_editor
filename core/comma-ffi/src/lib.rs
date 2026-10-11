@@ -52,6 +52,10 @@ pub enum CoreError {
     /// A change to rows (or else columns) a sheet of a workbook cannot take and still be saved.
     #[error("the rows or columns of this sheet cannot change")]
     SheetStructure { rows: bool },
+    /// The cell is hidden by a merged area; its value is in the area's first cell, by row of
+    /// the file and column.
+    #[error("the cell is inside a merged area")]
+    MergedCell { row: u64, column: u64 },
 }
 
 /// Why an Excel workbook or one of its sheets cannot be read.
@@ -123,6 +127,7 @@ impl From<core::Error> for CoreError {
             core::Error::InvalidRecipe(message) => Self::InvalidRecipe { message },
             core::Error::Workbook(problem) => Self::Workbook { problem: problem.into() },
             core::Error::SheetStructure(change) => Self::SheetStructure { rows: change == core::SheetStructure::RowsFixed },
+            core::Error::MergedCell { row, column } => Self::MergedCell { row: row as u64, column: column as u64 },
             core::Error::Recipe { step, source } => {
                 let column = match source.as_ref() {
                     core::Error::UnknownColumn(column) => Some(column.clone()),
@@ -1258,6 +1263,11 @@ impl CoreDocument {
     /// The formula of a cell of a sheet, without its leading `=`.
     pub fn formula(&self, row: u64, column: u64) -> Option<String> {
         self.lock().formula(row as usize, column as usize)
+    }
+
+    /// The first cell, by row of the file and column, of the merged area that hides a cell.
+    pub fn merged_into(&self, row: u64, column: u64) -> Option<Vec<u64>> {
+        self.lock().merged_into(row as usize, column as usize).map(|(row, column)| vec![row as u64, column as u64])
     }
 
     /// What was typed into a cell of a sheet that shows it in its number format: `300` for a

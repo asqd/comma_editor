@@ -326,6 +326,8 @@
 "Unfreeze Columns" = "Снять закрепление колонок";
 "Freeze Rows Through This One" = "Закрепить строки до этой";
 "Unfreeze Rows" = "Снять закрепление строк";
+"This cell is inside a merged area." = "Эта ячейка внутри объединённой области.";
+"A merged area shows one value, kept in its first cell, %@. Type the value there." = "Объединённая область показывает одно значение — оно хранится в её первой ячейке, %@. Введите значение туда.";
 "Hide Column" = "Скрыть колонку";
 "Show All Columns" = "Показать все колонки";
 "Show All Columns (%@ hidden)" = "Показать все колонки (скрыто: %@)";

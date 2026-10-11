@@ -205,6 +205,8 @@ pub(crate) struct SheetSource {
     /// Shared by the sheets of a workbook: a formula was entered, which may refer to rows of
     /// any sheet, so rows no longer move.
     pub formulas_entered: Arc<std::sync::atomic::AtomicBool>,
+    /// Merged areas, in rows and columns of the file: each shows only its first cell.
+    pub merged: Vec<crate::xlsx::SheetRange>,
 }
 
 /// Summary of a document for the UI. Encoding, BOM, delimiter and line endings are those the
@@ -482,6 +484,22 @@ impl Document {
         if self.has_view() {
             self.refresh_view();
         }
+    }
+
+    /// The first cell of the merged area that hides a cell of a sheet, if one does: an area
+    /// shows only its first cell, which holds its value, as in Excel.
+    pub fn merged_into(&self, row: usize, column: usize) -> Option<(usize, usize)> {
+        let sheet = self.sheet.as_ref()?;
+        let (origin_row, origin_column) = (self.row_origin(row)?, self.column_origin(column)?);
+        let area = sheet.merged.iter().find(|area| {
+            (area.top..=area.bottom).contains(&origin_row)
+                && (area.left..=area.right).contains(&origin_column)
+                && (origin_row, origin_column) != (area.top, area.left)
+        })?;
+        // Where the area's first cell is now, rows or columns having moved.
+        let top = (0..self.records.len()).find(|&row| self.row_origin(row) == Some(area.top))?;
+        let left = (0..self.column_count).find(|&column| self.column_origin(column) == Some(area.left))?;
+        Some((top, left))
     }
 
     /// What was typed into a cell of a workbook that shows it in its number format: `300` for
@@ -957,6 +975,13 @@ impl Document {
     pub fn set_cell(&mut self, row: usize, column: usize, value: &str) -> Result<bool> {
         self.check_row(row)?;
         self.check_column(column)?;
+        if let Some((top, left)) = self.merged_into(row, column) {
+            // The hidden cell is empty and stays so; a value goes to the area's first cell.
+            if value.is_empty() {
+                return Ok(false);
+            }
+            return Err(Error::MergedCell { row: top, column: left });
+        }
         // `=…` in a sheet of a workbook is a formula, kept the way the file writes it.
         let formula = match (&self.sheet, value.strip_prefix('=')) {
             (Some(sheet), Some(text)) if !text.trim().is_empty() => {

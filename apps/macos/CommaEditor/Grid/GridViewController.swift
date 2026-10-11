@@ -776,6 +776,14 @@ final class GridViewController: NSViewController {
             NSSound.beep()
             return
         }
+        // A cell a merged area hides: the area's first cell is edited instead, as in Excel.
+        if info.isSheet, let fileRow = cachedRow(row)?.fileRow,
+           let first = core.mergedInto(row: UInt64(fileRow), column: UInt64(activeColumn)),
+           let firstRow = core.visibleIndex(row: first[0]).map({ Int($0) }) {
+            selectCell(row: firstRow, column: Int(first[1]))
+            editActiveCell(typing: text)
+            return
+        }
         if Self.isMultiline(value(row: row, column: activeColumn)) {
             presentCellEditor(row: row, column: activeColumn)
             return

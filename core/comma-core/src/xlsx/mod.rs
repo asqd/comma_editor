@@ -314,6 +314,7 @@ impl Workbook {
                     rows: rows.len(),
                     locale: locale.clone(),
                     formulas_entered: Arc::clone(&self.formulas_entered),
+                    merged: layout.merged.clone(),
                 };
                 return Ok(Some(Sheet { name: entry.name.clone(), document: Document::from_sheet(rows, source), layout }));
             }
@@ -350,6 +351,7 @@ impl Workbook {
                     rows,
                     locale: locale.clone(),
                     formulas_entered: Arc::clone(&self.formulas_entered),
+                    merged: content.layout.merged.clone(),
                 },
             ),
             layout: content.layout,
