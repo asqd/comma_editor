@@ -322,3 +322,6 @@ kbd {
   .strip .r:not(.split), .strip .split i { font-size: 0; }
   .foot { flex-direction: column; align-items: flex-start; }
 }
+
+.bench sup, .footnote sup { color: var(--comma); font-size: .75em; margin-left: 1px; }
+.footnote { color: var(--ink-3); max-width: 46em; margin: 14px 0 0; font-size: 13.5px; }

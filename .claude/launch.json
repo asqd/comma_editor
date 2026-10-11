@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "site",
-      "runtimeExecutable": "/usr/bin/python3",
-      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "/Users/asqd/Documents/workplace/comma_editor/site"],
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": ["-c", "cd /Users/asqd/Documents/workplace/comma_editor/site && exec /usr/bin/python3 -m http.server 8765"],
       "port": 8765
     }
   ]
