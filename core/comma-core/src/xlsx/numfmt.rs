@@ -199,6 +199,11 @@ impl NumberFormat {
         self.numbers[0].kind == Kind::Date
     }
 
+    /// Whether numbers show as percentages: `0%`, `0.0%`.
+    pub(crate) fn is_percent(&self) -> bool {
+        self.numbers[0].kind != Kind::Date && self.numbers[0].tokens.contains(&Token::Percent)
+    }
+
     pub(crate) fn format_text(&self, text: &str) -> String {
         let Some(section) = &self.text else {
             return text.to_owned();

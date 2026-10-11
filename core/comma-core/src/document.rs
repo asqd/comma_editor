@@ -53,6 +53,16 @@ pub(crate) enum Field {
     Text(String),
     /// A cell of a workbook computed by a formula.
     Formula(Box<FormulaField>),
+    /// A value typed into a cell of a workbook, shown in the cell's number format.
+    Entered(Box<EnteredField>),
+}
+
+/// A value typed into a cell of a workbook: `300` in a money cell shows `300,00 ₽`. What was
+/// typed is kept, and saving and formulas read it exactly, not as shown rounded.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EnteredField {
+    pub input: String,
+    pub shown: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -155,6 +165,7 @@ impl Record {
                     .iter()
                     .map(|field| match field {
                         Field::Text(text) => text.capacity(),
+                        Field::Entered(cell) => size_of::<EnteredField>() + cell.input.capacity() + cell.shown.capacity(),
                         Field::Raw { .. } => 0,
                         Field::Formula(cell) => {
                             size_of::<FormulaField>()
@@ -423,6 +434,39 @@ impl Document {
         self.generation += 1;
         if self.has_view() {
             self.refresh_view();
+        }
+    }
+
+    /// Shows values typed into cells as their number formats show them: `(row, column, shown)`.
+    /// What was typed stays, for saving and for formulas. Not an edit of its own.
+    pub(crate) fn set_entered_shown(&mut self, shown: Vec<(usize, usize, String)>) {
+        if shown.is_empty() {
+            return;
+        }
+        let records = Arc::make_mut(&mut self.records);
+        for (row, column, text) in shown {
+            let Some(Record::Modified(modified)) = records.get_mut(row) else { continue };
+            if let Some(field) = modified.fields.get_mut(column)
+                && let Field::Text(input) = field
+            {
+                *field = Field::Entered(Box::new(EnteredField { input: std::mem::take(input), shown: text }));
+            }
+        }
+        self.generation += 1;
+        if self.has_view() {
+            self.refresh_view();
+        }
+    }
+
+    /// What was typed into a cell of a workbook that shows it in its number format: `300` for
+    /// a cell that shows `300,00 ₽`. `None` for other cells, which hold what they show.
+    pub fn cell_input(&self, row: usize, column: usize) -> Option<String> {
+        let RecordRef::Modified(modified) = self.records.get(row)?.get() else {
+            return None;
+        };
+        match modified.fields.get(column)? {
+            Field::Entered(cell) => Some(cell.input.clone()),
+            _ => None,
         }
     }
 
@@ -1266,6 +1310,7 @@ impl Document {
         match field {
             Field::Raw { start, end } => self.raw_value(*start, *end),
             Field::Text(text) => Cow::Borrowed(text),
+            Field::Entered(cell) => Cow::Borrowed(&cell.shown),
             Field::Formula(cell) => Cow::Borrowed(&cell.value),
         }
     }

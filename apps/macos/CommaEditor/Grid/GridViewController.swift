@@ -522,6 +522,12 @@ final class GridViewController: NSViewController {
     }
 
     /// The formula of a visible cell of a sheet, with its `=`.
+    /// What was typed into a sheet cell shown in its number format, for editing it again.
+    func input(row: Int, column: Int) -> String? {
+        guard info.isSheet, let fileRow = cachedRow(row)?.fileRow else { return nil }
+        return core.cellInput(row: UInt64(fileRow), column: UInt64(column))
+    }
+
     func formula(row: Int, column: Int) -> String? {
         guard let cached = cachedRow(row), cached.formulaColumns.contains(column),
               let formula = core.formula(row: UInt64(cached.fileRow), column: UInt64(column)) else { return nil }
@@ -782,9 +788,11 @@ final class GridViewController: NSViewController {
         }
         table.editColumn(index, row: row, with: nil, select: true)
         // The editor starts from the real value, not from the marks of invisible characters;
-        // for a cell with a formula, from the formula.
+        // for a cell with a formula, from the formula; for a value shown in the cell's number
+        // format, from what was typed.
         if let editor = view.window?.firstResponder as? NSTextView, editor.isFieldEditor {
-            editor.string = formula(row: row, column: activeColumn) ?? value(row: row, column: activeColumn)
+            editor.string = formula(row: row, column: activeColumn) ?? input(row: row, column: activeColumn)
+                ?? value(row: row, column: activeColumn)
             editor.selectAll(nil)
         }
         if let text, let editor = view.window?.firstResponder as? NSTextView {
@@ -1163,7 +1171,8 @@ extension GridViewController: NSTextFieldDelegate {
         guard row >= 0, let column = dataColumn(in: table, at: table.column(for: field)) else { return }
 
         let newValue = field.stringValue
-        if newValue != value(row: row, column: column) {
+        // Left as it was, shown or as typed: no change.
+        if newValue != value(row: row, column: column), newValue != input(row: row, column: column) {
             document.setCell(visibleRow: row, column: column, value: newValue)
         } else if showsInvisibles {
             reloadRows(IndexSet(integer: row))

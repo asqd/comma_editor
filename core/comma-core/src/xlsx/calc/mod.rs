@@ -85,9 +85,11 @@ impl Workbook {
             let touched = state.touched.entry(*index).or_default();
             touched.extend((0..document.row_count()).filter(|&row| document.row_edited(row)).map(|row| row as u32));
         }
+        let formats = styles.formats(&locale);
+        let mut shown_sheets = self.show_entered(&mut state, sheets, &formats, &locale);
         let has_formulas = sheets.iter().any(|(_, document)| document.formula_cells().next().is_some());
         if !has_formulas {
-            return Ok(Recalculation::default());
+            return Ok(Recalculation { sheets: shown_sheets, ..Recalculation::default() });
         }
 
         // Every formula of the sheets, read once per text.
@@ -143,10 +145,9 @@ impl Workbook {
             }
         }
         if !marked.iter().any(|marked| *marked) {
-            return Ok(Recalculation::default());
+            return Ok(Recalculation { sheets: shown_sheets, ..Recalculation::default() });
         }
 
-        let formats = styles.formats(&locale);
         let documents: HashMap<usize, &Document> = sheets.iter().map(|(index, document)| (*index, &**document)).collect();
         let positions: HashMap<(usize, u32, u32), usize> = formulas
             .iter()
@@ -219,8 +220,74 @@ impl Workbook {
                 report.sheets.push(*index);
             }
         }
+        report.sheets.append(&mut shown_sheets);
         report.sheets.sort_unstable();
+        report.sheets.dedup();
         Ok(report)
+    }
+
+    /// Values typed into edited rows, shown as the number formats of their cells show them:
+    /// `300` in a money cell as `300,00 ₽`, `2026-10-01` in a date cell as `01.10.2026`. A cell
+    /// that shows what the file has keeps it. Returns the sheets whose cells changed.
+    fn show_entered(
+        &self,
+        state: &mut CalcState,
+        sheets: &mut [(usize, &mut Document)],
+        formats: &[Arc<NumberFormat>],
+        locale: &DisplayLocale,
+    ) -> Vec<usize> {
+        let mut changed = Vec::new();
+        for (index, document) in sheets.iter_mut() {
+            let rows: Vec<usize> = (0..document.row_count()).filter(|&row| document.row_edited(row)).collect();
+            if rows.is_empty() {
+                continue;
+            }
+            let raw = match state.raw.get(index) {
+                Some(raw) => Arc::clone(raw),
+                None => {
+                    // Without the file's values, typed values show as typed.
+                    let Ok(raw) = self.read_raw(*index, locale) else { continue };
+                    let raw = Arc::new(raw);
+                    state.raw.insert(*index, Arc::clone(&raw));
+                    raw
+                }
+            };
+            let mut shown = Vec::new();
+            for row in rows {
+                let origin = document.row_origin(row);
+                for (column, field) in document.row_fields(row).iter().enumerate() {
+                    let Field::Text(text) = field else { continue };
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let original = origin.zip(document.column_origin(column)).and_then(|(row, column)| raw.get(row, column));
+                    let format = self.format_of(formats, original.map_or(0, |cell| cell.style));
+                    if let Some(cell) = original
+                        && show(&raw_value(Some(cell), &raw), format, locale, self.date1904).0 == *text
+                    {
+                        continue;
+                    }
+                    let value = match super::save::typed(text, format, locale, self.date1904) {
+                        super::save::Typed::Number(number) => Value::Number(number),
+                        super::save::Typed::Bool(truth) => Value::Bool(truth),
+                        super::save::Typed::Text(_) => continue,
+                    };
+                    let (formatted, _) = show(&value, format, locale, self.date1904);
+                    if formatted != *text {
+                        shown.push((row, column, formatted));
+                    }
+                }
+            }
+            if !shown.is_empty() {
+                document.set_entered_shown(shown);
+                changed.push(*index);
+            }
+        }
+        changed
+    }
+
+    fn format_of<'a>(&self, formats: &'a [Arc<NumberFormat>], style: u32) -> &'a NumberFormat {
+        formats.get(style as usize).unwrap_or(&formats[0])
     }
 
     /// The values a sheet stores, with the style of each cell.
@@ -342,6 +409,7 @@ impl Cells for Model<'_> {
         }
         let text = match field {
             Some(Field::Text(text)) => text.as_str(),
+            Some(Field::Entered(cell)) => cell.input.as_str(),
             _ => "",
         };
         if text.is_empty() {

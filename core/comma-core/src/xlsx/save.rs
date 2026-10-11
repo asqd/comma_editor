@@ -235,7 +235,7 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, own: &str, document: &Docum
                 continue;
             }
             formulas_changed |= had_formula;
-            let text = now.map(value).unwrap_or_default();
+            let text = now.map(input).unwrap_or_default();
             body.push_str(&write_cell(&prefix, &reference, style.as_deref(), text, format, context.locale, context.date1904));
         }
         body.push_str(&format!("</{prefix}row>"));
@@ -652,11 +652,21 @@ fn push_moved_row(body: &mut String, xml: &str, span: &RowSpan, row: u32, prefix
     body.push_str(&format!("</{prefix}row>"));
 }
 
+/// What a cell shows.
 fn value(field: &Field) -> &str {
     match field {
         Field::Text(text) => text,
+        Field::Entered(cell) => &cell.shown,
         Field::Formula(cell) => &cell.value,
         Field::Raw { .. } => "",
+    }
+}
+
+/// What a cell holds: a value typed in is written as typed, not as shown rounded.
+fn input(field: &Field) -> &str {
+    match field {
+        Field::Entered(cell) => &cell.input,
+        field => value(field),
     }
 }
 
@@ -806,6 +816,13 @@ pub(crate) fn typed<'a>(text: &'a str, format: &NumberFormat, locale: &DisplayLo
     ];
     if let Some(number) = candidates.into_iter().flatten().find(|&number| shows(number)) {
         return Typed::Number(number);
+    }
+    // A percent cell takes a number typed without % as Excel does: 10 and 0,1 are both 10 %.
+    if format.is_percent()
+        && !trimmed.contains('%')
+        && let Some(number) = plain_number(trimmed, locale)
+    {
+        return Typed::Number(if number.abs() >= 1.0 { number / 100.0 } else { number });
     }
     if let Some(number) = plain_number(trimmed, locale) {
         return Typed::Number(number);

@@ -1260,6 +1260,12 @@ impl CoreDocument {
         self.lock().formula(row as usize, column as usize)
     }
 
+    /// What was typed into a cell of a sheet that shows it in its number format: `300` for a
+    /// cell that shows `300,00 ₽`; `None` for cells that hold what they show.
+    pub fn cell_input(&self, row: u64, column: u64) -> Option<String> {
+        self.lock().cell_input(row as usize, column as usize)
+    }
+
     /// Columns with a formula in each of up to `count` visible rows from `start`, as
     /// `visible_rows` returns them.
     pub fn visible_formula_columns(&self, start: u64, count: u64) -> Vec<Vec<u64>> {

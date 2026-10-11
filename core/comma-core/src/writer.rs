@@ -142,7 +142,7 @@ impl Document {
             }
             match field {
                 Field::Raw { start, end } => out.write_all(&self.buf[*start..*end])?,
-                Field::Text(_) | Field::Formula(_) => {
+                Field::Text(_) | Field::Entered(_) | Field::Formula(_) => {
                     let text = &self.field_value(field);
                     let bytes = encoding
                         .encode(text)
@@ -265,7 +265,7 @@ impl Document {
                     }
                     match field {
                         Field::Raw { start, end } => out.push_str(&encoding.decode(&self.buf[*start..*end])),
-                        Field::Text(_) | Field::Formula(_) => {
+                        Field::Text(_) | Field::Entered(_) | Field::Formula(_) => {
                             self.push_quoted(out, &self.field_value(field), self.dialect.delimiter)
                         }
                     }

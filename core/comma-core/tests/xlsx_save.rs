@@ -234,3 +234,52 @@ fn a_formula_typed_over_takes_the_calculation_chain_away() {
     assert!(!text(&saved, "[Content_Types].xml").contains("calcChain"));
     assert!(!text(&saved, "xl/_rels/workbook.xml.rels").contains("calcChain"));
 }
+
+/// A book with a money, a percent and a date column, as people format them.
+fn formatted_book() -> Vec<u8> {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let money = Format::new().set_num_format("#,##0.00\\ \"₽\"");
+    let percent = Format::new().set_num_format("0.0%");
+    let date = Format::new().set_num_format("dd.mm.yyyy");
+    let sheet = workbook.add_worksheet();
+    sheet.write_row(0, 0, ["Item", "Price", "Share", "Day", "Note"]).unwrap();
+    sheet.write_string(1, 0, "Tea").unwrap();
+    sheet.write_number_with_format(1, 1, 250.5, &money).unwrap();
+    sheet.write_number_with_format(1, 2, 0.25, &percent).unwrap();
+    sheet.write_number_with_format(1, 3, 45658.0, &date).unwrap();
+    sheet.write_string(1, 4, "plain").unwrap();
+    workbook.save_to_buffer().unwrap()
+}
+
+#[test]
+fn typed_values_show_in_the_cell_format_and_save_as_typed() {
+    let workbook = Workbook::from_bytes(formatted_book()).unwrap();
+    let mut sheet = workbook.read_sheet(0, &russian()).unwrap().document;
+    sheet.set_cell(1, 1, "1250,555").unwrap();
+    sheet.set_cell(1, 2, "10").unwrap();
+    sheet.set_cell(1, 3, "2026-10-01").unwrap();
+    sheet.set_cell(1, 4, "007").unwrap();
+    let report = workbook.recalculate(&mut [(0, &mut sheet)], 46000.0).unwrap();
+    assert_eq!(report.sheets, vec![0]);
+    assert_eq!(rows(&sheet)[1], ["Tea", "1\u{a0}250,56 ₽", "10,0%", "01.10.2026", "007"]);
+    // What was typed stays for editing, and the file gets it, not the rounded value.
+    assert_eq!(sheet.cell_input(1, 1).as_deref(), Some("1250,555"));
+    assert_eq!(sheet.cell_input(1, 4), None);
+    let saved = workbook.to_bytes(&[(0, &sheet)]).unwrap();
+    let xml = text(&saved, "xl/worksheets/sheet1.xml");
+    assert!(xml.contains("<v>1250.555</v>"), "{xml}");
+    assert!(xml.contains("<v>0.1</v>"), "{xml}");
+    let reopened = Workbook::from_bytes(saved).unwrap().read_sheet(0, &russian()).unwrap().document;
+    assert_eq!(rows(&reopened)[1], ["Tea", "1\u{a0}250,56 ₽", "10,0%", "01.10.2026", "007"]);
+}
+
+#[test]
+fn a_typed_value_the_file_already_shows_keeps_the_file_value() {
+    let workbook = Workbook::from_bytes(formatted_book()).unwrap();
+    let mut sheet = workbook.read_sheet(0, &russian()).unwrap().document;
+    // The row is edited; its other cells still show what the file has.
+    sheet.set_cell(1, 0, "Coffee").unwrap();
+    workbook.recalculate(&mut [(0, &mut sheet)], 46000.0).unwrap();
+    assert_eq!(rows(&sheet)[1], ["Coffee", "250,50 ₽", "25,0%", "01.01.2025", "plain"]);
+    assert_eq!(sheet.cell_input(1, 1), None);
+}
