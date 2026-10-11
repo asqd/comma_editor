@@ -190,6 +190,17 @@ extension GridViewController {
 
     // MARK: Commands
 
+    /// ⇧⌘S is Save As for a workbook, as in apps whose documents are saved by hand: AppKit
+    /// takes Duplicate, which has the shortcut, out of the menu of such documents.
+    func performShortcut(_ event: NSEvent) -> Bool {
+        guard let workbook, !workbook.isLegacyFormat, view.window?.attachedSheet == nil,
+              event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
+              // The S key in any keyboard layout, as the menu matches shortcuts.
+              event.keyCode == 1 || event.charactersIgnoringModifiers?.lowercased() == "s" else { return false }
+        workbook.saveAs(nil)
+        return true
+    }
+
     @objc func chooseSheetMode(_ sender: NSSegmentedControl) {
         guard (sender.selectedSegment == 1) != info.hasHeader else { return }
         guard !document.isBusy else {

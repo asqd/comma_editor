@@ -99,6 +99,8 @@ final class GridViewController: NSViewController {
     let busyLabel = NSTextField(labelWithString: "")
     let busyCancel = NSButton()
     private var changeObserver: NSObjectProtocol?
+    /// Sees ⇧⌘S before the menu does, for a workbook; see `performShortcut`.
+    private var shortcutMonitor: Any?
     /// Tabs of the sheets of a workbook, above the status bar.
     let sheetTabs = SheetTabsView()
     /// Beside the tabs: a workbook shown as Excel shows it, or in CSV mode.
@@ -149,6 +151,9 @@ final class GridViewController: NSViewController {
     deinit {
         if let changeObserver {
             NotificationCenter.default.removeObserver(changeObserver)
+        }
+        if let shortcutMonitor {
+            NSEvent.removeMonitor(shortcutMonitor)
         }
     }
 
@@ -333,6 +338,12 @@ final class GridViewController: NSViewController {
             selectCell(row: 0, column: 0)
         }
         checkDetection()
+        if shortcutMonitor == nil, workbook != nil {
+            shortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, event.window === self.view.window, self.performShortcut(event) else { return event }
+                return nil
+            }
+        }
         #if DEBUG
         DebugScript.run(on: self)
         #endif
