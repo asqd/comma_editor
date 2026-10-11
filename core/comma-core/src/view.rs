@@ -303,7 +303,7 @@ const CURRENCIES: &[&str] = &[
 ];
 
 /// The text without a currency sign or word at its start or end.
-fn strip_currency(text: &str) -> Option<&str> {
+pub(crate) fn strip_currency(text: &str) -> Option<&str> {
     for currency in CURRENCIES {
         if let Some(start) = text.len().checked_sub(currency.len())
             && text.is_char_boundary(start)

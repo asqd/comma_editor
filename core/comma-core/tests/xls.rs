@@ -87,3 +87,19 @@ fn compound_files_that_are_not_workbooks_say_so() {
     cut.truncate(4096);
     assert!(Workbook::from_bytes(cut).is_err());
 }
+
+#[test]
+fn a_sheet_exports_to_xlsx_with_its_values_and_formats() {
+    let workbook = Workbook::from_bytes(SALES.to_vec()).unwrap();
+    let document = workbook.read_sheet(0, &russian()).unwrap().document;
+    let bytes = document.export(comma_core::ExportFormat::Xlsx, None, "Продажи", false).unwrap();
+    let exported = Workbook::from_bytes(bytes.clone()).unwrap().read_sheet(0, &russian()).unwrap().document;
+    // Shown as Excel shows it: no row of column letters on top, the same values.
+    assert_eq!(rows(&exported)[..3], rows(&document)[..3]);
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    let mut sheet = String::new();
+    std::io::Read::read_to_string(&mut archive.by_name("xl/worksheets/sheet1.xml").unwrap(), &mut sheet).unwrap();
+    // Numbers stay numbers, the price in its money format.
+    assert!(sheet.contains(r#"<c r="B2" s="1"><v>250.5</v></c>"#), "{sheet}");
+    assert!(!sheet.contains("<pane"), "{sheet}");
+}
