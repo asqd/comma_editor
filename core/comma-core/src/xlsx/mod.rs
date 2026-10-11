@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use quick_xml::events::Event;
 
-pub use calc::Recalculation;
+pub use calc::{Recalculation, localize_formula};
 pub use structure::Axis;
 pub(crate) use calc::normalize as normalize_formula;
 pub(crate) use refs::shift_formula;

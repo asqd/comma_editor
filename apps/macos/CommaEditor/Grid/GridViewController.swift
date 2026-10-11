@@ -500,8 +500,16 @@ final class GridViewController: NSViewController {
 
     /// The formula of a visible cell of a sheet, with its `=`.
     func formula(row: Int, column: Int) -> String? {
-        guard let cached = cachedRow(row), cached.formulaColumns.contains(column) else { return nil }
-        return core.formula(row: UInt64(cached.fileRow), column: UInt64(column)).map { "=" + $0 }
+        guard let cached = cachedRow(row), cached.formulaColumns.contains(column),
+              let formula = core.formula(row: UInt64(cached.fileRow), column: UInt64(column)) else { return nil }
+        return "=" + Self.shownFormula(formula)
+    }
+
+    /// A formula as Excel shows it on this Mac: with `;` and `1,5` where numbers have a decimal
+    /// comma, and Russian function names in the Russian app. Typing it back reads either way.
+    static func shownFormula(_ formula: String) -> String {
+        guard Locale.current.decimalSeparator == "," else { return formula }
+        return localizeFormula(formula: formula, russianNames: Bundle.main.preferredLocalizations.first == "ru")
     }
 
     /// Rows fetched for the previous table go when another one is shown.

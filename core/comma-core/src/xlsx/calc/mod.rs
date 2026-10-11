@@ -24,6 +24,11 @@ use crate::document::{Computed, Document, Field, FormulaField};
 use crate::error::Result;
 use crate::formula::FormulaError;
 
+/// A formula as Excel shows it with a decimal comma, and with Russian names when asked.
+pub fn localize_formula(formula: &str, russian_names: bool) -> String {
+    parse::localize(formula, russian_names)
+}
+
 /// A formula as a person typed it after `=`, written the way files keep it.
 pub(crate) fn normalize(text: &str) -> std::result::Result<String, FormulaError> {
     parse::normalize(text)

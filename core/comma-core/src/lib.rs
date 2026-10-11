@@ -49,5 +49,5 @@ pub use writer::SaveFormat;
 pub use xlsx::{
     Axis, ColumnLayout, DisplayLocale, Recalculation, Sheet, SheetEntry, SheetKind, SheetLayout, SheetRange, SheetVisibility,
     Workbook, WorkbookFormat,
-    cell_name, column_letters,
+    cell_name, column_letters, localize_formula,
 };

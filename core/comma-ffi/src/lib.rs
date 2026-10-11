@@ -303,6 +303,13 @@ pub fn preview_file(
     })
 }
 
+/// A formula of a workbook as Excel shows it where numbers have a decimal comma (`;` between
+/// arguments, `1,5`), with Russian function names when `russian_names`.
+#[uniffi::export]
+pub fn localize_formula(formula: String, russian_names: bool) -> String {
+    core::localize_formula(&formula, russian_names)
+}
+
 /// The text read in the right encoding, if it looks garbled.
 #[uniffi::export]
 pub fn fix_garbled(text: String) -> Option<String> {

@@ -609,6 +609,40 @@ pub(crate) fn normalize(input: &str) -> Result<String, FormulaError> {
 
 /// A function name as files keep it: English, upper case, with `_xlfn.` for the functions
 /// newer than Excel 2007 that need it.
+/// A formula as Excel shows it where numbers have a decimal comma: `;` between arguments and
+/// `1,5`; with `names`, also Russian function names and ИСТИНА/ЛОЖЬ, as Russian Excel shows
+/// them. `normalize` reads it back. A formula it cannot read stays as it is.
+pub(crate) fn localize(formula: &str, names: bool) -> String {
+    let Ok(tokens) = tokenize(formula, ',', '.') else {
+        return formula.to_owned();
+    };
+    let chars: Vec<char> = formula.chars().collect();
+    let mut out = String::new();
+    for (index, (token, start)) in tokens.iter().enumerate() {
+        let end = tokens.get(index + 1).map_or(chars.len(), |(_, next)| *next);
+        let original: String = chars[*start..end].iter().collect();
+        let written = original.trim_end();
+        let spaces = &original[written.len()..];
+        let followed_by_open = tokens.get(index + 1).is_some_and(|(next, _)| *next == Token::Open);
+        match token {
+            Token::Separator => out.push(';'),
+            Token::Number(_) => out.push_str(&written.replace('.', ",")),
+            Token::Word(word) if followed_by_open => out.push_str(&if names { russian_function(word) } else { canonical_function(word) }),
+            Token::Word(word) if names && word.eq_ignore_ascii_case("TRUE") => out.push_str("ИСТИНА"),
+            Token::Word(word) if names && word.eq_ignore_ascii_case("FALSE") => out.push_str("ЛОЖЬ"),
+            _ => out.push_str(written),
+        }
+        out.push_str(spaces);
+    }
+    out
+}
+
+/// The Russian name of a function, or its English one without the `_xlfn.` files add.
+fn russian_function(word: &str) -> String {
+    let name = canonical_function(word);
+    RUSSIAN.iter().find(|(_, english)| *english == name).map_or(name, |(russian, _)| (*russian).to_owned())
+}
+
 fn written_function(word: &str) -> String {
     let name = canonical_function(word);
     match name.as_str() {
@@ -697,5 +731,16 @@ mod tests {
         assert_eq!(normalize("СУММ(1,5)").unwrap(), "SUM(1.5)");
         assert_eq!(normalize("SUM(1,5)").unwrap(), "SUM(1,5)");
         assert!(normalize("1+").is_err());
+    }
+
+    #[test]
+    fn localized_formulas_read_back() {
+        assert_eq!(localize("SUM(A1:A3,1.5)", true), "СУММ(A1:A3;1,5)");
+        assert_eq!(localize("IF(B2>0,\"a, b\",FALSE)", true), "ЕСЛИ(B2>0;\"a, b\";ЛОЖЬ)");
+        assert_eq!(localize("_xlfn.XLOOKUP(A1,B:B,C:C)", false), "XLOOKUP(A1;B:B;C:C)");
+        assert_eq!(localize("Sheet1!B2*2.5", false), "Sheet1!B2*2,5");
+        for formula in ["SUM(A1:A3,1.5)", "IF(B2>0,\"a, b\",FALSE)", "_xlfn.XLOOKUP(A1,B:B,C:C)", "'Мой лист'!A1*0.5"] {
+            assert_eq!(normalize(&localize(formula, true)).unwrap(), formula);
+        }
     }
 }
