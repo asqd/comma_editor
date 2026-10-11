@@ -193,7 +193,7 @@ fn infer_kind(values: &[Cow<'_, str>]) -> Kind {
     if !values.par_iter().any(|v| filled(&v)) {
         return Kind::Text;
     }
-    if values.par_iter().filter(filled).all(|v| parse_number(v).is_some()) {
+    if values.par_iter().filter(filled).all(|v| parse_amount(v).is_some()) {
         Kind::Number
     } else if values.par_iter().filter(filled).all(|v| parse_date(v).is_some()) {
         Kind::Date
@@ -207,7 +207,7 @@ fn make_key(value: &str, kind: Kind) -> Key {
         return Key::Empty;
     }
     match kind {
-        Kind::Number => parse_number(value).map_or(Key::Empty, Key::Number),
+        Kind::Number => parse_amount(value).map_or(Key::Empty, Key::Number),
         Kind::Date => parse_date(value).map_or(Key::Empty, Key::Date),
         Kind::Text => Key::Text(text_key(value)),
     }
@@ -228,7 +228,7 @@ fn compare_keys(a: &Key, b: &Key, ascending: bool) -> Ordering {
 
 /// Compares two values the way sorting would: as numbers, then dates, then text.
 pub(crate) fn compare_values(a: &str, b: &str) -> Ordering {
-    if let (Some(a), Some(b)) = (parse_number(a), parse_number(b)) {
+    if let (Some(a), Some(b)) = (parse_amount(a), parse_amount(b)) {
         return a.total_cmp(&b);
     }
     if let (Some(a), Some(b)) = (parse_date(a), parse_date(b)) {
@@ -272,6 +272,50 @@ pub(crate) fn parse_number(value: &str) -> Option<f64> {
         return None;
     }
     number.parse().ok()
+}
+
+/// Amounts as sorting and comparing read them: numbers, also with a currency sign or word
+/// before or after them (`1 250,50 ₽`, `$1,250.50`, `1250 руб.`), negative in parentheses as
+/// accounting formats show them, and `-` standing for zero there (`- ₽`).
+pub(crate) fn parse_amount(value: &str) -> Option<f64> {
+    if let Some(number) = parse_number(value) {
+        return Some(number);
+    }
+    let mut text = value.trim();
+    let negative = match text.strip_prefix('(').and_then(|inner| inner.strip_suffix(')')) {
+        Some(inner) => {
+            text = inner.trim();
+            true
+        }
+        None => false,
+    };
+    let bare = strip_currency(text).unwrap_or(text).trim();
+    let number = match bare {
+        "-" if bare.len() < text.len() => 0.0,
+        _ => parse_number(bare)?,
+    };
+    Some(if negative { -number } else { number })
+}
+
+/// Currency signs and words, lower case, longer first.
+const CURRENCIES: &[&str] = &[
+    "руб.", "руб", "грн.", "грн", "тг.", "тг", "р.", "rub", "usd", "eur", "₽", "$", "€", "£", "¥", "₴", "₸", "₺", "₹",
+];
+
+/// The text without a currency sign or word at its start or end.
+fn strip_currency(text: &str) -> Option<&str> {
+    for currency in CURRENCIES {
+        if let Some(start) = text.len().checked_sub(currency.len())
+            && text.is_char_boundary(start)
+            && text[start..].to_lowercase() == *currency
+        {
+            return Some(&text[..start]);
+        }
+        if text.len() >= currency.len() && text.is_char_boundary(currency.len()) && text[..currency.len()].to_lowercase() == *currency {
+            return Some(&text[currency.len()..]);
+        }
+    }
+    None
 }
 
 /// `31.12.2024` or `31.12.2024 23:59[:59]`, as a sortable number. ISO dates already sort
@@ -346,6 +390,14 @@ mod tests {
 
     #[test]
     fn parses_numbers_as_written() {
+        assert_eq!(parse_amount("1\u{a0}120,00 ₽"), Some(1120.0));
+        assert_eq!(parse_amount("12\u{202f}345,00 руб."), Some(12345.0));
+        assert_eq!(parse_amount("$1,250.50"), Some(1250.5));
+        assert_eq!(parse_amount("(1 500,00 ₽)"), Some(-1500.0));
+        assert_eq!(parse_amount("- ₽"), Some(0.0));
+        assert_eq!(parse_amount("-"), None);
+        assert_eq!(parse_amount("₽"), None);
+        assert_eq!(parse_amount("рубль"), None);
         assert_eq!(parse_number("1250.50"), Some(1250.5));
         assert_eq!(parse_number("1 250,50"), Some(1250.5));
         assert_eq!(parse_number("1,250.50"), Some(1250.5));
@@ -398,6 +450,12 @@ mod tests {
     }
 
     #[test]
+    fn sorts_amounts_with_currency_and_group_separators() {
+        let amounts = ["987,60 ₽", "1\u{a0}120,00 ₽", "54,00 ₽", "12\u{202f}345,00 ₽", "- ₽"];
+        assert_eq!(sorted(&amounts, false), vec!["12\u{202f}345,00 ₽", "1\u{a0}120,00 ₽", "987,60 ₽", "54,00 ₽", "- ₽"]);
+    }
+
+    #[test]
     fn filters() {
         let filter = |op, value: &str| {
             CompiledFilter::new(&Filter {
@@ -413,6 +471,7 @@ mod tests {
         assert!(filter(FilterOp::StartsWith, "new").test("New York"));
         assert!(filter(FilterOp::Matches, r"^\d{3}$").test("042"));
         assert!(filter(FilterOp::GreaterThan, "100").test("1 250,50"));
+        assert!(filter(FilterOp::GreaterThan, "1000").test("1\u{a0}120,00 ₽"));
         assert!(!filter(FilterOp::GreaterThan, "100").test(""));
         assert!(filter(FilterOp::LessThan, "01.01.2025").test("31.12.2024"));
         assert!(filter(FilterOp::IsEmpty, "").test("  "));
