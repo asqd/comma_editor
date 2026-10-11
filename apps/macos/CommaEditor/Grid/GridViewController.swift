@@ -46,7 +46,7 @@ final class GridViewController: NSViewController {
     private(set) var info: DocumentInfo
 
     let scrollView = NSScrollView()
-    private let statusLabel = NSTextField(labelWithString: "")
+    let statusLabel = NSTextField(labelWithString: "")
     private var rowCache: [Int: CachedRow] = [:]
     /// The current drag started on row numbers and selects whole rows.
     var selectingRows = false

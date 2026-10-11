@@ -497,6 +497,22 @@ extension DiffWindowController {
             controller.optionsChanged(nil)
         case "open":
             controller.openAsTable(nil)
+        case "trim":
+            controller.trimCheck.state = controller.trimCheck.state == .on ? .off : .on
+            controller.optionsChanged(nil)
+        case "sheet":
+            controller.sheetPopup.selectItem(withTag: value)
+            controller.sheetChanged(nil)
+        case "reveal":
+            controller.tableView.selectRowIndexes(IndexSet(integer: value), byExtendingSelection: false)
+            controller.revealRow(nil)
+        case "state":
+            // The controls and the summary, for checking a comparison without a screenshot.
+            let keys = controller.keyPopup.itemArray.filter { !$0.isSeparatorItem }.map(\.title)
+            let sheets = controller.sheetPopup.isHidden ? "-" : controller.sheetPopup.itemTitles.joined(separator: ",")
+            NSLog("%@", "COMMA diff key=\(controller.keyPopup.titleOfSelectedItem ?? "-") keys=\(keys) sheets=\(sheets)"
+                + " sheet=\(controller.sheetPopup.titleOfSelectedItem ?? "-") filters=\((0..<controller.filter.segmentCount).map { controller.filter.label(forSegment: $0) ?? "" })"
+                + " status=\(controller.statusLabel.stringValue)")
         default:
             NSLog("COMMA diff: unknown step \(step)")
         }

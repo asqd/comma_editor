@@ -160,6 +160,11 @@ final class FindBarView: NSView, NSSearchFieldDelegate {
         columnPopUp.selectItem(at: keep ? selected : 0)
     }
 
+    #if DEBUG
+    /// The scope and the result shown, for debug scripts.
+    var debugState: String { "\(columnPopUp.titleOfSelectedItem ?? "-") · \(resultLabel.stringValue)" }
+    #endif
+
     func showResult(_ text: String, isError: Bool = false) {
         resultLabel.stringValue = text
         resultLabel.textColor = isError ? .systemRed : .secondaryLabelColor

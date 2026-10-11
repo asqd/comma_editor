@@ -1110,6 +1110,7 @@ mod tests {
     fn percent_and_scientific() {
         assert_eq!(show("0%", 0.256), "26%");
         assert_eq!(show("0.00%", 0.256), "25.60%");
+        assert_eq!(show("0.0%", 0.0), "0.0%");
         assert_eq!(show("0.00E+00", 12345.0), "1.23E+04");
         assert_eq!(show("0.00E+00", 0.00012), "1.20E-04");
         assert_eq!(show("0.0E+0", 9.99), "1.0E+1");

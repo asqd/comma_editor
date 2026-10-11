@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Logs errors as they are shown, so that debug scripts can check their wording.
     func application(_ application: NSApplication, willPresentError error: Error) -> Error {
         let error = error as NSError
-        NSLog("COMMA presenting \(error.localizedDescription) | \(error.localizedRecoverySuggestion ?? "-")")
+        NSLog("%@", "COMMA presenting \(error.localizedDescription) | \(error.localizedRecoverySuggestion ?? "-")")
         return error
     }
     #endif
