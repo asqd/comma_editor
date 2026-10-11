@@ -90,6 +90,7 @@ impl Document {
     /// Returns the number of cells that changed.
     pub fn fill_range(&mut self, range: CellRange, value: &str) -> Result<usize> {
         self.check_range(&range)?;
+        self.check_formulas([value])?;
         let columns: Vec<usize> = range.columns().collect();
         let prepared = self
             .cell_updates(range.rows(), &columns, &Progress::default(), |_, _, _| Some(value.to_owned()))
@@ -140,6 +141,7 @@ impl Document {
                 columns: self.column_count(),
             });
         }
+        self.check_formulas(grid.iter().flatten().map(String::as_str))?;
         if height == 0 || width == 0 {
             return Ok(None);
         }
@@ -174,6 +176,20 @@ impl Document {
     /// Applies `value(row, column, current)` to the cells of visible `rows` × `columns`, row by
     /// row (`None` keeps a cell), and records everything, with `splices` already applied, as one
     /// undoable step.
+    /// In a sheet of a workbook `=…` is a formula: values that are formulas that do not read
+    /// are refused before anything changes, as typing one is.
+    fn check_formulas<'a>(&self, values: impl IntoIterator<Item = &'a str>) -> Result<()> {
+        if !self.is_sheet() {
+            return Ok(());
+        }
+        for value in values {
+            if let Some(text) = value.strip_prefix('=').filter(|text| !text.trim().is_empty()) {
+                crate::xlsx::normalize_formula(text).map_err(Error::Formula)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn edit_range(
         &mut self,
         mut splices: Vec<Splice>,

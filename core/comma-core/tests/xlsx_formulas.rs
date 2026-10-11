@@ -213,6 +213,9 @@ fn filling_down_moves_references_and_pasting_enters_formulas() {
     assert_eq!(sales.cell(6, 7).unwrap(), "42");
     assert_eq!(sales.cell(7, 7).unwrap(), "84");
     assert_eq!(sales.formula(8, 7), None);
+    // A formula that does not read is refused, as when typed, and nothing is pasted.
+    assert!(matches!(sales.paste(1, 7, &[vec!["1".to_owned()], vec!["=SUM(".to_owned()]]), Err(Error::Formula(_))));
+    assert_eq!(sales.cell(1, 7).unwrap(), "");
 }
 
 /// A book as programs write it: formulas with no results, and a flag asking to compute them
