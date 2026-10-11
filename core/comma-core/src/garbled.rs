@@ -68,6 +68,11 @@ fn naturalness(text: &str) -> i64 {
         if matches!(c, 'Ã' | 'Â' | 'Ð' | 'Ñ') && chars.get(index + 1).is_some_and(|next| ('\u{80}'..='\u{BF}').contains(next)) {
             score -= 4;
         }
+        // The same for Russian shown as Windows-1251: "Р§" for "Ч", "С‘" for "ё". Short words
+        // have too few junk symbols to give themselves away otherwise.
+        if matches!(c, 'Р' | 'С') && chars.get(index + 1).is_some_and(|&next| is_continuation_in_1251(next)) {
+            score -= 4;
+        }
     }
     for word in text.split(|c: char| !c.is_alphabetic()).filter(|word| !word.is_empty()) {
         score += if natural_word(word) {
@@ -128,6 +133,22 @@ fn is_junk(c: char) -> bool {
         | '\u{2500}'..='\u{25FF}' | '⌠' | '⌡' | '√' | '≈' | '≤' | '≥' | '∙' | '÷')
 }
 
+/// A symbol Windows-1251 shows for a UTF-8 continuation byte (0x80–0xBF) other than a letter:
+/// `§`, `°`, `№`, `‘`, `Ђ`…
+fn is_continuation_in_1251(c: char) -> bool {
+    static SYMBOLS: std::sync::OnceLock<Vec<char>> = std::sync::OnceLock::new();
+    let symbols = SYMBOLS.get_or_init(|| {
+        let bytes: Vec<u8> = (0x80..=0xBF).collect();
+        WINDOWS_1251
+            .decode_without_bom_handling(&bytes)
+            .0
+            .chars()
+            .filter(|c| !matches!(c, 'А'..='я' | 'Ё' | 'ё'))
+            .collect()
+    });
+    symbols.contains(&c)
+}
+
 const SAMPLE_ROWS: usize = 2000;
 
 impl Document {
@@ -175,7 +196,7 @@ mod tests {
 
     #[test]
     fn fixes_utf8_shown_in_single_byte_encodings() {
-        for text in ["Привет, мир", "Москва", "ООО «Ромашка»", "Ёлка"] {
+        for text in ["Привет, мир", "Москва", "ООО «Ромашка»", "Ёлка", "Чай", "Мёд", "Сыр", "Рис"] {
             let garbled = utf8_shown_as(text, WINDOWS_1251);
             assert_eq!(fix_garbled(&garbled).as_deref(), Some(text), "{garbled}");
             let garbled = utf8_shown_as(text, WINDOWS_1252);
@@ -196,7 +217,7 @@ mod tests {
     #[test]
     fn leaves_ordinary_text_alone() {
         for text in [
-            "Привет", "ООО", "ООО РОМАШКА", "Café", "Straße", "São Paulo", "naïve", "Їжак і ґанок",
+            "Привет", "ООО", "ООО РОМАШКА", "Россия", "СССР", "Р-1", "С. Петров", "Р. №5", "Café", "Straße", "São Paulo", "naïve", "Їжак і ґанок",
             "1 250,50 ₽", "50°C", "© 2024", "Ångström", "Ελλάδα", "東京", "e-mail: a@b.c", "Zürich",
         ] {
             assert_eq!(fix_garbled(text), None, "{text}");
