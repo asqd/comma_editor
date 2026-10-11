@@ -332,3 +332,11 @@ fn damaged_xml_names_the_part() {
         Ok(_) => panic!("read a damaged sheet"),
     }
 }
+
+#[test]
+fn a_closing_tag_that_does_not_match_is_damage() {
+    // Read on, the row would be lost without a word; Excel calls the file damaged.
+    let data = r#"<row r="1"><c r="A1"><v>1</v></c></row><row r="2"><c r="A2"><v>2</c></row>"#;
+    let result = Workbook::from_bytes(package("", data, None, None)).unwrap().read_sheet(0, &DisplayLocale::default());
+    assert!(matches!(result, Err(Error::Workbook(WorkbookError::Damaged { .. }))));
+}

@@ -33,7 +33,9 @@ pub(crate) fn reader(text: &str) -> Reader<&[u8]> {
 fn configure<R>(reader: &mut Reader<R>) {
     let config = reader.config_mut();
     config.trim_text(false);
-    config.check_end_names = false;
+    // A closing tag that does not match makes the part damaged, as Excel finds it: read on,
+    // the cells after it would be lost without a word.
+    config.check_end_names = true;
 }
 
 pub(crate) fn error<R>(part: &str, reader: &Reader<R>, error: quick_xml::Error) -> Error {
