@@ -122,7 +122,9 @@ extension GridViewController {
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             if kind == .html {
-                pasteboard.setString(text, forType: .html)
+                // Without its encoding named, Notes, Pages and TextEdit read the fragment as
+                // Latin-1 or Windows-1251, and Cyrillic turns into garbage.
+                pasteboard.setString("<meta charset=\"utf-8\">" + text, forType: .html)
             }
             pasteboard.setString(text, forType: .string)
         } catch {
