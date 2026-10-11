@@ -59,7 +59,9 @@ final class WorkbookDocument: CSVDocument {
                     NSLocalizedDescriptionKey: L("The workbook has no sheets with cells."),
                 ])
             }
-            let index = Int(workbook.activeSheet())
+            // Read again, as on Revert: the sheet shown stays shown; first, the one Excel opens at.
+            let shown = self.sheets.indices.contains(sheetIndex) && self.workbook != nil ? self.sheets[sheetIndex].name : nil
+            let index = shown.flatMap { name in sheets.firstIndex { $0.isTable && $0.name == name } } ?? Int(workbook.activeSheet())
             guard let sheet = try workbook.readSheet(index: UInt64(index), locale: Self.displayLocale, job: SheetJob()) else {
                 throw CocoaError(.userCancelled)
             }
