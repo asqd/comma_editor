@@ -2150,6 +2150,12 @@ impl CoreWorkbook {
         self.inner.active_sheet() as u64
     }
 
+    /// Sheets to read and compute as soon as the workbook opens: the ones with formulas, in a
+    /// file that asks to compute every formula on opening; empty for other files.
+    pub fn sheets_computed_on_open(&self) -> Result<Vec<u64>, CoreError> {
+        Ok(self.inner.sheets_computed_on_open()?.into_iter().map(|index| index as u64).collect())
+    }
+
     /// The workbook's file with the edits of the given sheets. The file opened stays the base:
     /// unchanged parts, rows and cells are copied from it. The app writes the bytes where
     /// NSDocument asks, which in the sandbox is one temporary file it may write.

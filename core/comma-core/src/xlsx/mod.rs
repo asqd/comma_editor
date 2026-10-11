@@ -129,6 +129,9 @@ pub struct Workbook {
     /// The part with the list of sheets, and the calculation chain if there is one.
     workbook_part: String,
     calc_chain: Option<String>,
+    /// The file asks to compute every formula when opened (`fullCalcOnLoad`): programs that
+    /// write workbooks leave results out or write zeros, and Excel computes them on opening.
+    computes_on_load: bool,
     /// What computing formulas keeps between edits.
     calc: Mutex<calc::CalcState>,
     /// Shared with every sheet read: a formula was entered somewhere.
@@ -163,6 +166,7 @@ impl Workbook {
                 formulas: Mutex::default(),
                 workbook_part: String::new(),
                 calc_chain: None,
+                computes_on_load: false,
                 calc: Mutex::default(),
                 formulas_entered: Arc::default(),
             });
@@ -195,11 +199,13 @@ impl Workbook {
         let mut date1904 = false;
         let mut active = 0;
         let mut defined_names = false;
+        let mut computes_on_load = false;
         loop {
             match reader.read_event().map_err(|error| xml::error(&workbook_part, &reader, error))? {
                 Event::Start(element) | Event::Empty(element) => match element.local_name().as_ref() {
                     "workbookPr" => date1904 = xml::flag(&element, "date1904"),
                     "definedName" => defined_names = true,
+                    "calcPr" => computes_on_load = xml::flag(&element, "fullCalcOnLoad"),
                     "workbookView" => {
                         active = attribute(&element, "activeTab").and_then(|tab| tab.parse().ok()).unwrap_or(0);
                     }
@@ -256,6 +262,7 @@ impl Workbook {
             formulas: Mutex::default(),
             workbook_part,
             calc_chain,
+            computes_on_load,
             calc: Mutex::default(),
             formulas_entered: Arc::default(),
         })
@@ -352,25 +359,48 @@ impl Workbook {
     /// Whether a sheet other than the one in `part` has a formula, which may refer to any
     /// sheet. Each part is looked through once.
     fn other_sheets_have_formulas(&self, part: &str) -> Result<bool> {
-        let Source::Xlsx { package, .. } = &self.source else { return Ok(true) };
+        if !matches!(self.source, Source::Xlsx { .. }) {
+            return Ok(true);
+        }
         for other in self.sheets.iter().filter_map(|sheet| sheet.part.as_deref()).filter(|other| *other != part) {
-            let known = self.formulas.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(other).copied();
-            let has = match known {
-                Some(has) => has,
-                None => {
-                    let has = match package.stream(other)? {
-                        Some((stream, _)) => has_formula(stream)?,
-                        None => false,
-                    };
-                    self.formulas.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(other.to_owned(), has);
-                    has
-                }
-            };
-            if has {
+            if self.part_has_formula(other)? {
                 return Ok(true);
             }
         }
         Ok(false)
+    }
+
+    /// Whether a sheet part holds a formula, found out once.
+    fn part_has_formula(&self, part: &str) -> Result<bool> {
+        let Source::Xlsx { package, .. } = &self.source else { return Ok(false) };
+        if let Some(&has) = self.formulas.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(part) {
+            return Ok(has);
+        }
+        let has = match package.stream(part)? {
+            Some((stream, _)) => has_formula(stream)?,
+            None => false,
+        };
+        self.formulas.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(part.to_owned(), has);
+        Ok(has)
+    }
+
+    /// The sheets to read and compute as soon as the workbook opens: in a file that asks to
+    /// compute every formula on opening, the sheets with formulas, since the results it stores
+    /// cannot be trusted and formulas read one another across sheets. Empty for other files.
+    pub fn sheets_computed_on_open(&self) -> Result<Vec<usize>> {
+        if !self.computes_on_load {
+            return Ok(Vec::new());
+        }
+        let mut sheets = Vec::new();
+        for (index, sheet) in self.sheets.iter().enumerate() {
+            if sheet.kind == SheetKind::Worksheet
+                && let Some(part) = sheet.part.as_deref()
+                && self.part_has_formula(part)?
+            {
+                sheets.push(index);
+            }
+        }
+        Ok(sheets)
     }
 }
 

@@ -63,13 +63,23 @@ final class WorkbookDocument: CSVDocument {
             guard let sheet = try workbook.readSheet(index: UInt64(index), locale: Self.displayLocale, job: SheetJob()) else {
                 throw CocoaError(.userCancelled)
             }
+            // A file written by a program asks to be computed on opening, as Excel does: its
+            // sheets with formulas are read now, so formulas reading other sheets get results.
+            var read = [index: sheet]
+            for other in try workbook.sheetsComputedOnOpen().map({ Int($0) }) where read[other] == nil {
+                if let extra = try workbook.readSheet(index: UInt64(other), locale: Self.displayLocale, job: SheetJob()) {
+                    read[other] = extra
+                }
+            }
             loading?.job.cancel()
             loading = nil
             self.workbook = workbook
             self.sheets = sheets
-            loaded = [index: adopt(sheet)]
+            loaded = read.mapValues(adopt)
             sheetIndex = index
             generation += 1
+            // A formula that cannot be computed keeps its stored result: opening goes on.
+            _ = try? computeFormulas()
             replaceCore(sheet.document)
         } catch let error as CoreError {
             throw Self.userFacingError(error)
@@ -253,17 +263,24 @@ final class WorkbookDocument: CSVDocument {
     // MARK: Formulas
 
     override func tableDidChange() -> Bool {
-        guard let workbook, !isLegacyFormat else { return false }
-        let sheets = loaded.map { SheetToSave(index: UInt64($0.key), document: $0.value.document) }
         do {
-            let report = try workbook.recalculate(sheets: sheets, now: Self.serialNow())
-            circularFormulas = Int(report.circular)
-            formulasNotComputed = Int(report.notComputed)
-            return report.sheets.contains(UInt64(sheetIndex))
+            return try computeFormulas()
         } catch {
             presentEditError(error)
             return false
         }
+    }
+
+    /// Computes what depends on changed cells, and on opening what the file asks to compute;
+    /// says whether the shown sheet changed.
+    @discardableResult
+    private func computeFormulas() throws -> Bool {
+        guard let workbook, !isLegacyFormat else { return false }
+        let sheets = loaded.map { SheetToSave(index: UInt64($0.key), document: $0.value.document) }
+        let report = try workbook.recalculate(sheets: sheets, now: Self.serialNow())
+        circularFormulas = Int(report.circular)
+        formulasNotComputed = Int(report.notComputed)
+        return report.sheets.contains(UInt64(sheetIndex))
     }
 
     /// Now as Excel counts days: from 1900, in local time.

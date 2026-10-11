@@ -134,6 +134,8 @@ fn circular_and_unknown_formulas() {
     sales.set_cell(6, 3, "=TODAY()").unwrap();
     let report = workbook.recalculate(&mut [(0, &mut sales)], NOW).unwrap();
     assert!(report.circular > 0);
+    // Both cells of the circle show 0, as in Excel.
+    assert_eq!((sales.cell(6, 0).unwrap(), sales.cell(6, 1).unwrap()), ("0".to_owned(), "0".to_owned()));
     assert_eq!(report.not_computed, 1);
     assert_eq!(sales.cell(6, 2).unwrap(), "");
     assert_eq!(sales.cell(6, 3).unwrap(), "45658");
@@ -211,4 +213,65 @@ fn filling_down_moves_references_and_pasting_enters_formulas() {
     assert_eq!(sales.cell(6, 7).unwrap(), "42");
     assert_eq!(sales.cell(7, 7).unwrap(), "84");
     assert_eq!(sales.formula(8, 7), None);
+}
+
+/// A book as programs write it: formulas with no results, and a flag asking to compute them
+/// on opening. The total on the first sheet reads a formula on the second.
+fn written_by_a_program(asks_to_compute: bool) -> Vec<u8> {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let report = workbook.add_worksheet();
+    report.set_name("Report").unwrap();
+    report.write_formula(0, 0, "=Data!B4").unwrap();
+    report.write_formula(1, 0, "=INDIRECT(\"Data!A1\")").unwrap();
+    let data = workbook.add_worksheet();
+    data.set_name("Data").unwrap();
+    for row in 0..3u32 {
+        data.write_number(row, 0, f64::from(row + 1) * 10.0).unwrap();
+        data.write_formula(row, 1, Formula::new(format!("=A{}*2", row + 1))).unwrap();
+    }
+    data.write_formula(3, 1, "=SUM(B1:B3)").unwrap();
+    let bytes = workbook.save_to_buffer().unwrap();
+    if asks_to_compute {
+        return bytes;
+    }
+    // As Excel saves it: the flag gone, the results kept.
+    let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+    let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index).unwrap();
+        let mut text = Vec::new();
+        file.read_to_end(&mut text).unwrap();
+        if file.name() == "xl/workbook.xml" {
+            text = String::from_utf8(text).unwrap().replace(" fullCalcOnLoad=\"1\"", "").into_bytes();
+        }
+        out.start_file(file.name(), zip::write::SimpleFileOptions::default()).unwrap();
+        std::io::Write::write_all(&mut out, &text).unwrap();
+    }
+    out.finish().unwrap().into_inner()
+}
+
+#[test]
+fn a_book_that_asks_is_computed_on_opening() {
+    let workbook = Workbook::from_bytes(written_by_a_program(true)).unwrap();
+    assert_eq!(workbook.sheets_computed_on_open().unwrap(), vec![0, 1]);
+    let mut report = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    let mut data = workbook.read_sheet(1, &DisplayLocale::default()).unwrap().document;
+    assert_eq!(report.cell(0, 0).unwrap(), "0");
+    let computed = workbook.recalculate(&mut [(0, &mut report), (1, &mut data)], NOW).unwrap();
+    assert_eq!(computed.sheets, vec![0, 1]);
+    assert_eq!(data.cell(3, 1).unwrap(), "120");
+    assert_eq!(report.cell(0, 0).unwrap(), "120");
+    // What CommaEditor does not compute keeps what the file has; Excel computes it.
+    assert_eq!(computed.not_computed, 1);
+    // Once is enough: nothing changed since.
+    assert_eq!(workbook.recalculate(&mut [(0, &mut report), (1, &mut data)], NOW).unwrap().sheets, Vec::<usize>::new());
+}
+
+#[test]
+fn a_book_that_does_not_ask_keeps_its_results() {
+    let workbook = Workbook::from_bytes(written_by_a_program(false)).unwrap();
+    assert!(workbook.sheets_computed_on_open().unwrap().is_empty());
+    let mut data = workbook.read_sheet(1, &DisplayLocale::default()).unwrap().document;
+    assert!(workbook.recalculate(&mut [(1, &mut data)], NOW).unwrap().sheets.is_empty());
+    assert_eq!(data.cell(3, 1).unwrap(), "0");
 }

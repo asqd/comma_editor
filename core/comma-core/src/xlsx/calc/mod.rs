@@ -4,13 +4,15 @@
 //! Formulas the file computed and nothing edited depends on keep the results Excel stored:
 //! computing them here could only show where this engine and Excel differ. A formula is
 //! computed again when it reads, directly or through other formulas, a row edited since the
-//! workbook was opened, or when it was entered here. Cells it reads give it the values the
+//! workbook was opened, or when it was entered here. A file that asks to compute every
+//! formula on opening (written by a program, with no results or zeros) has each sheet's
+//! formulas computed the first time the sheet is. Cells it reads give it the values the
 //! file stores (not the rounded ones shown), or what was typed into them.
 
 pub(crate) mod eval;
 pub(crate) mod parse;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use self::eval::{Cells, Evaluator, Unsupported, Value};
@@ -34,6 +36,8 @@ pub(crate) struct CalcState {
     /// Rows edited since the workbook was opened, by sheet. They stay after an undo, so that
     /// formulas reading them are computed back.
     pub(crate) touched: HashMap<usize, BTreeSet<u32>>,
+    /// Sheets whose every formula was computed, in a file that asks for it on opening.
+    computed: HashSet<usize>,
 }
 
 /// What computing again did.
@@ -96,7 +100,10 @@ impl Workbook {
 
         // Formulas to compute: entered ones, those reading edited rows, then those reading
         // formulas to compute, until no more are found.
-        let mut marked: Vec<bool> = formulas.iter().map(|formula| formula.entered).collect();
+        let mut marked: Vec<bool> = formulas
+            .iter()
+            .map(|formula| formula.entered || (self.computes_on_load && !state.computed.contains(&formula.sheet)))
+            .collect();
         let mut dirty: HashMap<usize, BTreeMap<u32, BTreeSet<u32>>> = HashMap::new();
         for (formula, _) in formulas.iter().zip(&marked).filter(|(_, marked)| **marked) {
             dirty.entry(formula.sheet).or_default().entry(formula.row).or_default().insert(formula.column);
@@ -145,6 +152,8 @@ impl Workbook {
             positions,
             results: vec![None; formulas.len()],
             busy: vec![false; formulas.len()],
+            stack: Vec::new(),
+            in_circle: vec![false; formulas.len()],
             circular: 0,
             now,
             failed: None,
@@ -189,6 +198,9 @@ impl Workbook {
             }
         }
         drop(model);
+        if self.computes_on_load {
+            state.computed.extend(sheets.iter().map(|(index, _)| *index));
+        }
         for (index, document) in sheets.iter_mut() {
             if let Some(results) = updates.remove(index) {
                 document.set_formula_results(results);
@@ -230,6 +242,9 @@ struct Model<'a> {
     results: Vec<Option<std::result::Result<Value, Unsupported>>>,
     /// Formulas being computed: reaching one again is a circular reference.
     busy: Vec<bool>,
+    /// The formulas being computed, innermost last; those in a circle show 0, as in Excel.
+    stack: Vec<usize>,
+    in_circle: Vec<bool>,
     circular: usize,
     now: f64,
     failed: Option<crate::error::Error>,
@@ -242,9 +257,16 @@ impl Model<'_> {
         }
         if self.busy[index] {
             self.circular += 1;
+            // Every formula from this one to the innermost reads itself through the others.
+            if let Some(start) = self.stack.iter().position(|&busy| busy == index) {
+                for &member in &self.stack[start..] {
+                    self.in_circle[member] = true;
+                }
+            }
             return Ok(Value::Number(0.0));
         }
         self.busy[index] = true;
+        self.stack.push(index);
         let formula = &self.formulas[index];
         let (sheet, row, column, expr) = (formula.sheet, formula.row, formula.column, formula.expr.clone());
         let result = match expr {
@@ -252,6 +274,8 @@ impl Model<'_> {
             None => Err(Unsupported),
         };
         self.busy[index] = false;
+        self.stack.pop();
+        let result = if self.in_circle[index] { Ok(Value::Number(0.0)) } else { result };
         self.results[index] = Some(result.clone());
         result
     }
