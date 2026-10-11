@@ -1289,7 +1289,6 @@ extension GridViewController: GridTableViewInteraction {
     }
 }
 
-/// A table cell with a text field, which gets a fixed height while text wraps.
 /// The text of a cell. A right click on it is the table's, for the menu of the cell; it would
 /// otherwise start editing and show the menu of the text. While editing, the text keeps its own.
 final class GridTextField: NSTextField {
@@ -1306,6 +1305,7 @@ final class GridTextField: NSTextField {
     }
 }
 
+/// A table cell with a text field, which gets a fixed height while text wraps.
 final class GridCellView: NSTableCellView {
     var wrapHeight: NSLayoutConstraint?
     /// The cell holds a formula: a small corner mark, as spreadsheets mark notes.

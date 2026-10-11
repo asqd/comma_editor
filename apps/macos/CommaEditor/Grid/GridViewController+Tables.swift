@@ -285,9 +285,15 @@ extension GridViewController {
         ))
     }
 
+    /// A point of the window as a point of the scrolling table at the same height. The row
+    /// numbers being dragged lie left of that table, where it finds no row at all.
+    private func rowPoint(_ windowPoint: NSPoint) -> NSPoint {
+        NSPoint(x: tableView.visibleRect.midX, y: tableView.convert(windowPoint, from: nil).y)
+    }
+
     /// Visible row before which rows dropped at a point go.
     private func dropTarget(at windowPoint: NSPoint) -> Int {
-        let point = tableView.convert(windowPoint, from: nil)
+        let point = rowPoint(windowPoint)
         let row = tableView.row(at: point)
         guard row >= 0 else {
             return point.y < tableView.visibleRect.minY ? 0 : dataRowCount
@@ -318,7 +324,7 @@ extension GridViewController {
         guard let selection else { return }
         let target = dropTarget(at: windowPoint)
         if target >= selection.rows.lowerBound, target <= selection.rows.upperBound + 1 {
-            let row = tableView.nearestRow(to: tableView.convert(windowPoint, from: nil))
+            let row = tableView.nearestRow(to: rowPoint(windowPoint))
             select(GridSelection(anchor: GridCell(row: row, column: columnCount - 1), cursor: GridCell(row: row, column: 0)), scroll: false)
             return
         }
