@@ -129,6 +129,8 @@ pub struct Workbook {
     /// The part with the list of sheets, and the calculation chain if there is one.
     workbook_part: String,
     calc_chain: Option<String>,
+    /// Defined names, whose formulas formulas may use by name.
+    names: Vec<DefinedName>,
     /// The file asks to compute every formula when opened (`fullCalcOnLoad`): programs that
     /// write workbooks leave results out or write zeros, and Excel computes them on opening.
     computes_on_load: bool,
@@ -136,6 +138,16 @@ pub struct Workbook {
     calc: Mutex<calc::CalcState>,
     /// Shared with every sheet read: a formula was entered somewhere.
     formulas_entered: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A defined name of a workbook: `Итого_сумма` for `Продажи!$D$13`.
+#[derive(Clone, Debug)]
+pub(crate) struct DefinedName {
+    /// In lower case: names are found without case.
+    pub name: String,
+    /// The sheet it belongs to, by index; `None` for the whole workbook.
+    pub sheet: Option<usize>,
+    pub formula: String,
 }
 
 enum Source {
@@ -166,6 +178,7 @@ impl Workbook {
                 formulas: Mutex::default(),
                 workbook_part: String::new(),
                 calc_chain: None,
+                names: Vec::new(),
                 computes_on_load: false,
                 calc: Mutex::default(),
                 formulas_entered: Arc::default(),
@@ -199,9 +212,36 @@ impl Workbook {
         let mut date1904 = false;
         let mut active = 0;
         let mut defined_names = false;
+        let mut names: Vec<DefinedName> = Vec::new();
+        // A defined name being read: its name, the sheet it belongs to, and its formula so far.
+        let mut reading: Option<DefinedName> = None;
         let mut computes_on_load = false;
         loop {
-            match reader.read_event().map_err(|error| xml::error(&workbook_part, &reader, error))? {
+            let event = reader.read_event().map_err(|error| xml::error(&workbook_part, &reader, error))?;
+            if let Some(name) = reading.as_mut() {
+                match &event {
+                    Event::End(element) if element.local_name().as_ref() == "definedName" => {
+                        names.extend(reading.take());
+                        continue;
+                    }
+                    event => {
+                        xml::push_text(&mut name.formula, event);
+                        continue;
+                    }
+                }
+            }
+            if let Event::Start(element) = &event
+                && element.local_name().as_ref() == "definedName"
+            {
+                defined_names = true;
+                reading = Some(DefinedName {
+                    name: attribute(element, "name").unwrap_or_default().to_lowercase(),
+                    sheet: attribute(element, "localSheetId").and_then(|id| id.parse().ok()),
+                    formula: String::new(),
+                });
+                continue;
+            }
+            match event {
                 Event::Start(element) | Event::Empty(element) => match element.local_name().as_ref() {
                     "workbookPr" => date1904 = xml::flag(&element, "date1904"),
                     "definedName" => defined_names = true,
@@ -262,6 +302,7 @@ impl Workbook {
             formulas: Mutex::default(),
             workbook_part,
             calc_chain,
+            names,
             computes_on_load,
             calc: Mutex::default(),
             formulas_entered: Arc::default(),

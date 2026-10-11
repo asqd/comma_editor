@@ -47,6 +47,10 @@ pub(crate) trait Cells {
     fn date1904(&self) -> bool;
     /// Today's date and the time as a serial number.
     fn now(&self) -> f64;
+    /// The formula of a defined name used on a sheet, if the workbook has the name.
+    fn name(&self, _name: &str, _sheet: usize) -> Option<std::sync::Arc<Expr>> {
+        None
+    }
 }
 
 /// An argument as a function gets it: a value, or cells it may go through.
@@ -141,6 +145,8 @@ pub(crate) struct Evaluator<'a, C: Cells> {
     /// The first row and column of the range an array formula fills; `None` for other
     /// formulas, where a range read as one value gives the cell in the formula's row or column.
     pub array: Option<(u32, u32)>,
+    /// Defined names being read into, to stop at a name that refers to itself.
+    pub names: u8,
 }
 
 impl<C: Cells> Evaluator<'_, C> {
@@ -158,7 +164,7 @@ impl<C: Cells> Evaluator<'_, C> {
     /// combine ranges cell by cell, a single row or column stretching over the other side.
     fn grid_of(&mut self, expr: &Expr) -> Outcome<Vec<Vec<Value>>> {
         Ok(match expr {
-            Expr::Reference(_) => self.grid(expr)?,
+            Expr::Reference(_) | Expr::Name(_) => self.grid(expr)?,
             Expr::Unary(op, operand) => {
                 let op = *op;
                 map_grid(self.grid_of(operand)?, |value| match to_number(&value) {
@@ -222,6 +228,14 @@ impl<C: Cells> Evaluator<'_, C> {
                     None => Arg::Value(error(REF)),
                 },
             },
+            // A defined name gives what its formula gives: cells, a range, a value.
+            Expr::Name(name) => {
+                let defined = self.cells.name(name, self.sheet).filter(|_| self.names < 8).ok_or(Unsupported)?;
+                self.names += 1;
+                let arg = self.arg(&defined);
+                self.names -= 1;
+                return arg;
+            }
             // In an array formula an expression such as `B2:B9*C2:C9` gives many values.
             expr if self.array.is_some() => match self.grid_of(expr)? {
                 grid if grid.len() == 1 && width(&grid) == 1 => Arg::Value(pick(&grid, 0, 0)),
@@ -239,7 +253,8 @@ impl<C: Cells> Evaluator<'_, C> {
             Expr::Bool(truth) => Value::Bool(*truth),
             Expr::Error(code) => Value::Error(code.clone()),
             Expr::Missing => Value::Empty,
-            Expr::Name(_) | Expr::Array => return Err(Unsupported),
+            Expr::Name(_) => return self.scalar(expr),
+            Expr::Array => return Err(Unsupported),
             Expr::Reference(_) => return self.scalar(expr),
             Expr::Unary(op, operand) => {
                 let number = match self.number(operand)? {
@@ -1081,7 +1096,7 @@ mod tests {
     fn run(formula: &str) -> Value {
         let mut cells = sheet();
         let expr = parse(formula).unwrap();
-        Evaluator { cells: &mut cells, sheet: 0, row: 9, column: 9, array: None }.evaluate(&expr).unwrap()
+        Evaluator { cells: &mut cells, sheet: 0, row: 9, column: 9, array: None, names: 0 }.evaluate(&expr).unwrap()
     }
 
     fn number(formula: &str) -> f64 {
@@ -1189,7 +1204,7 @@ mod tests {
         let mut cells = sheet();
         for formula in ["NEWFUNCTION(1)", "Rate*2", "SUM({1,2})"] {
             let expr = parse(formula).unwrap();
-            assert_eq!(Evaluator { cells: &mut cells, sheet: 0, row: 0, column: 0, array: None }.evaluate(&expr), Err(Unsupported), "{formula}");
+            assert_eq!(Evaluator { cells: &mut cells, sheet: 0, row: 0, column: 0, array: None, names: 0 }.evaluate(&expr), Err(Unsupported), "{formula}");
         }
     }
 }

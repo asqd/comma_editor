@@ -333,3 +333,35 @@ fn a_date_entered_by_formula_into_a_general_cell_shows_as_a_date() {
     assert_eq!(reopened.cell(1, 2).unwrap(), "08.01.2025");
     assert_eq!(reopened.cell(0, 1).unwrap(), "01.01.2025 12:00");
 }
+
+#[test]
+fn defined_names_are_computed() {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("Data").unwrap();
+    for row in 0..3u32 {
+        sheet.write_number(row, 0, f64::from(row + 1) * 10.0).unwrap();
+    }
+    sheet.write_number(0, 1, 0.2).unwrap();
+    workbook.define_name("Amounts", "=Data!$A$1:$A$3").unwrap();
+    workbook.define_name("Rate", "=Data!$B$1").unwrap();
+    workbook.define_name("Taxed", "=SUM(Amounts)*(1+Rate)").unwrap();
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    let mut data = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    grow(&mut data, 4, 4);
+    data.set_cell(0, 2, "=SUM(Amounts)").unwrap();
+    data.set_cell(1, 2, "=Rate*100").unwrap();
+    data.set_cell(2, 2, "=Taxed").unwrap();
+    data.set_cell(3, 2, "=Missing+1").unwrap();
+    let report = workbook.recalculate(&mut [(0, &mut data)], NOW).unwrap();
+    assert_eq!(data.cell(0, 2).unwrap(), "60");
+    assert_eq!(data.cell(1, 2).unwrap(), "20");
+    assert_eq!(data.cell(2, 2).unwrap(), "72");
+    // A name the workbook does not have is left to Excel.
+    assert_eq!(report.not_computed, 1);
+    // Editing a cell a name reads computes the formulas that use the name.
+    data.set_cell(0, 0, "40").unwrap();
+    workbook.recalculate(&mut [(0, &mut data)], NOW).unwrap();
+    assert_eq!(data.cell(0, 2).unwrap(), "90");
+    assert_eq!(data.cell(2, 2).unwrap(), "108");
+}

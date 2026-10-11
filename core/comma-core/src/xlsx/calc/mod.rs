@@ -94,6 +94,7 @@ impl Workbook {
 
         // Every formula of the sheets, read once per text.
         let names: Vec<String> = self.sheets.iter().map(|sheet| sheet.name.to_lowercase()).collect();
+        let defined = self.defined_names();
         let mut parsed: HashMap<String, Option<Arc<Expr>>> = HashMap::new();
         let mut formulas = Vec::new();
         for (index, document) in sheets.iter() {
@@ -101,7 +102,7 @@ impl Workbook {
                 let expr = parsed.entry(cell.formula.clone()).or_insert_with(|| parse::parse(&cell.formula).ok().map(Arc::new)).clone();
                 let mut reads = Vec::new();
                 if let Some(expr) = &expr {
-                    references(expr, *index, &names, &mut reads);
+                    references(expr, *index, &names, &defined, 0, &mut reads);
                 }
                 let range = cell.array.as_deref().and_then(super::refs::parse_range);
                 // An array formula filling several cells keeps its results: the other cells hold
@@ -157,6 +158,7 @@ impl Workbook {
             .collect();
         let mut model = Model {
             workbook: self,
+            names: &defined,
             documents,
             raw: &mut state.raw,
             formats: &formats,
@@ -322,6 +324,7 @@ impl Workbook {
 /// The cells formulas read, while computing them.
 struct Model<'a> {
     workbook: &'a Workbook,
+    names: &'a Names,
     documents: HashMap<usize, &'a Document>,
     raw: &'a mut HashMap<usize, Arc<RawSheet>>,
     formats: &'a [Arc<NumberFormat>],
@@ -361,7 +364,7 @@ impl Model<'_> {
         let (sheet, row, column, expr) = (formula.sheet, formula.row, formula.column, formula.expr.clone());
         let array = formula.array;
         let result = match expr {
-            Some(expr) => Evaluator { cells: self, sheet, row, column, array }.evaluate(&expr),
+            Some(expr) => Evaluator { cells: self, sheet, row, column, array, names: 0 }.evaluate(&expr),
             None => Err(Unsupported),
         };
         self.busy[index] = false;
@@ -499,6 +502,10 @@ impl Cells for Model<'_> {
     fn now(&self) -> f64 {
         self.now
     }
+
+    fn name(&self, name: &str, sheet: usize) -> Option<Arc<Expr>> {
+        defined_name(self.names, name, sheet).cloned()
+    }
 }
 
 fn raw_value(cell: Option<&RawCell>, raw: &RawSheet) -> Value {
@@ -541,7 +548,32 @@ fn show(value: &Value, format: &NumberFormat, locale: &DisplayLocale, date1904: 
 }
 
 /// The cells an expression reads, with sheets named in it found among `names` (lower case).
-fn references(expr: &Expr, sheet: usize, names: &[String], out: &mut Vec<(usize, Area)>) {
+/// Defined names parsed, by the sheet they belong to (`None` for the workbook) and name.
+pub(crate) type Names = HashMap<(Option<usize>, String), Arc<Expr>>;
+
+/// The expression of a defined name used on a sheet: the sheet's own name first, as Excel
+/// finds it, then the workbook's.
+fn defined_name<'a>(names: &'a Names, name: &str, sheet: usize) -> Option<&'a Arc<Expr>> {
+    let name = name.to_lowercase();
+    names.get(&(Some(sheet), name.clone())).or_else(|| names.get(&(None, name)))
+}
+
+/// Names refer to names at most this deep; deeper is taken as a loop.
+const NAME_DEPTH: u8 = 8;
+
+impl Workbook {
+    /// The defined names whose formulas read, parsed.
+    fn defined_names(&self) -> Names {
+        self.names
+            .iter()
+            .filter(|name| !name.name.starts_with("_xlnm."))
+            .filter_map(|name| Some(((name.sheet, name.name.clone()), Arc::new(parse::parse(&name.formula).ok()?))))
+            .collect()
+    }
+}
+
+fn references(expr: &Expr, sheet: usize, names: &[String], defined: &Names, depth: u8, out: &mut Vec<(usize, Area)>) {
+    let recurse = |expr: &Expr, out: &mut Vec<(usize, Area)>| references(expr, sheet, names, defined, depth, out);
     match expr {
         Expr::Reference(reference) => {
             let target = match &reference.sheet {
@@ -552,14 +584,20 @@ fn references(expr: &Expr, sheet: usize, names: &[String], out: &mut Vec<(usize,
                 out.push((target, reference.area));
             }
         }
-        Expr::Unary(_, operand) => references(operand, sheet, names, out),
+        Expr::Unary(_, operand) => recurse(operand, out),
         Expr::Binary(_, left, right) => {
-            references(left, sheet, names, out);
-            references(right, sheet, names, out);
+            recurse(left, out);
+            recurse(right, out);
         }
         Expr::Call(_, arguments) => {
             for argument in arguments {
-                references(argument, sheet, names, out);
+                recurse(argument, out);
+            }
+        }
+        // A name reads what its formula reads.
+        Expr::Name(name) if depth < NAME_DEPTH => {
+            if let Some(expr) = defined_name(defined, name, sheet) {
+                references(expr, sheet, names, defined, depth + 1, out);
             }
         }
         _ => {}
