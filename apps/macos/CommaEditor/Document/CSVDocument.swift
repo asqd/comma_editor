@@ -48,7 +48,10 @@ class CSVDocument: NSDocument {
     private(set) var chosenDelimiter: String?
 
     /// Encodings a file can be reopened in, in menu order.
-    static let encodings: [TextEncoding] = [.utf8, .utf16Le, .utf16Be, .windows1251, .koi8R, .windows1252]
+    static let encodings: [TextEncoding] = [
+        .utf8, .utf16Le, .utf16Be, .windows1251, .koi8R, .ibm866, .koi8U, .windows1252, .windows1250, .windows1253, .windows1254,
+        .windows1257,
+    ]
     /// Delimiters a file can be reopened with, in menu order.
     static let delimiters = [",", ";", "\t", "|"]
 
@@ -211,6 +214,12 @@ class CSVDocument: NSDocument {
         case .windows1251: "Windows-1251"
         case .koi8R: "KOI8-R"
         case .windows1252: "Windows-1252"
+        case .windows1250: "Windows-1250"
+        case .windows1253: "Windows-1253"
+        case .windows1254: "Windows-1254"
+        case .windows1257: "Windows-1257"
+        case .koi8U: "KOI8-U"
+        case .ibm866: "CP866"
         }
     }
 

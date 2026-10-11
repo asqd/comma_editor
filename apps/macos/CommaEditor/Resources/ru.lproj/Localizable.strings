@@ -588,3 +588,8 @@
 "Excel 97–2003 workbooks can only be read. Export the sheet as XLSX or CSV to change it." = "Книги Excel 97–2003 можно только читать. Чтобы изменить лист, экспортируйте его в XLSX или CSV.";
 "Circular references: %@" = "Циклических ссылок: %@";
 "Formulas Excel will compute: %@" = "Формул вычислит Excel: %@";
+"CP866 (DOS Cyrillic)" = "CP866 (кириллица DOS)";
+"Windows-1250 (Central European)" = "Windows-1250 (центральноевропейская)";
+"Windows-1253 (Greek)" = "Windows-1253 (греческая)";
+"Windows-1254 (Turkish)" = "Windows-1254 (турецкая)";
+"Windows-1257 (Baltic)" = "Windows-1257 (балтийская)";

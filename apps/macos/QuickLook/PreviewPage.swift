@@ -72,6 +72,12 @@ enum PreviewPage {
         case .windows1251: "Windows-1251"
         case .koi8R: "KOI8-R"
         case .windows1252: "Windows-1252"
+        case .windows1250: "Windows-1250"
+        case .windows1253: "Windows-1253"
+        case .windows1254: "Windows-1254"
+        case .windows1257: "Windows-1257"
+        case .koi8U: "KOI8-U"
+        case .ibm866: "CP866"
         }
     }
 

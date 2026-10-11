@@ -17,7 +17,13 @@ final class SaveFormatAccessoryView: NSView {
         (.utf16Be, true, "UTF-16BE"),
         (.windows1251, false, L("Windows-1251 (Cyrillic)")),
         (.koi8R, false, "KOI8-R"),
+        (.ibm866, false, L("CP866 (DOS Cyrillic)")),
+        (.koi8U, false, "KOI8-U"),
         (.windows1252, false, L("Windows-1252 (Western)")),
+        (.windows1250, false, L("Windows-1250 (Central European)")),
+        (.windows1253, false, L("Windows-1253 (Greek)")),
+        (.windows1254, false, L("Windows-1254 (Turkish)")),
+        (.windows1257, false, L("Windows-1257 (Baltic)")),
     ]
     private var delimiters: [(String, String)] = [
         (",", L("Comma (,)")),

@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 
-use encoding_rs::{Encoding, KOI8_R, WINDOWS_1251, WINDOWS_1252};
+use encoding_rs::{
+    Encoding, IBM866, KOI8_R, KOI8_U, WINDOWS_1250, WINDOWS_1251, WINDOWS_1252, WINDOWS_1253, WINDOWS_1254, WINDOWS_1257,
+};
 
 use crate::bytes::Bytes;
 
@@ -13,6 +15,18 @@ pub enum TextEncoding {
     Windows1251,
     Koi8R,
     Windows1252,
+    /// Central European.
+    Windows1250,
+    /// Greek.
+    Windows1253,
+    /// Turkish.
+    Windows1254,
+    /// Baltic.
+    Windows1257,
+    /// Ukrainian.
+    Koi8U,
+    /// Russian in DOS, as old programs export it.
+    Ibm866,
 }
 
 impl TextEncoding {
@@ -24,6 +38,12 @@ impl TextEncoding {
             Self::Windows1251 => "Windows-1251",
             Self::Koi8R => "KOI8-R",
             Self::Windows1252 => "Windows-1252",
+            Self::Windows1250 => "Windows-1250",
+            Self::Windows1253 => "Windows-1253",
+            Self::Windows1254 => "Windows-1254",
+            Self::Windows1257 => "Windows-1257",
+            Self::Koi8U => "KOI8-U",
+            Self::Ibm866 => "CP866",
         }
     }
 
@@ -36,6 +56,12 @@ impl TextEncoding {
             Self::Windows1251 => Some(WINDOWS_1251),
             Self::Koi8R => Some(KOI8_R),
             Self::Windows1252 => Some(WINDOWS_1252),
+            Self::Windows1250 => Some(WINDOWS_1250),
+            Self::Windows1253 => Some(WINDOWS_1253),
+            Self::Windows1254 => Some(WINDOWS_1254),
+            Self::Windows1257 => Some(WINDOWS_1257),
+            Self::Koi8U => Some(KOI8_U),
+            Self::Ibm866 => Some(IBM866),
             Self::Utf8 | Self::Utf16Le | Self::Utf16Be => None,
         }
     }
@@ -248,13 +274,14 @@ fn utf8_stats(mut sample: &[u8], truncated: bool) -> (usize, usize) {
     }
 }
 
-/// Tells Russian text in Windows-1251 or KOI8-R from Western text in Windows-1252
+/// Tells Russian text in Windows-1251, KOI8-R or DOS CP866 from Western text in Windows-1252
 /// by the most frequent lowercase Russian letters (о е а и н т с р в).
 fn guess_single_byte(sample: &[u8]) -> (TextEncoding, bool) {
     let mut high = 0usize;
     let mut ascii_letters = 0usize;
     let mut cp1251 = 0usize;
     let mut koi8 = 0usize;
+    let mut dos = 0usize;
     for &byte in sample {
         if byte.is_ascii_alphabetic() {
             ascii_letters += 1;
@@ -268,13 +295,19 @@ fn guess_single_byte(sample: &[u8]) -> (TextEncoding, bool) {
             0xCF | 0xC5 | 0xC1 | 0xC9 | 0xCE | 0xD4 | 0xD3 | 0xD2 | 0xD7 => koi8 += 1,
             _ => {}
         }
+        if matches!(byte, 0xAE | 0xA5 | 0xA0 | 0xA8 | 0xAD | 0xE2 | 0xE1 | 0xE0 | 0xA2) {
+            dos += 1;
+        }
     }
     let high_share = high as f64 / (high + ascii_letters).max(1) as f64;
-    let russian_share = (cp1251 + koi8) as f64 / high.max(1) as f64;
+    let mut counts = [(cp1251, TextEncoding::Windows1251), (koi8, TextEncoding::Koi8R), (dos, TextEncoding::Ibm866)];
+    counts.sort_by_key(|(count, _)| std::cmp::Reverse(*count));
+    let (best, encoding) = counts[0];
+    let second = counts[1].0;
+    let russian_share = best as f64 / high.max(1) as f64;
     if high_share > 0.3 && russian_share > 0.25 {
         // Sure when the letters are clearly Russian and one encoding clearly wins.
-        let sure = russian_share > 0.4 && cp1251.max(koi8) >= 3 * cp1251.min(koi8).max(1);
-        let encoding = if cp1251 >= koi8 { TextEncoding::Windows1251 } else { TextEncoding::Koi8R };
+        let sure = russian_share > 0.4 && best >= 3 * second.max(1);
         (encoding, sure)
     } else {
         // Western text has a few accented letters among plain ones; many high bytes without
@@ -293,6 +326,12 @@ mod tests {
         assert_eq!(prepared.encoding, TextEncoding::Utf8);
         assert!(prepared.has_bom);
         assert_eq!(prepared.content_start, 3);
+    }
+
+    #[test]
+    fn detects_dos_cyrillic() {
+        let (bytes, _, _) = IBM866.encode("Имя;Город;Сумма\nИван;Москва;100\nОльга;Новосибирск;200\nПётр;Казань;300\n");
+        assert_eq!(prepare(bytes.into_owned().into()).encoding, TextEncoding::Ibm866);
     }
 
     #[test]

@@ -232,6 +232,12 @@ pub enum TextEncoding {
     Windows1251,
     Koi8R,
     Windows1252,
+    Windows1250,
+    Windows1253,
+    Windows1254,
+    Windows1257,
+    Koi8U,
+    Ibm866,
 }
 
 impl From<core::TextEncoding> for TextEncoding {
@@ -243,6 +249,12 @@ impl From<core::TextEncoding> for TextEncoding {
             core::TextEncoding::Windows1251 => Self::Windows1251,
             core::TextEncoding::Koi8R => Self::Koi8R,
             core::TextEncoding::Windows1252 => Self::Windows1252,
+            core::TextEncoding::Windows1250 => Self::Windows1250,
+            core::TextEncoding::Windows1253 => Self::Windows1253,
+            core::TextEncoding::Windows1254 => Self::Windows1254,
+            core::TextEncoding::Windows1257 => Self::Windows1257,
+            core::TextEncoding::Koi8U => Self::Koi8U,
+            core::TextEncoding::Ibm866 => Self::Ibm866,
         }
     }
 }
@@ -256,6 +268,12 @@ impl From<TextEncoding> for core::TextEncoding {
             TextEncoding::Windows1251 => Self::Windows1251,
             TextEncoding::Koi8R => Self::Koi8R,
             TextEncoding::Windows1252 => Self::Windows1252,
+            TextEncoding::Windows1250 => Self::Windows1250,
+            TextEncoding::Windows1253 => Self::Windows1253,
+            TextEncoding::Windows1254 => Self::Windows1254,
+            TextEncoding::Windows1257 => Self::Windows1257,
+            TextEncoding::Koi8U => Self::Koi8U,
+            TextEncoding::Ibm866 => Self::Ibm866,
         }
     }
 }
@@ -341,6 +359,12 @@ impl From<core::SaveFormat> for SaveFormat {
                 core::TextEncoding::Windows1251 => TextEncoding::Windows1251,
                 core::TextEncoding::Koi8R => TextEncoding::Koi8R,
                 core::TextEncoding::Windows1252 => TextEncoding::Windows1252,
+                core::TextEncoding::Windows1250 => TextEncoding::Windows1250,
+                core::TextEncoding::Windows1253 => TextEncoding::Windows1253,
+                core::TextEncoding::Windows1254 => TextEncoding::Windows1254,
+                core::TextEncoding::Windows1257 => TextEncoding::Windows1257,
+                core::TextEncoding::Koi8U => TextEncoding::Koi8U,
+                core::TextEncoding::Ibm866 => TextEncoding::Ibm866,
             },
             bom: format.bom,
             delimiter: (format.delimiter as char).to_string(),
@@ -370,6 +394,12 @@ impl TryFrom<SaveFormat> for core::SaveFormat {
                 TextEncoding::Windows1251 => core::TextEncoding::Windows1251,
                 TextEncoding::Koi8R => core::TextEncoding::Koi8R,
                 TextEncoding::Windows1252 => core::TextEncoding::Windows1252,
+                TextEncoding::Windows1250 => core::TextEncoding::Windows1250,
+                TextEncoding::Windows1253 => core::TextEncoding::Windows1253,
+                TextEncoding::Windows1254 => core::TextEncoding::Windows1254,
+                TextEncoding::Windows1257 => core::TextEncoding::Windows1257,
+                TextEncoding::Koi8U => core::TextEncoding::Koi8U,
+                TextEncoding::Ibm866 => core::TextEncoding::Ibm866,
             },
             bom: format.bom,
             delimiter,
