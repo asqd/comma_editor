@@ -3,6 +3,7 @@
 //! all; in an edited sheet, rows and cells that did not change are copied byte for byte, and
 //! only changed cells are written anew, with the style they had.
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -19,6 +20,111 @@ use crate::error::{Result, WorkbookError};
 use crate::profile::date_value;
 use crate::view::parse_number;
 use crate::writer::write_atomically;
+
+/// Cell styles with a date format, for dates entered by formula into cells of the General
+/// format: one the file has, or one added after the file's, made from the cell's own style so
+/// its font, fill and borders stay.
+pub(crate) struct DateStyles {
+    /// The plain style the file has with each format, used for cells without a style.
+    existing: HashMap<u32, usize>,
+    general: Vec<bool>,
+    next: usize,
+    /// Styles to add, in order: the style each copies (if any) and its format.
+    added: Vec<(Option<usize>, u32)>,
+    by_request: HashMap<(Option<usize>, u32), usize>,
+}
+
+impl DateStyles {
+    fn new(styles: &super::styles::Styles) -> Self {
+        let count = styles.style_count();
+        let existing = [14, 22].into_iter().filter_map(|id| Some((id, styles.style_with_format(id)?))).collect();
+        Self {
+            existing,
+            general: (0..count).map(|style| styles.format_id(style) == 0).collect(),
+            next: count.max(1),
+            added: Vec::new(),
+            by_request: HashMap::new(),
+        }
+    }
+
+    /// The style for a cell of style `base` showing format `id`; `None` keeps the cell's own,
+    /// as for a cell whose style is not General.
+    fn style(&mut self, base: Option<usize>, id: u32) -> Option<usize> {
+        match base {
+            Some(style) if !self.general.get(style).copied().unwrap_or(true) => return None,
+            None | Some(0) => {
+                if let Some(&style) = self.existing.get(&id) {
+                    return Some(style);
+                }
+            }
+            _ => {}
+        }
+        let key = (base.filter(|&style| style != 0), id);
+        if let Some(&style) = self.by_request.get(&key) {
+            return Some(style);
+        }
+        let style = self.next;
+        self.next += 1;
+        self.added.push(key);
+        self.by_request.insert(key, style);
+        Some(style)
+    }
+}
+
+/// `styles.xml` with cell styles added at the end of `cellXfs`: each a copy of a style of the
+/// file, or of a plain one, with a number format. `None` if the part has no `cellXfs` list.
+fn add_styles(xml: &str, added: &[(Option<usize>, u32)]) -> Option<String> {
+    let open = find_element(xml, "cellXfs")?;
+    let tag_end = open + xml[open..].find('>')? + 1;
+    if xml[..tag_end].ends_with("/>") {
+        return None;
+    }
+    let close = tag_end + end_tag(&xml[tag_end..], "cellXfs")?;
+    let inner = &xml[tag_end..close];
+    // The styles there are, as their elements.
+    let mut elements = Vec::new();
+    let mut at = 0;
+    while let Some(offset) = find_element(&inner[at..], "xf") {
+        let start = at + offset;
+        let tag = start + inner[start..].find('>')? + 1;
+        let end = if inner[..tag].ends_with("/>") {
+            tag
+        } else {
+            let close = tag + end_tag(&inner[tag..], "xf")?;
+            close + inner[close..].find('>')? + 1
+        };
+        elements.push(&inner[start..end]);
+        at = end;
+    }
+    let mut extra = String::new();
+    for &(base, id) in added {
+        let element = base
+            .and_then(|style| elements.get(style).copied())
+            .unwrap_or(r#"<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>"#);
+        let tag_len = element.find('>').map_or(element.len(), |end| end + 1);
+        let tag = set_attribute(&element[..tag_len], "numFmtId", Some(&id.to_string()));
+        let tag = set_attribute(&tag, "applyNumberFormat", Some("1"));
+        extra.push_str(&tag);
+        extra.push_str(&element[tag_len..]);
+    }
+    let open_tag = set_attribute(&xml[open..tag_end], "count", Some(&(elements.len() + added.len()).to_string()));
+    Some(format!("{}{open_tag}{inner}{extra}{}", &xml[..open], &xml[close..]))
+}
+
+/// Where the end tag of an element starts in the text after its start tag, with any prefix.
+fn end_tag(text: &str, name: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(offset) = text[from..].find("</") {
+        let start = from + offset;
+        let tag = &text[start + 2..];
+        let end = tag.find(|c: char| c.is_whitespace() || c == '>').unwrap_or(tag.len());
+        if tag[..end].rsplit(':').next() == Some(name) {
+            return Some(start);
+        }
+        from = start + 2;
+    }
+    None
+}
 
 /// A sheet saved anew, and whether a formula of it changed or moved.
 struct PatchedSheet {
@@ -42,6 +148,7 @@ impl Workbook {
         };
         let mut replaced: HashMap<String, Vec<u8>> = HashMap::new();
         let mut formulas_changed = false;
+        let date_styles = RefCell::new(DateStyles::new(styles));
         for &(index, document) in sheets {
             let entry = self.sheets.get(index).ok_or(WorkbookError::NoSuchSheet { sheet: index + 1 })?;
             let (Some(part), Some(source)) = (entry.part.as_deref(), document.sheet.as_ref()) else {
@@ -59,7 +166,7 @@ impl Workbook {
                 return Err(WorkbookError::MissingCells { sheet: entry.name.clone() }.into());
             };
             let own = entry.name.to_lowercase();
-            if let Some(patched) = patch_sheet(&text, &spans, part, &own, document, &context)? {
+            if let Some(patched) = patch_sheet(&text, &spans, part, &own, document, &context, &date_styles)? {
                 formulas_changed |= patched.formulas_changed;
                 replaced.insert(part.to_lowercase(), patched.xml.into_bytes());
             }
@@ -85,6 +192,21 @@ impl Workbook {
             workbook = remap_defined_names(&workbook, &changes);
         }
         replaced.insert(workbook_part.to_lowercase(), compute_on_load(&workbook).into_bytes());
+        // Styles added for dates entered by formula into cells of the General format.
+        let date_styles = date_styles.into_inner();
+        if !date_styles.added.is_empty() {
+            let relationships = package.relationships(workbook_part)?;
+            let part = relationships
+                .iter()
+                .find(|relationship| relationship.kind == "styles" && !relationship.external)
+                .map(|relationship| relationship.target.clone());
+            if let Some(part) = part
+                && let Some(text) = package.read_text(&part)?
+                && let Some(patched) = add_styles(&text, &date_styles.added)
+            {
+                replaced.insert(part.to_lowercase(), patched.into_bytes());
+            }
+        }
 
         // The calculation chain lists cells with formulas; one that lost its formula would make
         // Excel repair the file, so the chain goes and Excel builds it again.
@@ -104,7 +226,15 @@ impl Workbook {
 }
 
 /// The sheet's XML with the document's cells, or `None` if nothing changed.
-fn patch_sheet(xml: &str, spans: &Spans, part: &str, own: &str, document: &Document, context: &Context) -> Result<Option<PatchedSheet>> {
+fn patch_sheet(
+    xml: &str,
+    spans: &Spans,
+    part: &str,
+    own: &str,
+    document: &Document,
+    context: &Context,
+    date_styles: &RefCell<DateStyles>,
+) -> Result<Option<PatchedSheet>> {
     let Some((data_start, data_end)) = spans.sheet_data else {
         return Ok(None);
     };
@@ -243,6 +373,14 @@ fn patch_sheet(xml: &str, spans: &Spans, part: &str, own: &str, document: &Docum
                     Some(range) => format!("<{prefix}f t=\"array\" ref=\"{range}\">{}</{prefix}f>", escape_text(&formula.formula)),
                     None => format!("<{prefix}f>{}</{prefix}f>", escape_text(&formula.formula)),
                 });
+                // A date entered by formula into a General cell gets a date format, as in Excel.
+                let style = match formula.date_format {
+                    Some(id) => {
+                        let base = style.as_deref().and_then(|style| style.parse::<usize>().ok());
+                        date_styles.borrow_mut().style(base, id).map(|style| style.to_string()).or(style)
+                    }
+                    None => style,
+                };
                 body.push_str(&write_formula_cell(&prefix, &reference, style.as_deref(), &element, &formula.computed));
                 continue;
             }

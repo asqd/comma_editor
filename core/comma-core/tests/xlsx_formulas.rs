@@ -138,7 +138,8 @@ fn circular_and_unknown_formulas() {
     assert_eq!((sales.cell(6, 0).unwrap(), sales.cell(6, 1).unwrap()), ("0".to_owned(), "0".to_owned()));
     assert_eq!(report.not_computed, 1);
     assert_eq!(sales.cell(6, 2).unwrap(), "");
-    assert_eq!(sales.cell(6, 4).unwrap(), "45658");
+    // A General cell shows TODAY as a date, as Excel formats it.
+    assert_eq!(sales.cell(6, 4).unwrap(), "01.01.2025");
 }
 
 #[test]
@@ -300,4 +301,35 @@ fn array_formulas_work_on_whole_ranges() {
     // ROUND would have to run cell by cell: left to Excel rather than computed wrong, as is
     // the formula filling two cells.
     assert_eq!(report.not_computed, 2);
+}
+
+#[test]
+fn a_date_entered_by_formula_into_a_general_cell_shows_as_a_date() {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let bold = Format::new().set_bold();
+    let date = Format::new().set_num_format("dd.mm.yyyy");
+    let sheet = workbook.add_worksheet();
+    sheet.write_number_with_format(0, 0, 45658.0, &date).unwrap();
+    sheet.write_string_with_format(0, 1, "bold", &bold).unwrap();
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    let mut document = workbook.read_sheet(0, &russian()).unwrap().document;
+    grow(&mut document, 3, 4);
+    document.set_cell(0, 2, "=TODAY()").unwrap();
+    document.set_cell(1, 2, "=A1+7").unwrap();
+    document.set_cell(1, 3, "=A1-A1").unwrap();
+    document.set_cell(0, 1, "=NOW()").unwrap();
+    workbook.recalculate(&mut [(0, &mut document)], NOW).unwrap();
+    assert_eq!(document.cell(0, 2).unwrap(), "01.01.2025");
+    assert_eq!(document.cell(1, 2).unwrap(), "08.01.2025");
+    // A date minus a date is days, a number.
+    assert_eq!(document.cell(1, 3).unwrap(), "0");
+    assert_eq!(document.cell(0, 1).unwrap(), "01.01.2025 12:00");
+    let saved = workbook.to_bytes(&[(0, &document)]).unwrap();
+    let styles = sheet_xml(&saved, "xl/styles.xml");
+    // The bold cell keeps its font in a style of its own with the date and time format.
+    assert!(styles.contains(r#"numFmtId="22""#), "{styles}");
+    let reopened = Workbook::from_bytes(saved).unwrap().read_sheet(0, &russian()).unwrap().document;
+    assert_eq!(reopened.cell(0, 2).unwrap(), "01.01.2025");
+    assert_eq!(reopened.cell(1, 2).unwrap(), "08.01.2025");
+    assert_eq!(reopened.cell(0, 1).unwrap(), "01.01.2025 12:00");
 }

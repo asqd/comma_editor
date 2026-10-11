@@ -76,6 +76,21 @@ impl Styles {
     }
 
     /// Compiled formats by style index; a style without a known format shows General.
+    /// The format id of a cell style; 0, General, for a style the file does not have.
+    pub(crate) fn format_id(&self, style: usize) -> u32 {
+        self.style_formats.get(style).copied().unwrap_or(0)
+    }
+
+    /// The first cell style with a format id, if the file has one.
+    pub(crate) fn style_with_format(&self, id: u32) -> Option<usize> {
+        self.style_formats.iter().position(|&format| format == id)
+    }
+
+    /// How many cell styles the file has; a style added gets this index.
+    pub(crate) fn style_count(&self) -> usize {
+        self.style_formats.len()
+    }
+
     pub(crate) fn formats(&self, locale: &DisplayLocale) -> Vec<Arc<NumberFormat>> {
         let general = Arc::new(NumberFormat::general());
         let mut by_id: HashMap<u32, Arc<NumberFormat>> = HashMap::new();

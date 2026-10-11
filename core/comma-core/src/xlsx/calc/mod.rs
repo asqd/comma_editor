@@ -16,11 +16,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use self::eval::{Cells, Evaluator, Unsupported, Value};
-use self::parse::{Area, Expr};
+use self::parse::{Area, BinaryOp, Expr, UnaryOp};
 use super::numfmt::{DisplayLocale, NumberFormat};
 use super::sheet::{RawCell, RawSheet, RawValue};
 use super::{Source, Workbook};
-use crate::document::{Computed, Document, Field, FormulaField};
+use crate::document::{Computed, Document, Field, FormulaField, FormulaResult};
 use crate::error::Result;
 use crate::formula::FormulaError;
 
@@ -193,7 +193,7 @@ impl Workbook {
 
         // Results shown in each cell's format, written where they changed.
         let mut report = Recalculation { circular: model.circular, ..Recalculation::default() };
-        let mut updates: HashMap<usize, Vec<(usize, usize, String, Computed)>> = HashMap::new();
+        let mut updates: HashMap<usize, Vec<FormulaResult>> = HashMap::new();
         for &index in &order {
             let formula = &formulas[index];
             let Some(Ok(value)) = model.results[index].clone() else {
@@ -202,12 +202,21 @@ impl Workbook {
             };
             let document = model.documents[&formula.sheet];
             let style = model.style(document, formula.sheet, formula.row, formula.column);
-            let format = formats.get(style).unwrap_or(&formats[0]);
+            // A date entered by formula into a General cell shows as a date, as Excel formats it.
+            let date_format = match (&value, &formula.expr) {
+                (Value::Number(_), Some(expr)) if formula.entered && styles.format_id(style) == 0 => {
+                    model.date_kind(expr, formula.sheet)
+                }
+                _ => None,
+            };
+            let date = date_format.map(|id| NumberFormat::parse(&date_code(id, &locale)));
+            let format = date.as_ref().unwrap_or_else(|| formats.get(style).unwrap_or(&formats[0]));
             let (shown, computed) = show(&value, format, &locale, self.date1904);
             let current = document.field_at(formula.row as usize, formula.column as usize);
-            let unchanged = matches!(current, Some(Field::Formula(cell)) if cell.value == shown && cell.computed == computed);
+            let unchanged = matches!(current, Some(Field::Formula(cell))
+                if cell.value == shown && cell.computed == computed && cell.date_format == date_format);
             if !unchanged {
-                updates.entry(formula.sheet).or_default().push((formula.row as usize, formula.column as usize, shown, computed));
+                updates.entry(formula.sheet).or_default().push((formula.row as usize, formula.column as usize, shown, computed, date_format));
             }
         }
         drop(model);
@@ -383,6 +392,40 @@ impl Model<'_> {
         self.raw(sheet).get(row, column).map_or(0, |cell| cell.style as usize)
     }
 
+    /// Whether an expression gives a date, as Excel tells when it formats a General cell a
+    /// formula is entered into: the date functions, a date cell, a date plus or minus days.
+    /// The built-in format it then gets: 14, the short date, or 22 with the time for NOW.
+    fn date_kind(&mut self, expr: &Expr, sheet: usize) -> Option<u32> {
+        match expr {
+            Expr::Call(name, _) => match name.trim_start_matches("_xlfn.").to_uppercase().as_str() {
+                "TODAY" | "DATE" | "EDATE" | "EOMONTH" | "DATEVALUE" | "WORKDAY" => Some(14),
+                "NOW" => Some(22),
+                _ => None,
+            },
+            Expr::Unary(UnaryOp::Plus, operand) => self.date_kind(operand, sheet),
+            Expr::Binary(op @ (BinaryOp::Add | BinaryOp::Subtract), left, right) => {
+                match (self.date_kind(left, sheet), self.date_kind(right, sheet)) {
+                    (Some(kind), None) => Some(kind),
+                    (None, Some(kind)) if *op == BinaryOp::Add => Some(kind),
+                    _ => None,
+                }
+            }
+            Expr::Reference(reference) if reference.area.is_cell() => {
+                let target = match &reference.sheet {
+                    None => sheet,
+                    Some(name) => self.sheet(name)?,
+                };
+                let (row, column) = (reference.area.top, reference.area.left);
+                let style = match self.documents.get(&target).copied() {
+                    Some(document) => self.style(document, target, row, column),
+                    None => self.raw(target).get(row as usize, column as usize).map_or(0, |cell| cell.style as usize),
+                };
+                self.formats.get(style).is_some_and(|format| format.is_date()).then_some(14)
+            }
+            _ => None,
+        }
+    }
+
     fn format(&self, style: u32) -> &NumberFormat {
         self.formats.get(style as usize).unwrap_or(&self.formats[0])
     }
@@ -478,6 +521,11 @@ fn computed_value(cell: &FormulaField) -> Value {
         Computed::Unknown if cell.value.is_empty() => Value::Empty,
         Computed::Unknown => Value::Text(cell.value.clone()),
     }
+}
+
+/// The code of a built-in date format as this Mac shows it: 14 the short date, 22 with the time.
+pub(crate) fn date_code(id: u32, locale: &DisplayLocale) -> String {
+    if id == 22 { format!("{} hh:mm", locale.short_date) } else { locale.short_date.clone() }
 }
 
 /// A result as a cell of this format shows it, and as it is kept.

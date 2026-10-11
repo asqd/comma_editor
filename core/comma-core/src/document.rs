@@ -77,7 +77,13 @@ pub(crate) struct FormulaField {
     pub computed: Computed,
     /// Read from the file: saving keeps its formula as the file writes it, shared or not.
     pub from_file: bool,
+    /// A built-in date format (14, or 22 with the time) Excel gives a cell of the General
+    /// format when a formula entered into it gives a date, as `=TODAY()` does.
+    pub date_format: Option<u32>,
 }
+
+/// A formula's result for a cell: row, column, shown, kept, and the date format it brings.
+pub(crate) type FormulaResult = (usize, usize, String, Computed, Option<u32>);
 
 /// The result of a formula.
 #[derive(Clone, Debug, PartialEq)]
@@ -437,16 +443,17 @@ impl Document {
     /// Writes computed results of formulas, as `(row, column, value shown, result)`. Results
     /// follow from the cells they read, so they are not undone: computing again after an undo
     /// brings back the earlier ones. The rows count as edited, so saving writes them.
-    pub(crate) fn set_formula_results(&mut self, results: Vec<(usize, usize, String, Computed)>) {
+    pub(crate) fn set_formula_results(&mut self, results: Vec<FormulaResult>) {
         if results.is_empty() {
             return;
         }
         let records = Arc::make_mut(&mut self.records);
-        for (row, column, value, computed) in results {
+        for (row, column, value, computed, date_format) in results {
             let Some(Record::Modified(modified)) = records.get_mut(row) else { continue };
             if let Some(Field::Formula(cell)) = modified.fields.get_mut(column) {
                 cell.value = value;
                 cell.computed = computed;
+                cell.date_format = date_format;
                 modified.edited = true;
             }
         }
@@ -944,7 +951,7 @@ impl Document {
         let text = value.strip_prefix('=').filter(|text| !text.trim().is_empty())?;
         let formula = crate::xlsx::normalize_formula(text).ok()?;
         sheet.formulas_entered.store(true, Ordering::Relaxed);
-        Some(FormulaField { formula, value: String::new(), array: None, computed: Computed::Unknown, from_file: false })
+        Some(FormulaField { formula, value: String::new(), array: None, computed: Computed::Unknown, from_file: false, date_format: None })
     }
 
     pub fn set_cell(&mut self, row: usize, column: usize, value: &str) -> Result<bool> {
@@ -977,6 +984,7 @@ impl Document {
                 array: None,
                 computed: Computed::Unknown,
                 from_file: false,
+                date_format: None,
             })),
             None => Field::Text(value.to_owned()),
         };

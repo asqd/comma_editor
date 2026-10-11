@@ -385,7 +385,7 @@ fn place(rows: &mut Vec<Vec<Field>>, cell: &mut Cell, context: &Context) {
                 RawValue::Error(_) => Computed::Error(cell.value.clone()),
                 RawValue::Empty => Computed::Unknown,
             };
-            Field::Formula(Box::new(FormulaField { formula, value, array: cell.array.take(), computed, from_file: true }))
+            Field::Formula(Box::new(FormulaField { formula, value, array: cell.array.take(), computed, from_file: true, date_format: None }))
         }
         None => Field::Text(value),
     };
