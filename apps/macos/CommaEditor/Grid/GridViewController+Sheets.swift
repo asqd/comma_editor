@@ -5,6 +5,8 @@ struct SheetViewState {
     var widths: [Int: CGFloat]
     var hidden: Set<Int>
     var frozen: Int
+    /// Rows of the sheet frozen at the top, its first row counted.
+    var frozenRows: Int
     var selection: GridSelection?
     var scroll: NSPoint
 }
@@ -118,6 +120,7 @@ extension GridViewController {
         pendingColumnWidths = state.widths
         hiddenColumns = state.hidden
         frozenColumnCount = state.frozen
+        frozenTopRows = state.frozenRows
     }
 
     private func currentSheetState() -> SheetViewState {
@@ -131,6 +134,7 @@ extension GridViewController {
             widths: widths,
             hidden: hiddenColumns,
             frozen: frozenColumnCount,
+            frozenRows: frozenTopRows,
             selection: selection,
             scroll: scrollView.contentView.bounds.origin
         )
@@ -139,7 +143,7 @@ extension GridViewController {
     /// Widths, hidden columns and frozen columns as Excel shows the sheet.
     private func initialState(for layout: SheetLayout?) -> SheetViewState {
         let columns = Int(info.columnCount)
-        var state = SheetViewState(widths: [:], hidden: [], frozen: 0, selection: nil, scroll: topLeft)
+        var state = SheetViewState(widths: [:], hidden: [], frozen: 0, frozenRows: 0, selection: nil, scroll: topLeft)
         guard let layout else { return state }
         // Widths only when the sheet sets some; otherwise the table's own default.
         if layout.columns.contains(where: { $0.width != nil }) || layout.defaultColumnWidth != nil {
@@ -166,6 +170,7 @@ extension GridViewController {
             state.hidden = []
         }
         state.frozen = min(Int(layout.frozenColumns), max(0, columns - 1))
+        state.frozenRows = Int(layout.frozenRows)
         return state
     }
 

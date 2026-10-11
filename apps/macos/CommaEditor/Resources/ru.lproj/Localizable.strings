@@ -324,6 +324,8 @@
 "Column Move" = "Перемещение колонки";
 "Freeze Columns Through This One" = "Закрепить колонки до этой";
 "Unfreeze Columns" = "Снять закрепление колонок";
+"Freeze Rows Through This One" = "Закрепить строки до этой";
+"Unfreeze Rows" = "Снять закрепление строк";
 "Hide Column" = "Скрыть колонку";
 "Show All Columns" = "Показать все колонки";
 "Show All Columns (%@ hidden)" = "Показать все колонки (скрыто: %@)";

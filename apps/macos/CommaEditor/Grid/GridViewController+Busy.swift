@@ -93,6 +93,7 @@ extension GridViewController {
             for table in tables {
                 table.noteNumberOfRowsChanged()
             }
+            updateFrozenRows()
             if String(info.rowCount).count != String(previous.rowCount).count {
                 updateRowNumberWidth()
             }

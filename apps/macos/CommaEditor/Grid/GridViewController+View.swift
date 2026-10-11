@@ -238,7 +238,7 @@ extension GridViewController {
     func configureMenus() {
         headerMenu.delegate = self
         cellMenu.delegate = self
-        for table in tables {
+        for table in rowTables {
             table.headerView?.menu = headerMenu
             table.menu = cellMenu
         }
@@ -289,7 +289,7 @@ extension GridViewController: NSMenuDelegate {
         }
 
         menu.removeAllItems()
-        guard let table = tables.first(where: { $0.clickedRow >= 0 }),
+        guard let table = rowTables.first(where: { $0.clickedRow >= 0 }),
               let column = dataColumn(in: table, at: table.clickedColumn) else { return }
         let row = table.clickedRow
         if selection?.contains(row: row, column: column) != true {
@@ -317,6 +317,10 @@ extension GridViewController: NSMenuDelegate {
         menu.addItem(menuItem(L("Insert Row Above"), #selector(insertRowAbove(_:))))
         menu.addItem(menuItem(L("Insert Row Below"), #selector(insertRowBelow(_:))))
         menu.addItem(menuItem(L("Delete Rows"), #selector(deleteRows(_:))))
+        menu.addItem(.separator())
+        menu.addItem(frozenRowCount > 0 && row < frozenRowCount
+            ? menuItem(L("Unfreeze Rows"), #selector(unfreezeRows(_:)))
+            : menuItem(L("Freeze Rows Through This One"), #selector(freezeRows(_:))))
     }
 }
 
@@ -472,6 +476,10 @@ extension GridViewController: NSMenuItemValidation {
             return columnCount > 1
         case #selector(unfreezeColumns(_:)):
             return frozenColumnCount > 0
+        case #selector(freezeRows(_:)):
+            return activeRow != nil && dataRowCount > 1
+        case #selector(unfreezeRows(_:)):
+            return frozenRowCount > 0
         case #selector(hideColumns(_:)):
             return columnCount - hiddenColumns.count > (selection?.columns.count ?? 1)
         case #selector(showAllColumns(_:)):

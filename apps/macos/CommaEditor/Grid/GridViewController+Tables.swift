@@ -27,7 +27,7 @@ extension GridViewController {
     }
 
     func table(containing view: NSView) -> GridTableView? {
-        tables.first { view.isDescendant(of: $0) }
+        rowTables.first { view.isDescendant(of: $0) }
     }
 
     // MARK: Layout and scrolling
@@ -88,17 +88,21 @@ extension GridViewController {
         for table in tables {
             table.reloadData()
         }
+        updateFrozenRows()
     }
 
     func reloadRows(_ rows: IndexSet) {
-        for table in tables where table.numberOfColumns > 0 {
+        for table in rowTables where table.numberOfColumns > 0 {
+            let rows = isFrozenRowTable(table) ? rows.filteredIndexSet { $0 < frozenRowCount } : rows
+            guard !rows.isEmpty else { continue }
             table.reloadData(forRowIndexes: rows, columnIndexes: IndexSet(integersIn: 0..<table.numberOfColumns))
         }
     }
 
     func scrollToCell(row: Int, column: Int) {
-        if row >= 0, row < dataRowCount {
-            tableView.scrollRowToVisible(row)
+        // Frozen rows are always in view.
+        if row >= frozenRowCount, row < dataRowCount {
+            scrollRowBelowFrozen(row)
         }
         if let (table, index) = location(ofDataColumn: column), table === tableView {
             tableView.scrollColumnToVisible(index)
@@ -108,7 +112,7 @@ extension GridViewController {
     /// The cell nearest to a point in the window, over either table.
     func cellNear(windowPoint: NSPoint) -> (row: Int, column: Int) {
         let inFrozen = frozenScrollView.convert(windowPoint, from: nil).x < frozenScrollView.bounds.width
-        let table = inFrozen ? frozenTable : tableView
+        let table = frozenRowTable(at: windowPoint) ?? (inFrozen ? frozenTable : tableView)
         let point = table.convert(windowPoint, from: nil)
         let row = table.nearestRow(to: point)
         let column = table.numberOfColumns > 0 ? dataColumn(in: table, at: table.nearestColumn(to: point)) : nil
@@ -164,6 +168,7 @@ extension GridViewController {
             column.isHidden = hiddenColumns.contains(index)
         }
         updateFrozenWidth()
+        syncFrozenRowColumns()
         updateStatus()
     }
 
@@ -215,7 +220,7 @@ extension GridViewController {
         }
         reloadTables()
         if let row = activeRow {
-            tableView.scrollRowToVisible(row)
+            scrollToCell(row: row, column: activeColumn)
         }
     }
 
@@ -293,6 +298,13 @@ extension GridViewController {
 
     /// Visible row before which rows dropped at a point go.
     private func dropTarget(at windowPoint: NSPoint) -> Int {
+        // Over the frozen rows: among them, not among the rows scrolled under them.
+        if frozenRowTable(at: windowPoint) != nil {
+            let point = topTable.convert(windowPoint, from: nil)
+            let row = topTable.row(at: NSPoint(x: topTable.visibleRect.midX, y: point.y))
+            guard row >= 0 else { return frozenRowCount }
+            return point.y > topTable.rect(ofRow: row).midY ? row + 1 : row
+        }
         let point = rowPoint(windowPoint)
         let row = tableView.row(at: point)
         guard row >= 0 else {
@@ -304,8 +316,10 @@ extension GridViewController {
     func showMoveIndicator(at windowPoint: NSPoint) {
         guard dataRowCount > 0 else { return }
         let target = dropTarget(at: windowPoint)
-        let y = target < dataRowCount ? tableView.rect(ofRow: target).minY : tableView.rect(ofRow: dataRowCount - 1).maxY
-        let point = tableArea.convert(NSPoint(x: 0, y: y), from: tableView)
+        // A line among the frozen rows is drawn where they show.
+        let rows: NSTableView = frozenRowTable(at: windowPoint) != nil ? topTable : tableView
+        let y = target < rows.numberOfRows ? rows.rect(ofRow: target).minY : rows.rect(ofRow: rows.numberOfRows - 1).maxY
+        let point = tableArea.convert(NSPoint(x: 0, y: y), from: rows)
         let visible = tableArea.convert(scrollView.contentView.frame, from: scrollView)
         guard point.y >= visible.minY - 1, point.y <= visible.maxY + 1 else {
             moveIndicator.isHidden = true
@@ -336,9 +350,11 @@ extension GridViewController {
 
 extension GridViewController {
     @objc func tableViewColumnDidResize(_ notification: Notification) {
-        if notification.object as? NSTableView === frozenTable {
+        guard let table = notification.object as? NSTableView, !isFrozenRowTable(table) else { return }
+        if table === frozenTable {
             updateFrozenWidth()
         }
+        syncFrozenRowColumns()
     }
 
     /// Double-clicking a header divider fits the column to its content.

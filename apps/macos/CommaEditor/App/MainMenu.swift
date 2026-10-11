@@ -215,6 +215,8 @@ enum MainMenu {
             .separator(),
             item(L("Freeze Columns Through This One"), #selector(GridViewController.freezeColumns(_:))),
             item(L("Unfreeze Columns"), #selector(GridViewController.unfreezeColumns(_:))),
+            item(L("Freeze Rows Through This One"), #selector(GridViewController.freezeRows(_:))),
+            item(L("Unfreeze Rows"), #selector(GridViewController.unfreezeRows(_:))),
             item(L("Hide Column"), #selector(GridViewController.hideColumns(_:))),
             item(L("Show All Columns"), #selector(GridViewController.showAllColumns(_:))),
             item(L("Fit Column Width"), #selector(GridViewController.autofitColumns(_:)), "0", [.command, .option]),

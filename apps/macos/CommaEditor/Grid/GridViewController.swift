@@ -22,6 +22,18 @@ final class GridViewController: NSViewController {
     lazy var frozenWidth = frozenScrollView.widthAnchor.constraint(equalToConstant: 0)
     /// Data columns kept at the left while the table scrolls sideways.
     var frozenColumnCount = 0
+    /// The frozen rows, drawn by two more tables over the top; see `+FrozenRows`.
+    let topFrozenTable = GridTableView()
+    let topTable = GridTableView()
+    let topFrozenScrollView = ForwardingScrollView()
+    let topScrollView = ForwardingScrollView()
+    let frozenRowsEdge = NSBox()
+    lazy var frozenRowsTop = topScrollView.topAnchor.constraint(equalTo: tableArea.topAnchor)
+    lazy var frozenRowsHeight = topScrollView.heightAnchor.constraint(equalToConstant: 0)
+    lazy var frozenRowsTrailing = topScrollView.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor)
+    /// Rows of the file frozen at the top, a header row counted: what a sheet freezes, so the
+    /// setting means the same rows in either mode. `frozenRowCount` is what the table shows.
+    var frozenTopRows = 0
     /// Data columns hidden from view; the file keeps them.
     var hiddenColumns: Set<Int> = []
     /// Column widths to use at the next rebuild, by data column, after columns moved.
@@ -240,6 +252,7 @@ final class GridViewController: NSViewController {
             sidePanel.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             sidePanelWidth,
         ])
+        configureFrozenRows(in: content)
 
         let sheetBar = configureSheetTabs()
         let stack = NSStackView(views: [findContainer, filterContainer, content, separator, sheetBar, statusBar])
@@ -276,7 +289,14 @@ final class GridViewController: NSViewController {
         for table in tables {
             configure(table)
         }
+        for table in frozenRowTables {
+            configure(table)
+            table.headerView = nil
+            table.allowsColumnReordering = false
+            table.allowsColumnResizing = false
+        }
         syncVerticalScrolling()
+        syncFrozenRowsScrolling()
         configureMenus()
         findBar.delegate = self
         findBar.currentSelection = { [weak self] in
@@ -303,6 +323,7 @@ final class GridViewController: NSViewController {
     override func viewDidLayout() {
         super.viewDidLayout()
         alignFrozenBottom()
+        layoutFrozenRows()
     }
 
     override func viewDidAppear() {
@@ -317,7 +338,7 @@ final class GridViewController: NSViewController {
         #endif
     }
 
-    private func configure(_ table: GridTableView) {
+    func configure(_ table: GridTableView) {
         table.style = .plain
         table.rowSizeStyle = .custom
         table.rowHeight = Self.baseRowHeight
@@ -412,6 +433,7 @@ final class GridViewController: NSViewController {
         }
         refreshColumnTitles()
         updateRowNumberWidth()
+        updateFrozenRows()
     }
 
     private func refreshColumnTitles() {
@@ -451,6 +473,7 @@ final class GridViewController: NSViewController {
         let digits = max(3, String(Int(info.rowCount)).count)
         frozenTable.tableColumn(withIdentifier: .rowNumberColumn)?.width = CGFloat(digits) * 8 + 14
         updateFrozenWidth()
+        syncFrozenRowColumns()
     }
 
     func dataColumn(of tableColumn: NSTableColumn) -> Int? {
@@ -680,8 +703,8 @@ final class GridViewController: NSViewController {
 
     /// NSTableView's own (invisible) selection follows the cursor row: editing needs it.
     private func syncTableSelection() {
-        for table in tables {
-            guard let row = activeRow else {
+        for table in rowTables {
+            guard let row = activeRow, !isFrozenRowTable(table) || row < frozenRowCount else {
                 table.deselectAll(nil)
                 continue
             }
@@ -693,8 +716,13 @@ final class GridViewController: NSViewController {
 
     func redrawVisibleRows() {
         let visible = tableView.rows(in: tableView.visibleRect)
-        guard visible.length > 0 else { return }
-        reloadRows(IndexSet(integersIn: visible.location..<NSMaxRange(visible)))
+        // The frozen rows are in view wherever the table is scrolled.
+        var rows = IndexSet(integersIn: 0..<frozenRowCount)
+        if visible.length > 0 {
+            rows.insert(integersIn: visible.location..<NSMaxRange(visible))
+        }
+        guard !rows.isEmpty else { return }
+        reloadRows(rows)
     }
 
     /// Moves the cursor by rows and columns, or to the edge of the table. With `extend` the
@@ -746,8 +774,12 @@ final class GridViewController: NSViewController {
             presentCellEditor(row: row, column: activeColumn)
             return
         }
-        guard let (table, index) = location(ofDataColumn: activeColumn) else { return }
+        guard var (table, index) = location(ofDataColumn: activeColumn) else { return }
         scrollToCell(row: row, column: activeColumn)
+        // A frozen row is edited where it shows, in the table over the top.
+        if row < frozenRowCount {
+            table = frozenRowTable(over: table)
+        }
         table.editColumn(index, row: row, with: nil, select: true)
         // The editor starts from the real value, not from the marks of invisible characters;
         // for a cell with a formula, from the formula.
@@ -1002,7 +1034,7 @@ final class GridViewController: NSViewController {
 
 extension GridViewController: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        dataRowCount
+        isFrozenRowTable(tableView) ? frozenRowCount : dataRowCount
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
