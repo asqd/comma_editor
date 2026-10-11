@@ -18,6 +18,8 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
     private weak var grid: GridViewController?
     private let left: CoreDocument
     private let leftName: String
+    /// The sheet shown in the table compared, when it is a workbook's.
+    private let leftSheet: String?
     private let url: URL
     private var right: CoreDocument?
     /// The other file when it is an Excel workbook, and the sheet of it compared.
@@ -34,7 +36,7 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
     private static let pageSize = 200
 
     private let keyPopup = NSPopUpButton()
-    private let sheetLabel = NSTextField(labelWithString: L("Sheet:"))
+    private let sheetLabel = NSTextField(labelWithString: "")
     private let sheetPopup = NSPopUpButton()
     private let caseCheck = NSButton(checkboxWithTitle: L("Ignore case"), target: nil, action: nil)
     private let trimCheck = NSButton(checkboxWithTitle: L("Ignore surrounding spaces"), target: nil, action: nil)
@@ -54,6 +56,7 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
         self.grid = grid
         left = grid.document.core
         leftName = grid.document.displayName ?? L("Untitled")
+        leftSheet = grid.workbook.flatMap { $0.sheets.indices.contains($0.sheetIndex) ? $0.sheets[$0.sheetIndex].name : nil }
         self.url = url
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600),
@@ -93,6 +96,10 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
         keyPopup.action = #selector(optionsChanged(_:))
         sheetPopup.target = self
         sheetPopup.action = #selector(sheetChanged(_:))
+        // The sheet chosen is the other file's: the table compared stays the one shown.
+        sheetLabel.stringValue = L("Sheet of the other file:")
+        sheetLabel.toolTip = url.lastPathComponent
+        sheetPopup.toolTip = url.lastPathComponent
         sheetLabel.isHidden = true
         sheetPopup.isHidden = true
         for check in [caseCheck, trimCheck] {
@@ -175,6 +182,7 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
         let url = url
         let locale = WorkbookDocument.displayLocale
         let opened = workbook
+        let leftSheet = leftSheet
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let read = Result { () throws -> (CoreDocument, CoreWorkbook?, Int) in
                 guard opened != nil || Self.isWorkbook(url) else {
@@ -187,7 +195,9 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
                 let workbook = try opened ?? CoreWorkbook.open(path: url.path)
                 let sheets = workbook.sheets()
                 let active = Int(workbook.activeSheet())
-                let index = sheet ?? (sheets.indices.contains(active) && sheets[active].isTable
+                // The sheet of the same name as the one compared, else the one Excel opens at.
+                let namesake = leftSheet.flatMap { name in sheets.firstIndex { $0.isTable && $0.name.lowercased() == name.lowercased() } }
+                let index = sheet ?? namesake ?? (sheets.indices.contains(active) && sheets[active].isTable
                     ? active : sheets.firstIndex(where: \.isTable) ?? 0)
                 guard let loaded = try workbook.readSheet(index: UInt64(index), locale: locale, job: SheetJob()) else {
                     throw CocoaError(.userCancelled)
@@ -207,7 +217,9 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
                     self.workbook = workbook
                     self.sheetIndex = index
                     self.fillSheetPopup()
-                    self.headerRows = (self.left.info().hasHeader ? 1 : 0, document.info().hasHeader ? 1 : 0)
+                    // Rows numbered as the tables number them: a sheet as Excel does, from its first row.
+                    let offset = { (info: DocumentInfo) in info.isSheet || !info.hasHeader ? 0 : 1 }
+                    self.headerRows = (offset(self.left.info()), offset(document.info()))
                     self.fillKeyPopup(document)
                     self.compare()
                 case .failure(let error):
