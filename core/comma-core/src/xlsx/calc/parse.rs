@@ -571,8 +571,18 @@ fn parse_with(formula: &str, separator: char, decimal: char) -> Result<Expr, For
 /// may be separated by `;`, as in Russian Excel, and then numbers may have a decimal comma;
 /// functions may have their Russian names.
 pub(crate) fn normalize(input: &str) -> Result<String, FormulaError> {
-    let semicolons = tokenize(input, ';', ',').is_ok_and(|tokens| tokens.iter().any(|(token, _)| *token == Token::Separator));
-    let (separator, decimal) = if semicolons { (';', ',') } else { (',', '.') };
+    // Russian Excel separates arguments with `;` and writes `1,5`; a formula with `;` or with
+    // Russian function names is read so, and so is one that reads only so (`=B2*1,5`).
+    let russian_tokens = tokenize(input, ';', ',');
+    let russian = russian_tokens.as_ref().is_ok_and(|tokens| {
+        tokens.iter().enumerate().any(|(index, (token, _))| {
+            *token == Token::Separator
+                || matches!(token, Token::Word(word) if word.chars().any(|c| matches!(c, 'а'..='я' | 'А'..='Я' | 'ё' | 'Ё'))
+                    && tokens.get(index + 1).is_some_and(|(next, _)| *next == Token::Open))
+        })
+    });
+    let english_fails = !russian && parse_with(input, ',', '.').is_err();
+    let (separator, decimal) = if russian || (english_fails && parse_with(input, ';', ',').is_ok()) { (';', ',') } else { (',', '.') };
     // Fails here with the position in what was typed.
     parse_with(input, separator, decimal)?;
     let tokens = tokenize(input, separator, decimal)?;
@@ -682,5 +692,10 @@ mod tests {
         assert_eq!(normalize("ПРОСМОТРX(A1;B:B;C:C)").unwrap(), "_xlfn.XLOOKUP(A1,B:B,C:C)");
         assert_eq!(normalize("'Мой лист'!A1*2").unwrap(), "'Мой лист'!A1*2");
         assert!(normalize("СУММ(A1").is_err());
+        // A decimal comma alone, and Russian names, read the Russian way.
+        assert_eq!(normalize("B2*1,5").unwrap(), "B2*1.5");
+        assert_eq!(normalize("СУММ(1,5)").unwrap(), "SUM(1.5)");
+        assert_eq!(normalize("SUM(1,5)").unwrap(), "SUM(1,5)");
+        assert!(normalize("1+").is_err());
     }
 }
