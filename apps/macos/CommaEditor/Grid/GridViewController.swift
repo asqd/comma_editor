@@ -26,6 +26,9 @@ final class GridViewController: NSViewController {
     var hiddenColumns: Set<Int> = []
     /// Column widths to use at the next rebuild, by data column, after columns moved.
     var pendingColumnWidths: [Int: CGFloat]?
+    /// Widths and hidden columns an undone column change brings back, once the table has the
+    /// column count they belong to.
+    var pendingColumnLayout: ColumnLayoutState?
     /// Lines of text each row shows; more than one wraps long values.
     var linesPerRow = 1
     /// Spaces at the ends, tabs, no-break spaces and empty values are marked.
@@ -377,6 +380,11 @@ final class GridViewController: NSViewController {
         if let pending = pendingColumnWidths {
             widths = pending
             pendingColumnWidths = nil
+        }
+        if let layout = pendingColumnLayout, layout.count == columnCount {
+            widths = layout.widths
+            hiddenColumns = layout.hidden
+            pendingColumnLayout = nil
         }
         frozenColumnCount = min(frozenColumnCount, max(0, columnCount - 1))
         hiddenColumns = hiddenColumns.filter { $0 < columnCount }
@@ -823,13 +831,63 @@ final class GridViewController: NSViewController {
 
     private func insertColumn(at column: Int) {
         let row = activeRow ?? 0
-        if document.insertColumn(at: column) {
+        let inserted = changingColumns(inserting: true, at: column) { document.insertColumn(at: column) }
+        if inserted {
             selectCell(row: row, column: column)
         }
     }
 
     @objc func deleteColumn(_ sender: Any?) {
-        document.deleteColumn(at: activeColumn)
+        let column = activeColumn
+        changingColumns(inserting: false, at: column) { document.deleteColumn(at: column) }
+    }
+
+    /// Inserts or deletes a column with `change`; widths and hidden columns move along with
+    /// the columns after it, as they do when a column moves.
+    @discardableResult
+    private func changingColumns(inserting: Bool, at column: Int, _ change: () -> Bool) -> Bool {
+        let before = ColumnLayoutState(
+            count: columnCount,
+            widths: Dictionary(uniqueKeysWithValues: (0..<columnCount).map { ($0, tableColumn(forDataColumn: $0)?.width ?? Self.defaultColumnWidth) }),
+            hidden: hiddenColumns
+        )
+        var widths = (0..<columnCount).map { tableColumn(forDataColumn: $0)?.width ?? Self.defaultColumnWidth }
+        var hidden = (0..<columnCount).map { hiddenColumns.contains($0) }
+        if inserting {
+            widths.insert(Self.defaultColumnWidth, at: min(column, widths.count))
+            hidden.insert(false, at: min(column, hidden.count))
+        } else if widths.indices.contains(column) {
+            widths.remove(at: column)
+            hidden.remove(at: column)
+        }
+        let previousHidden = hiddenColumns
+        // The change rebuilds the columns at once, with these.
+        pendingColumnWidths = Dictionary(uniqueKeysWithValues: widths.enumerated().map { ($0.offset, $0.element) })
+        hiddenColumns = Set(hidden.indices.filter { hidden[$0] })
+        let after = ColumnLayoutState(count: widths.count, widths: pendingColumnWidths ?? [:], hidden: hiddenColumns)
+        guard change() else {
+            pendingColumnWidths = nil
+            hiddenColumns = previousHidden
+            return false
+        }
+        // Undoing the change brings the layout back with it.
+        document.undoManager?.registerUndo(withTarget: self) { $0.restoreColumnLayout(before, undoing: after) }
+        return true
+    }
+
+    /// Puts back the widths and hidden columns of a column change being undone or redone. Undo
+    /// runs this before the table changes back and redo after it: the layout waits for the
+    /// column count it belongs to.
+    private func restoreColumnLayout(_ layout: ColumnLayoutState, undoing other: ColumnLayoutState) {
+        document.undoManager?.registerUndo(withTarget: self) { $0.restoreColumnLayout(other, undoing: layout) }
+        if layout.count == columnCount {
+            pendingColumnWidths = layout.widths
+            hiddenColumns = layout.hidden
+            rebuildColumns()
+            reloadTables()
+        } else {
+            pendingColumnLayout = layout
+        }
     }
 
     @objc func renameColumn(_ sender: Any?) {
@@ -1247,4 +1305,11 @@ final class GridCellView: NSTableCellView {
         NSColor.systemGreen.withAlphaComponent(0.8).setFill()
         corner.fill()
     }
+}
+
+/// Widths and hidden columns of a table with `count` columns, kept for undo.
+struct ColumnLayoutState {
+    let count: Int
+    let widths: [Int: CGFloat]
+    let hidden: Set<Int>
 }
