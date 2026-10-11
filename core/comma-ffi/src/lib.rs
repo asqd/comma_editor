@@ -961,9 +961,6 @@ impl EditJob {
     }
 }
 
-/// The first part of a file indexed when it opens; the rest follows with `continue_indexing`.
-const FIRST_PART: usize = 32 << 20;
-
 impl CoreDocument {
     fn wrap(document: core::Document) -> Arc<Self> {
         Self::wrap_indexing(document, None)
@@ -1046,7 +1043,7 @@ impl CoreDocument {
     /// A large file opens with its first part indexed; index the rest with `continue_indexing`.
     #[uniffi::constructor]
     pub fn open_with(path: String, encoding: Option<TextEncoding>, delimiter: Option<String>) -> Result<Arc<Self>, CoreError> {
-        let (document, indexer) = core::Document::open_partially(path, &open_options(encoding, delimiter)?, FIRST_PART)?;
+        let (document, indexer) = core::Document::open_partially(path, &open_options(encoding, delimiter)?, core::Document::FIRST_PART)?;
         Ok(Self::wrap_indexing(document, indexer))
     }
 

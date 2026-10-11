@@ -11,7 +11,8 @@ core/
   comma-core/            ядро: парсинг, определение кодировки и диалекта, правки, undo, сохранение,
                          чтение книг Excel (xlsx/)
   comma-ffi/             UniFFI-обёртка ядра для Swift
-  comma-cli/             утилита `comma`: info и check (проверка побайтового round-trip), листы XLSX
+  comma-cli/             утилита `comma`: info и check (проверка побайтового round-trip), листы XLSX,
+                         bench (замер скорости)
   uniffi-bindgen-swift/  генератор Swift-биндингов
 apps/
   macos/                 приложение для macOS (XcodeGen: project.yml)
@@ -46,6 +47,7 @@ make icon     # перерисовать иконку из design/make-icon.swif
 cargo run -p comma-cli -- info samples/*.csv
 cargo run -p comma-cli -- check samples/*.csv
 cargo run -p comma-cli -- info book.xlsx   # листы книги Excel: размер, формулы, время чтения
+cargo run --release -p comma-cli -- bench  # первый экран, чтение, сортировка и фильтр на 1, 12 и 60 млн строк
 ```
 
 ## Как устроено сохранение без лишнего диффа

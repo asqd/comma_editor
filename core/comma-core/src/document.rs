@@ -467,6 +467,9 @@ impl Document {
         Self::from_buffer_partially(bytes, options, usize::MAX).0
     }
 
+    /// Bytes the app indexes when it opens a file; the rest is indexed in the background.
+    pub const FIRST_PART: usize = 32 << 20;
+
     /// Opens a file with only the rows in about its first `first_bytes` bytes indexed, so a
     /// large file shows at once. The rest is indexed with the returned `Indexer` and added with
     /// `append_index`; until then the document must not be edited or saved.

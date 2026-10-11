@@ -1,5 +1,8 @@
 //! `comma info FILE...` prints what CommaEditor detects in a file, or the sheets of a workbook.
 //! `comma check FILE...` verifies that opening and saving a file reproduces it byte for byte.
+//! `comma bench [ROWS...]` times opening, reading, sorting and filtering generated tables.
+
+mod bench;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -10,10 +13,22 @@ use comma_core::{DisplayLocale, Document, LineEnding, QuoteStyle, SheetKind, She
 
 const USAGE: &str = "usage:
   comma info FILE...   show encoding, dialect and size; for .xlsx and .xls, the sheets
-  comma check FILE...  verify that open → save reproduces each file byte for byte";
+  comma check FILE...  verify that open → save reproduces each file byte for byte
+  comma bench [ROWS...] [--runs N]
+                       time the first screen, reading, sorting and filtering of generated
+                       tables (default 1m 12m 60m rows; the files go to the temp folder)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|command| command == "bench") {
+        return match bench::run(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("bench: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let (command, files) = match args.split_first() {
         Some((command, files)) if !files.is_empty() => (command.as_str(), files),
         _ => {
