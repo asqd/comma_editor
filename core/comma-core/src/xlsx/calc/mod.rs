@@ -60,6 +60,8 @@ struct Formula {
     /// The cells it reads.
     reads: Vec<(usize, Area)>,
     entered: bool,
+    /// The first row and column of the range an array formula fills.
+    array: Option<(u32, u32)>,
 }
 
 impl Workbook {
@@ -94,7 +96,12 @@ impl Workbook {
                 if let Some(expr) = &expr {
                     references(expr, *index, &names, &mut reads);
                 }
-                formulas.push(Formula { sheet: *index, row: row as u32, column: column as u32, expr, reads, entered: !cell.from_file });
+                let range = cell.array.as_deref().and_then(super::refs::parse_range);
+                // An array formula filling several cells keeps its results: the other cells hold
+                // only values, which computing here would leave behind. Excel computes it.
+                let expr = if range.is_some_and(|(first, last)| first != last) { None } else { expr };
+                let array = range.map(|(first, _)| first);
+                formulas.push(Formula { sheet: *index, row: row as u32, column: column as u32, expr, reads, entered: !cell.from_file, array });
             }
         }
 
@@ -269,8 +276,9 @@ impl Model<'_> {
         self.stack.push(index);
         let formula = &self.formulas[index];
         let (sheet, row, column, expr) = (formula.sheet, formula.row, formula.column, formula.expr.clone());
+        let array = formula.array;
         let result = match expr {
-            Some(expr) => Evaluator { cells: self, sheet, row, column }.evaluate(&expr),
+            Some(expr) => Evaluator { cells: self, sheet, row, column, array }.evaluate(&expr),
             None => Err(Unsupported),
         };
         self.busy[index] = false;

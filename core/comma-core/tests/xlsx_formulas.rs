@@ -275,3 +275,25 @@ fn a_book_that_does_not_ask_keeps_its_results() {
     assert!(workbook.recalculate(&mut [(1, &mut data)], NOW).unwrap().sheets.is_empty());
     assert_eq!(data.cell(3, 1).unwrap(), "0");
 }
+
+#[test]
+fn array_formulas_work_on_whole_ranges() {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.write_number(0, 0, 10).unwrap();
+    sheet.write_number(0, 1, 20).unwrap();
+    sheet.write_number(1, 0, 3).unwrap();
+    sheet.write_array_formula(0, 2, 0, 2, "{=SUM(A1:B1*A1:B1)}").unwrap();
+    sheet.write_array_formula(1, 2, 1, 2, "{=SUM(IF(A1:B1>15,A1:B1))}").unwrap();
+    sheet.write_array_formula(2, 2, 2, 2, "{=SUM(ROUND(A1:B1/3,0))}").unwrap();
+    // One formula filling two cells: the second holds only a value, so Excel computes both.
+    sheet.write_array_formula(0, 3, 1, 3, "{=A1:A2*2}").unwrap();
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    let mut document = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    let report = workbook.recalculate(&mut [(0, &mut document)], NOW).unwrap();
+    assert_eq!(document.cell(0, 2).unwrap(), "500");
+    assert_eq!(document.cell(1, 2).unwrap(), "20");
+    // ROUND would have to run cell by cell: left to Excel rather than computed wrong, as is
+    // the formula filling two cells.
+    assert_eq!(report.not_computed, 2);
+}

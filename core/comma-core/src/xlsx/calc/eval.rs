@@ -53,6 +53,59 @@ pub(crate) trait Cells {
 enum Arg {
     Value(Value),
     Range(usize, Area),
+    /// Values an expression gives cell by cell, in an array formula.
+    Grid(Vec<Vec<Value>>),
+}
+
+/// Functions whose arguments are ranges by design, which an array formula may hand values.
+const RANGE_FUNCTIONS: &[&str] = &[
+    "SUM", "SUMPRODUCT", "AVERAGE", "COUNT", "COUNTA", "COUNTBLANK", "MIN", "MAX", "PRODUCT", "AND", "OR", "INDEX",
+    "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP", "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS", "AVERAGEIF",
+];
+
+/// Whether an expression reads more than one cell somewhere in it.
+fn reads_many(expr: &Expr) -> bool {
+    match expr {
+        Expr::Reference(reference) => !reference.area.is_cell(),
+        Expr::Array => true,
+        Expr::Unary(_, operand) => reads_many(operand),
+        Expr::Binary(_, left, right) => reads_many(left) || reads_many(right),
+        Expr::Call(_, args) => args.iter().any(reads_many),
+        _ => false,
+    }
+}
+
+/// A value as true or false, or the error to give instead.
+fn truth_of(value: Value) -> Result<bool, Value> {
+    match value {
+        Value::Bool(truth) => Ok(truth),
+        Value::Number(number) => Ok(number != 0.0),
+        Value::Empty => Ok(false),
+        Value::Text(text) if text.eq_ignore_ascii_case("TRUE") => Ok(true),
+        Value::Text(text) if text.eq_ignore_ascii_case("FALSE") => Ok(false),
+        Value::Text(_) => Err(error(VALUE)),
+        error @ Value::Error(_) => Err(error),
+    }
+}
+
+fn width(grid: &[Vec<Value>]) -> usize {
+    grid.iter().map(Vec::len).max().unwrap_or(0)
+}
+
+/// A cell of a grid; #N/A outside it, as in Excel.
+fn pick(grid: &[Vec<Value>], row: usize, column: usize) -> Value {
+    grid.get(row).and_then(|values| values.get(column)).cloned().unwrap_or_else(|| error(NA))
+}
+
+/// A cell of a grid combined with a larger one: a single row or column repeats.
+fn stretched(grid: &[Vec<Value>], row: usize, column: usize) -> Value {
+    let row = if grid.len() == 1 { 0 } else { row };
+    let column = if width(grid) == 1 { 0 } else { column };
+    pick(grid, row, column)
+}
+
+fn map_grid(grid: Vec<Vec<Value>>, f: impl Fn(Value) -> Value) -> Vec<Vec<Value>> {
+    grid.into_iter().map(|values| values.into_iter().map(&f).collect()).collect()
 }
 
 /// Smallest and largest number of arguments of the functions known.
@@ -85,12 +138,79 @@ pub(crate) struct Evaluator<'a, C: Cells> {
     pub sheet: usize,
     pub row: u32,
     pub column: u32,
+    /// The first row and column of the range an array formula fills; `None` for other
+    /// formulas, where a range read as one value gives the cell in the formula's row or column.
+    pub array: Option<(u32, u32)>,
 }
 
 impl<C: Cells> Evaluator<'_, C> {
     /// The formula's value, as one cell shows it.
     pub(crate) fn evaluate(&mut self, expr: &Expr) -> Outcome<Value> {
-        self.scalar(expr)
+        let Some((top, left)) = self.array else {
+            return self.scalar(expr);
+        };
+        // An array formula works on whole ranges; each cell of its range shows its own value.
+        let grid = self.grid_of(expr)?;
+        Ok(pick(&grid, self.row.saturating_sub(top) as usize, self.column.saturating_sub(left) as usize))
+    }
+
+    /// The values of an expression cell by cell, as an array formula computes them: operators
+    /// combine ranges cell by cell, a single row or column stretching over the other side.
+    fn grid_of(&mut self, expr: &Expr) -> Outcome<Vec<Vec<Value>>> {
+        Ok(match expr {
+            Expr::Reference(_) => self.grid(expr)?,
+            Expr::Unary(op, operand) => {
+                let op = *op;
+                map_grid(self.grid_of(operand)?, |value| match to_number(&value) {
+                    Ok(number) => Value::Number(match op {
+                        UnaryOp::Negate => -number,
+                        UnaryOp::Plus => number,
+                        UnaryOp::Percent => number / 100.0,
+                    }),
+                    Err(error) => error,
+                })
+            }
+            Expr::Binary(op, left, right) => {
+                let (a, b) = (self.grid_of(left)?, self.grid_of(right)?);
+                let (rows, columns) = (a.len().max(b.len()), width(&a).max(width(&b)));
+                let mut out = Vec::with_capacity(rows);
+                for row in 0..rows {
+                    let mut values = Vec::with_capacity(columns);
+                    for column in 0..columns {
+                        values.push(self.combine(*op, stretched(&a, row, column), stretched(&b, row, column)));
+                    }
+                    out.push(values);
+                }
+                out
+            }
+            Expr::Call(name, args) if name.eq_ignore_ascii_case("IF") && (2..=3).contains(&args.len()) => {
+                let condition = self.grid_of(&args[0])?;
+                let then = self.grid_of(&args[1])?;
+                let otherwise = match args.get(2) {
+                    Some(expr) => self.grid_of(expr)?,
+                    None => vec![vec![Value::Bool(false)]],
+                };
+                let rows = condition.len().max(then.len()).max(otherwise.len());
+                let columns = width(&condition).max(width(&then)).max(width(&otherwise));
+                (0..rows)
+                    .map(|row| {
+                        (0..columns)
+                            .map(|column| match truth_of(stretched(&condition, row, column)) {
+                                Ok(true) => stretched(&then, row, column),
+                                Ok(false) => stretched(&otherwise, row, column),
+                                Err(error) => error,
+                            })
+                            .collect()
+                    })
+                    .collect()
+            }
+            // Functions made to go through ranges take the values as they are; any other one
+            // would have to run cell by cell, which this engine does not do: Excel computes it.
+            Expr::Call(name, args) if !RANGE_FUNCTIONS.contains(&name.to_uppercase().as_str()) && args.iter().any(reads_many) => {
+                return Err(Unsupported);
+            }
+            expr => vec![vec![self.value(expr)?]],
+        })
     }
 
     fn arg(&mut self, expr: &Expr) -> Outcome<Arg> {
@@ -101,6 +221,11 @@ impl<C: Cells> Evaluator<'_, C> {
                     Some(sheet) => Arg::Range(sheet, reference.area),
                     None => Arg::Value(error(REF)),
                 },
+            },
+            // In an array formula an expression such as `B2:B9*C2:C9` gives many values.
+            expr if self.array.is_some() => match self.grid_of(expr)? {
+                grid if grid.len() == 1 && width(&grid) == 1 => Arg::Value(pick(&grid, 0, 0)),
+                grid => Arg::Grid(grid),
             },
             expr => Arg::Value(self.value(expr)?),
         })
@@ -137,6 +262,7 @@ impl<C: Cells> Evaluator<'_, C> {
     fn scalar(&mut self, expr: &Expr) -> Outcome<Value> {
         match self.arg(expr)? {
             Arg::Value(value) => Ok(value),
+            Arg::Grid(grid) => Ok(pick(&grid, 0, 0)),
             Arg::Range(sheet, area) => {
                 if area.is_cell() {
                     return self.cells.value(sheet, area.top, area.left);
@@ -173,30 +299,27 @@ impl<C: Cells> Evaluator<'_, C> {
     }
 
     fn truth(&mut self, expr: &Expr) -> Outcome<Result<bool, Value>> {
-        Ok(match self.scalar(expr)? {
-            Value::Bool(truth) => Ok(truth),
-            Value::Number(number) => Ok(number != 0.0),
-            Value::Empty => Ok(false),
-            Value::Text(text) if text.eq_ignore_ascii_case("TRUE") => Ok(true),
-            Value::Text(text) if text.eq_ignore_ascii_case("FALSE") => Ok(false),
-            Value::Text(_) => Err(error(VALUE)),
-            error @ Value::Error(_) => Err(error),
-        })
+        Ok(truth_of(self.scalar(expr)?))
     }
 
     fn binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr) -> Outcome<Value> {
         let (a, b) = (self.scalar(left)?, self.scalar(right)?);
+        Ok(self.combine(op, a, b))
+    }
+
+    /// Two values joined by an operator.
+    fn combine(&self, op: BinaryOp, a: Value, b: Value) -> Value {
         if let Value::Error(_) = a {
-            return Ok(a);
+            return a;
         }
         if let Value::Error(_) = b {
-            return Ok(b);
+            return b;
         }
         let arithmetic = |f: fn(f64, f64) -> Value| match (to_number(&a), to_number(&b)) {
             (Ok(x), Ok(y)) => f(x, y),
             (Err(error), _) | (_, Err(error)) => error,
         };
-        Ok(match op {
+        match op {
             BinaryOp::Add => arithmetic(|x, y| Value::Number(x + y)),
             BinaryOp::Subtract => arithmetic(|x, y| Value::Number(x - y)),
             BinaryOp::Multiply => arithmetic(|x, y| Value::Number(x * y)),
@@ -215,7 +338,7 @@ impl<C: Cells> Evaluator<'_, C> {
             BinaryOp::LessOrEqual => Value::Bool(compare(&a, &b) != Ordering::Greater),
             BinaryOp::Greater => Value::Bool(compare(&a, &b) == Ordering::Greater),
             BinaryOp::GreaterOrEqual => Value::Bool(compare(&a, &b) != Ordering::Less),
-        })
+        }
     }
 
     /// Values of the cells of a range, by rows; whole rows and columns stop where the sheet's
@@ -242,6 +365,8 @@ impl<C: Cells> Evaluator<'_, C> {
         for argument in arguments {
             match self.arg(argument)? {
                 Arg::Value(value) => values.push((value, false)),
+                // Values an array formula computed count as cells do: text and true/false skipped.
+                Arg::Grid(grid) => values.extend(grid.into_iter().flatten().map(|value| (value, true))),
                 Arg::Range(sheet, area) => {
                     values.extend(self.range_values(sheet, area)?.into_iter().flatten().map(|value| (value, true)));
                 }
@@ -273,6 +398,7 @@ impl<C: Cells> Evaluator<'_, C> {
     fn grid(&mut self, expr: &Expr) -> Outcome<Vec<Vec<Value>>> {
         Ok(match self.arg(expr)? {
             Arg::Value(value) => vec![vec![value]],
+            Arg::Grid(grid) => grid,
             Arg::Range(sheet, area) => self.range_values(sheet, area)?,
         })
     }
@@ -955,7 +1081,7 @@ mod tests {
     fn run(formula: &str) -> Value {
         let mut cells = sheet();
         let expr = parse(formula).unwrap();
-        Evaluator { cells: &mut cells, sheet: 0, row: 9, column: 9 }.evaluate(&expr).unwrap()
+        Evaluator { cells: &mut cells, sheet: 0, row: 9, column: 9, array: None }.evaluate(&expr).unwrap()
     }
 
     fn number(formula: &str) -> f64 {
@@ -1063,7 +1189,7 @@ mod tests {
         let mut cells = sheet();
         for formula in ["NEWFUNCTION(1)", "Rate*2", "SUM({1,2})"] {
             let expr = parse(formula).unwrap();
-            assert_eq!(Evaluator { cells: &mut cells, sheet: 0, row: 0, column: 0 }.evaluate(&expr), Err(Unsupported), "{formula}");
+            assert_eq!(Evaluator { cells: &mut cells, sheet: 0, row: 0, column: 0, array: None }.evaluate(&expr), Err(Unsupported), "{formula}");
         }
     }
 }
