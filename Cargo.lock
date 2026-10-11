@@ -242,14 +242,14 @@ dependencies = [
 
 [[package]]
 name = "comma-cli"
-version = "0.1.0"
+version = "0.29.0"
 dependencies = [
  "comma-core",
 ]
 
 [[package]]
 name = "comma-core"
-version = "0.1.0"
+version = "0.29.0"
 dependencies = [
  "calamine",
  "cfb",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "comma-ffi"
-version = "0.1.0"
+version = "0.29.0"
 dependencies = [
  "comma-core",
  "thiserror",
@@ -961,7 +961,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen-swift"
-version = "0.1.0"
+version = "0.29.0"
 dependencies = [
  "uniffi",
 ]
