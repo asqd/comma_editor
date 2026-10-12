@@ -154,6 +154,8 @@ export interface RangeStats {
 export interface EditResult {
   changed: boolean;
   count: number;
+  /** For formulas: rows computed and those that failed. */
+  report: import("./formula").FormulaReport | null;
 }
 
 export interface FilePreview {

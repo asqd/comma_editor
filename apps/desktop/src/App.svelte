@@ -27,6 +27,8 @@
   import ProfilePanel from "./ProfilePanel.svelte";
   import RepairPanel from "./RepairPanel.svelte";
   import RecordCard, { type Field } from "./RecordCard.svelte";
+  import FormulaSheet from "./FormulaSheet.svelte";
+  import { describeFormula, type FormulaReport } from "./lib/formula";
   import { delimiterName, delimiters, encodingName, encodings, kindName } from "./lib/formats";
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
@@ -74,6 +76,8 @@
   let profiling = $state(false);
   let profiledColumn = $state<number | null>(null);
   let profiledName = $state("");
+  /** The computed column window, for the active column. */
+  let computing = $state<{ column: number; name: string; columns: string[] } | null>(null);
   /** What the background change in progress does, for the status bar. */
   let editing = $state("");
   /** The format of a file being saved, asked before the file is chosen. */
@@ -799,6 +803,37 @@
     if (!result) return;
     if (result.count === 0) await inform(L("No duplicates found"));
     else await inform(L("Rows removed: %@", count(result.count)), L("Choose Edit ▸ Undo to bring them back."));
+  }
+
+  /** Data ▸ Computed Column: a new column after the active one, or new values for it. */
+  async function applyFormula(choice: { formula: string; target: "new" | "active"; name: string }, column: number) {
+    if (!grid || !doc.status) return;
+    const row = grid.selection?.cursor.row ?? 0;
+    let report: FormulaReport | null = null;
+    if (choice.target === "new") {
+      const at = column + 1;
+      const before = doc.status.change;
+      const old = grid.columnLayout;
+      const result = await change(L("Computing the column…"), { addFormulaColumn: { formula: choice.formula, name: choice.name, at } });
+      if (!result) return;
+      grid.insertColumn(at);
+      grid.update();
+      layouts.push({ before, after: doc.status.change, old, next: grid.columnLayout });
+      grid.select(Selection.at({ row, column: at }));
+      report = result.report;
+    } else {
+      const result = await change(L("Computing the column…"), { fillWithFormula: { formula: choice.formula, column } });
+      report = result?.report ?? null;
+    }
+    if (report && report.errors > 0) {
+      let details = L("These cells were left empty. Undo with ⌘Z.");
+      if (!mac) details = details.replace("⌘Z", "Ctrl+Z");
+      if (report.firstErrorRow !== null && report.firstError) {
+        const number = report.firstErrorRow - (doc.status.hasHeader ? 1 : 0) + 1;
+        details = `${L("First: row %@, %@.", count(number), describeFormula(report.firstError))} ${details}`;
+      }
+      await inform(L("The formula failed in %@ of %@ rows.", count(report.errors), count(report.rows)), details);
+    }
   }
 
   /** Mends text read in the wrong encoding: the selection, or the whole file with its header. */
@@ -1544,6 +1579,17 @@
         enabled: () => idle() && !!grid?.selection && grid.selection.columnCount > 1,
         run: () => void mergeColumns(),
       },
+      {
+        id: "computedColumn",
+        label: L("Computed Column…"),
+        shortcut: { key: "=", command: true, alt: true },
+        enabled: () => idle() && (doc.status?.columns ?? 0) > 0,
+        run: () => {
+          const column = grid?.selection?.cursor.column ?? 0;
+          const columns = Array.from({ length: doc.status?.columns ?? 0 }, (_, index) => grid?.title(index) ?? "");
+          computing = { column, name: columns[column] ?? "", columns };
+        },
+      },
       { id: "fixGarbled", label: L("Fix Garbled Text"), enabled: () => idle(), run: () => void fixGarbled() },
       { id: "removeDuplicates", label: L("Remove Duplicate Rows…"), enabled: () => idle() && hasSelection(), run: () => void removeDuplicates() },
       {
@@ -1811,6 +1857,7 @@
         "-",
         "splitColumn",
         "mergeColumns",
+        "computedColumn",
         "-",
         "fixGarbled",
         "removeDuplicates",
@@ -1953,6 +2000,7 @@
             "-",
             "splitColumn",
             "mergeColumns",
+            "computedColumn",
             "-",
             "fixGarbled",
             "removeDuplicates",
@@ -2190,6 +2238,22 @@
       items={menu.items}
       close={() => {
         menu = null;
+        grid?.focus();
+      }}
+    />
+  {/if}
+  {#if computing}
+    <FormulaSheet
+      columns={computing.columns}
+      activeColumnName={computing.name}
+      apply={(choice) => {
+        const column = computing!.column;
+        computing = null;
+        grid?.focus();
+        void applyFormula(choice, column);
+      }}
+      cancel={() => {
+        computing = null;
         grid?.focus();
       }}
     />

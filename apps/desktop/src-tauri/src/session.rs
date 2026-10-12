@@ -358,6 +358,12 @@ struct ReplaceAll {
 }
 
 #[derive(Deserialize)]
+struct PreviewFormula {
+    formula: String,
+    count: u64,
+}
+
+#[derive(Deserialize)]
 struct Limit {
     limit: u64,
 }
@@ -782,6 +788,18 @@ impl Sessions {
                 let bytes = document.export(format, range, name, true)?;
                 reply(String::from_utf8_lossy(&bytes))
             }
+            // Computed columns.
+            "preview_formula" => {
+                // The formula on the first shown rows, with their numbers in the file.
+                let PreviewFormula { formula, count } = args(args_)?;
+                let outcomes = document.preview_formula(formula, 0, count)?;
+                let header = u64::from(document.info().has_header);
+                let numbers: Vec<u64> = (0..outcomes.len() as u64)
+                    .map(|row| document.visible_record(row).map_or(row + 1, |record| record + 1 - header))
+                    .collect();
+                Ok(json!({ "outcomes": outcomes, "numbers": numbers }))
+            }
+
             // The column profile.
             "profile" => {
                 let Column { column } = args(args_)?;
