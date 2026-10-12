@@ -150,7 +150,7 @@ fn undoing_brings_formulas_back() {
 }
 
 #[test]
-fn drawings_keep_rows_in_place() {
+fn charts_follow_rows() {
     let mut workbook = rust_xlsxwriter::Workbook::new();
     let sheet = workbook.add_worksheet();
     for row in 0..4u32 {
@@ -161,11 +161,72 @@ fn drawings_keep_rows_in_place() {
     sheet.insert_chart(5, 2, &chart).unwrap();
     let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
     let mut document = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
-    assert!(document.sheet_structure_locked());
-    assert!(matches!(
-        workbook.insert(&mut [(0, &mut document)], 0, Axis::Rows, 1, 1),
-        Err(Error::SheetStructure(SheetStructure::RowsFixed))
-    ));
+    assert!(!document.sheet_structure_locked());
+    // A row before row 2.
+    workbook.insert(&mut [(0, &mut document)], 0, Axis::Rows, 1, 1).unwrap();
+    let saved = workbook.to_bytes(&[(0, &document)]).unwrap();
+    let chart = part(&saved, "xl/charts/chart1.xml");
+    assert!(chart.contains("<c:f>Sheet1!$A$1:$A$5</c:f>"), "{chart}");
+    let drawing = part(&saved, "xl/drawings/drawing1.xml");
+    assert!(drawing.contains("<xdr:row>6</xdr:row>"), "{drawing}");
+}
+
+/// The book with a pivot table on Pivot of the items and quantities of Data.
+fn pivot_book() -> Vec<u8> {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let data = workbook.add_worksheet();
+    data.set_name("Data").unwrap();
+    data.write_row(0, 0, ["Item", "Qty"]).unwrap();
+    for (row, (item, quantity)) in [("Apples", 1.0), ("Pears", 2.0), ("Apples", 3.0), ("Plums", 4.0)].into_iter().enumerate() {
+        data.write_string(row as u32 + 1, 0, item).unwrap();
+        data.write_number(row as u32 + 1, 1, quantity).unwrap();
+    }
+    workbook.add_worksheet().set_name("Pivot").unwrap();
+    let bytes = workbook.save_to_buffer().unwrap();
+    let main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    let relationships = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let package = "http://schemas.openxmlformats.org/package/2006/relationships";
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for index in 0..archive.len() {
+        let mut file = archive.by_index(index).unwrap();
+        let name = file.name().to_owned();
+        let mut text = String::new();
+        file.read_to_string(&mut text).unwrap();
+        let text = match name.as_str() {
+            "[Content_Types].xml" => text.replace("</Types>", r#"<Override PartName="/xl/pivotCache/pivotCacheDefinition1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/><Override PartName="/xl/pivotTables/pivotTable1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"/></Types>"#),
+            "xl/_rels/workbook.xml.rels" => text.replace("</Relationships>", &format!(r#"<Relationship Id="rId90" Type="{relationships}/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition1.xml"/></Relationships>"#)),
+            "xl/workbook.xml" => text.replace("</workbook>", r#"<pivotCaches><pivotCache cacheId="1" r:id="rId90"/></pivotCaches></workbook>"#),
+            _ => text,
+        };
+        writer.start_file(name, options).unwrap();
+        writer.write_all(text.as_bytes()).unwrap();
+    }
+    for (name, text) in [
+        ("xl/worksheets/_rels/sheet2.xml.rels", format!(r#"<Relationships xmlns="{package}"><Relationship Id="rId1" Type="{relationships}/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>"#)),
+        ("xl/pivotCache/pivotCacheDefinition1.xml", format!(r#"<pivotCacheDefinition xmlns="{main}" refreshOnLoad="1" saveData="0" recordCount="4"><cacheSource type="worksheet"><worksheetSource ref="A1:B5" sheet="Data"/></cacheSource><cacheFields count="2"><cacheField name="Item" numFmtId="0"><sharedItems count="3"><s v="Apples"/><s v="Pears"/><s v="Plums"/></sharedItems></cacheField><cacheField name="Qty" numFmtId="0"><sharedItems containsSemiMixedTypes="0" containsString="0" containsNumber="1" containsInteger="1" minValue="1" maxValue="4"/></cacheField></cacheFields></pivotCacheDefinition>"#)),
+        ("xl/pivotTables/pivotTable1.xml", format!(r#"<pivotTableDefinition xmlns="{main}" name="P1" cacheId="1" dataCaption="Values"><location ref="A3:B7" firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/><pivotFields count="2"><pivotField axis="axisRow" showAll="0"><items count="4"><item x="0"/><item x="1"/><item x="2"/><item t="default"/></items></pivotField><pivotField dataField="1" showAll="0"/></pivotFields><rowFields count="1"><field x="0"/></rowFields><dataFields count="1"><dataField name="Sum of Qty" fld="1"/></dataFields></pivotTableDefinition>"#)),
+        ("xl/pivotTables/_rels/pivotTable1.xml.rels", format!(r#"<Relationships xmlns="{package}"><Relationship Id="rId1" Type="{relationships}/pivotCacheDefinition" Target="../pivotCache/pivotCacheDefinition1.xml"/></Relationships>"#)),
+    ] {
+        writer.start_file(name, options).unwrap();
+        writer.write_all(text.as_bytes()).unwrap();
+    }
+    writer.finish().unwrap().into_inner()
+}
+
+#[test]
+fn pivot_tables_read_the_rows_they_read() {
+    let (workbook, mut data, pivot) = open(pivot_book());
+    assert!(!data.sheet_structure_locked());
+    // The pivot table lays itself out on its sheet, which keeps its rows.
+    assert!(pivot.sheet_structure_locked());
+    // A row before row 3 of the source, one after it.
+    workbook.insert(&mut [(0, &mut data)], 0, Axis::Rows, 2, 1).unwrap();
+    workbook.insert(&mut [(0, &mut data)], 0, Axis::Rows, 7, 1).unwrap();
+    let saved = workbook.to_bytes(&[(0, &data)]).unwrap();
+    let cache = part(&saved, "xl/pivotCache/pivotCacheDefinition1.xml");
+    assert!(cache.contains(r#"<worksheetSource ref="A1:B6" sheet="Data"/>"#), "{cache}");
 }
 
 #[test]

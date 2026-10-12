@@ -818,7 +818,7 @@ class CSVDocument: NSDocument {
         case .SheetStructure(let rows):
             if rows {
                 userInfo[NSLocalizedDescriptionKey] = L("Rows of this sheet cannot be inserted, deleted or moved.")
-                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Formulas, merged cells, conditional formats, tables or charts of the workbook refer to them, and CommaEditor does not move such references yet. Rows can be added at the end.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("A pivot table is laid out on this sheet, the rows would split an Excel table or a merged area, or the workbook is in the old Excel format. Rows can be added at the end.")
             } else {
                 userInfo[NSLocalizedDescriptionKey] = L("Columns of a workbook cannot be inserted, deleted or moved yet.")
                 userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Values in the columns can be changed. To change the columns, export the sheet as CSV.")

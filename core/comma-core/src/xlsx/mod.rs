@@ -123,8 +123,6 @@ pub struct Workbook {
     active: usize,
     /// Defined names, charts or pivot tables refer to cells of any sheet.
     refers_to_cells: bool,
-    /// Charts or pivot tables do: rows and columns stay where they are.
-    locked: bool,
     /// Whether each sheet part holds a formula, found out once when needed.
     formulas: Mutex<HashMap<String, bool>>,
     /// The part with the list of sheets, and the calculation chain if there is one.
@@ -199,7 +197,6 @@ impl Workbook {
                 date1904: opened.date1904,
                 active,
                 refers_to_cells: true,
-                locked: true,
                 formulas: Mutex::default(),
                 workbook_part: String::new(),
                 calc_chain: None,
@@ -316,15 +313,15 @@ impl Workbook {
         };
         let active = first_shown(&sheets, active);
         let calc_chain = target("calcChain");
-        let locked = package.part_names().any(|name| name.starts_with("xl/charts/") || name.starts_with("xl/pivotcache"));
-        let refers_to_cells = defined_names || locked;
+        // Charts and pivot tables name cells, which follow rows and columns when saved.
+        let charts = package.part_names().any(|name| name.starts_with("xl/charts/") || name.starts_with("xl/pivotcache"));
+        let refers_to_cells = defined_names || charts;
         Ok(Self {
             source: Source::Xlsx { package, strings, styles },
             sheets,
             date1904,
             active,
             refers_to_cells,
-            locked,
             formulas: Mutex::default(),
             workbook_part,
             calc_chain,
@@ -409,13 +406,15 @@ impl Workbook {
         self.formulas.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(part.to_owned(), content.refers_to_rows);
         let rows_fixed = content.refers_to_rows || self.refers_to_cells || self.other_sheets_have_formulas(part)?;
         let rows = content.rows.len();
+        // A pivot table takes the cells it lays itself out on, which it does not move from.
+        let hosts_pivot = package.relationships(part)?.iter().any(|relationship| relationship.kind == "pivotTable");
         Ok(Some(Sheet {
             name: entry.name.clone(),
             document: Document::from_sheet(
                 content.rows,
                 SheetSource {
                     rows_fixed,
-                    structure_locked: content.locked || self.locked,
+                    structure_locked: hosts_pivot,
                     formulas_moved: Arc::default(),
                     rows,
                     columns: 0,

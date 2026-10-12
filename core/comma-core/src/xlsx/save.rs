@@ -190,6 +190,19 @@ impl Workbook {
         if !maps.is_empty() {
             let changes: Vec<(String, &AxisMap, &AxisMap)> = maps.iter().map(|(name, rows, columns)| (name.clone(), rows, columns)).collect();
             workbook = remap_defined_names(&workbook, &changes);
+            // Series of charts and sources of pivot tables name the cells they show.
+            let parts: Vec<String> = package
+                .part_names()
+                .filter(|name| (name.starts_with("xl/charts/chart") || name.starts_with("xl/pivotcache/pivotcachedefinition")) && name.ends_with(".xml"))
+                .map(str::to_owned)
+                .collect();
+            for part in parts {
+                let Some(text) = package.read_text(&part)? else { continue };
+                let moved = if part.starts_with("xl/charts/") { remap_chart(&text, &changes) } else { remap_pivot_source(&text, &changes) };
+                if moved != text {
+                    replaced.insert(part, moved.into_bytes());
+                }
+            }
         }
         replaced.insert(workbook_part.to_lowercase(), compute_on_load(&workbook).into_bytes());
         // Excel tables cover the rows and columns they covered, wherever those went.
@@ -736,6 +749,60 @@ fn unescape(text: &str) -> String {
     text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
 
+/// A chart with the ranges of its series, titles and labels moved: `<c:f>` and the like.
+fn remap_chart(xml: &str, changes: &[(String, &AxisMap, &AxisMap)]) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut at = 0;
+    while let Some(offset) = find_element(&xml[at..], "f") {
+        let start = at + offset;
+        let Some(length) = xml[start..].find('>') else { break };
+        let tag_end = start + length + 1;
+        if xml[start..tag_end].ends_with("/>") {
+            out.push_str(&xml[at..tag_end]);
+            at = tag_end;
+            continue;
+        }
+        let Some(close) = xml[tag_end..].find("</") else { break };
+        let inner_end = tag_end + close;
+        out.push_str(&xml[at..tag_end]);
+        out.push_str(&escape_text(&remap_named(&unescape(&xml[tag_end..inner_end]), changes)));
+        at = inner_end;
+    }
+    out.push_str(&xml[at..]);
+    out
+}
+
+/// A pivot cache whose source is a range of a sheet that changed, with the range moved.
+fn remap_pivot_source(xml: &str, changes: &[(String, &AxisMap, &AxisMap)]) -> String {
+    let Some(start) = find_element(xml, "worksheetSource") else { return xml.to_owned() };
+    let Some(length) = xml[start..].find('>') else { return xml.to_owned() };
+    let tag = &xml[start..start + length + 1];
+    let (Some(range), Some(sheet)) = (attribute_value(tag, "ref"), attribute_value(tag, "sheet")) else {
+        return xml.to_owned();
+    };
+    let sheet = unescape(&sheet).to_lowercase();
+    let Some((_, rows_map, columns_map)) = changes.iter().find(|(name, _, _)| *name == sheet) else {
+        return xml.to_owned();
+    };
+    let rows = |first: u32, last: u32| rows_map.range(first, last);
+    let columns = |first: u32, last: u32| columns_map.range(first, last);
+    let moved = remap_formula(&range, &sheet, &Remap { sheet: &sheet, rows: &rows, columns: &columns });
+    format!("{}{}{}", &xml[..start], set_attribute(tag, "ref", Some(&moved)), &xml[start + length + 1..])
+}
+
+/// A formula outside any sheet, whose references name their sheets, moved as the sheets
+/// that changed moved.
+fn remap_named(formula: &str, changes: &[(String, &AxisMap, &AxisMap)]) -> String {
+    let mut text = formula.to_owned();
+    for (sheet, rows_map, columns_map) in changes {
+        let rows = |first: u32, last: u32| rows_map.range(first, last);
+        let columns = |first: u32, last: u32| columns_map.range(first, last);
+        let remap = Remap { sheet, rows: &rows, columns: &columns };
+        text = remap_formula(&text, "", &remap);
+    }
+    text
+}
+
 /// Defined names of `workbook.xml` with references to the sheets that changed moved.
 fn remap_defined_names(workbook: &str, changes: &[(String, &AxisMap, &AxisMap)]) -> String {
     let mut out = String::with_capacity(workbook.len());
@@ -747,15 +814,8 @@ fn remap_defined_names(workbook: &str, changes: &[(String, &AxisMap, &AxisMap)])
         let Some(close) = workbook[tag_end..].find("</") else { break };
         let inner_end = tag_end + close;
         out.push_str(&workbook[at..tag_end]);
-        let mut text = unescape(&workbook[tag_end..inner_end]);
-        for (sheet, rows_map, columns_map) in changes {
-            let rows = |first: u32, last: u32| rows_map.range(first, last);
-            let columns = |first: u32, last: u32| columns_map.range(first, last);
-            let remap = Remap { sheet, rows: &rows, columns: &columns };
-            // A defined name has no sheet of its own: references to cells name theirs.
-            text = remap_formula(&text, "", &remap);
-        }
-        out.push_str(&escape_text(&text));
+        // A defined name has no sheet of its own: references to cells name theirs.
+        out.push_str(&escape_text(&remap_named(&unescape(&workbook[tag_end..inner_end]), changes)));
         at = inner_end;
     }
     out.push_str(&workbook[at..]);

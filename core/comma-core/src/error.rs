@@ -63,8 +63,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Changes to the shape of a sheet that saving cannot keep yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SheetStructure {
-    /// Rows cannot be inserted, deleted or moved: formulas, merged cells, conditional formats,
-    /// validations, tables or charts refer to them.
+    /// Rows cannot be inserted, deleted or moved: a pivot table is laid out on the sheet, the
+    /// rows would split an Excel table or a merged area, or the workbook is an old one.
     #[error("rows of this sheet cannot be inserted, deleted or moved: other parts of the workbook refer to them")]
     RowsFixed,
     /// Columns of a workbook cannot be inserted, deleted or moved yet; they can be added at
