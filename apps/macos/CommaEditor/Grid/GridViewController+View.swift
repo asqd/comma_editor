@@ -416,14 +416,14 @@ extension GridViewController: NSMenuItemValidation {
             return false
         }
         if info.isSheet, let action = menuItem.action {
-            // A workbook inserts and deletes rows and columns with the references to them
-            // moved, unless tables, drawings or comments hold them in place; then only adding
-            // at the end is left. Moving them, sorting into the file and splitting columns wait.
+            // A workbook inserts, deletes, moves and sorts rows and inserts and deletes columns
+            // with the references to them moved, unless a pivot table holds them in place; then
+            // only adding at the end is left. Moving and splitting columns wait.
             let locked = info.sheetStructureLocked
             switch action {
             case #selector(insertColumnRight(_:)) where locked:
                 return activeColumn == columnCount - 1
-            case #selector(insertColumnLeft(_:)), #selector(deleteColumn(_:)) where locked:
+            case #selector(insertColumnLeft(_:)) where locked, #selector(deleteColumn(_:)) where locked:
                 return false
             case #selector(insertColumnLeft(_:)), #selector(insertColumnRight(_:)), #selector(deleteColumn(_:)):
                 break
@@ -431,12 +431,14 @@ extension GridViewController: NSMenuItemValidation {
                 return false
             case #selector(insertRowBelow(_:)) where locked && info.sheetRowsFixed:
                 return activeRow == dataRowCount - 1
-            case #selector(insertRowAbove(_:)), #selector(deleteRows(_:)) where locked && info.sheetRowsFixed:
+            case #selector(insertRowAbove(_:)) where locked && info.sheetRowsFixed,
+                 #selector(deleteRows(_:)) where locked && info.sheetRowsFixed:
                 return false
             case #selector(insertRowAbove(_:)), #selector(insertRowBelow(_:)), #selector(deleteRows(_:)):
                 break
             // Rows move and sort through the workbook unless something holds them in place.
-            case #selector(moveRowsUp(_:)), #selector(moveRowsDown(_:)), #selector(applySortToFile(_:)) where !locked:
+            case #selector(moveRowsUp(_:)) where !locked, #selector(moveRowsDown(_:)) where !locked,
+                 #selector(applySortToFile(_:)) where !locked:
                 break
             case _ where info.sheetRowsFixed && Self.rowActions.contains(action):
                 return false

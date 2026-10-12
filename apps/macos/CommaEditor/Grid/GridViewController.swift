@@ -799,7 +799,9 @@ final class GridViewController: NSViewController {
             presentCellEditor(row: row, column: activeColumn)
             return
         }
-        guard var (table, index) = location(ofDataColumn: activeColumn) else { return }
+        guard let location = location(ofDataColumn: activeColumn) else { return }
+        var table = location.0
+        let index = location.1
         scrollToCell(row: row, column: activeColumn)
         // A frozen row is edited where it shows, in the table over the top.
         if row < frozenRowCount {
