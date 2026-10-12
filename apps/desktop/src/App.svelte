@@ -26,6 +26,7 @@
   import OpenOptions from "./OpenOptions.svelte";
   import ProfilePanel from "./ProfilePanel.svelte";
   import RepairPanel from "./RepairPanel.svelte";
+  import RecordCard, { type Field } from "./RecordCard.svelte";
   import { delimiterName, delimiters, encodingName, encodings, kindName } from "./lib/formats";
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
@@ -59,7 +60,9 @@
     answer: (value: string, text: string, checked: boolean) => void;
   } | null>(null);
   /** The panel at the right of the table, as in the macOS app. */
-  let panel = $state<"profile" | "repair" | null>(null);
+  let panel = $state<"profile" | "repair" | "card" | null>(null);
+  /** The record card: the active row as a form. */
+  let card = $state.raw<{ row: number; title: string; position: string; fields: Field[] } | null>(null);
   /** File repair: the last check, the selected problem, its row as the file has it and its fixes. */
   let repair = $state.raw<RepairReport | null>(null);
   let repairLoading = $state(false);
@@ -107,7 +110,10 @@
     grid.setView(status.view);
     void showTitle(status);
     if (previous?.change !== status.change || previous?.dirty !== status.dirty) keepDraft();
-    if (previous?.change !== status.change || JSON.stringify(previous?.view) !== JSON.stringify(status.view)) refreshProfile();
+    if (previous?.change !== status.change || JSON.stringify(previous?.view) !== JSON.stringify(status.view)) {
+      refreshProfile();
+      void refreshCard();
+    }
     // Broken rows are looked for after every change, and once a large file is read whole.
     if (opened) repair = null;
     if (!previous || previous.change !== status.change || previous.hasHeader !== status.hasHeader || (previous.indexing !== null && status.indexing === null))
@@ -887,7 +893,7 @@
   }
 
   /** Shows one of the panels at the right of the table, or none (showSidePanel). */
-  function showPanel(next: "profile" | "repair" | null) {
+  function showPanel(next: "profile" | "repair" | "card" | null) {
     if (next === panel) return;
     if (panel === "profile") {
       profile = null;
@@ -897,7 +903,45 @@
     panel = next;
     if (next === "profile") refreshProfile();
     else if (next === "repair") void repairCursorMoved();
+    else if (next === "card") void refreshCard();
     else grid?.focus();
+  }
+
+  const toggleCard = () => showPanel(panel === "card" ? null : "card");
+
+  // The record card (GridViewController+Card.swift).
+
+  let cardAsked = 0;
+
+  /** Shows the active row in the card. */
+  async function refreshCard() {
+    const status = doc.status;
+    const cursor = grid?.selection?.cursor;
+    if (panel !== "card" || !status) return;
+    if (!cursor || status.rows === 0 || status.columns === 0) {
+      card = null;
+      return;
+    }
+    const asked = ++cardAsked;
+    const [values = []] = await call<string[][]>("rows", { start: cursor.row, count: 1 });
+    const record = await call<number | null>("record", { row: cursor.row });
+    if (asked !== cardAsked) return;
+    const number = record === null ? cursor.row + 1 : record - (status.hasHeader ? 1 : 0) + 1;
+    card = {
+      row: cursor.row,
+      title: L("Row %@", count(number)),
+      position: L("%@ of %@", count(cursor.row + 1), count(status.rows)),
+      fields: Array.from({ length: status.columns }, (_, column) => ({ column, name: grid?.title(column) ?? "", value: values[column] ?? "" })),
+    };
+  }
+
+  /** The previous or next row, in the card and the table. */
+  function moveRecord(offset: number) {
+    const cursor = grid?.selection?.cursor;
+    const rows = doc.status?.rows ?? 0;
+    if (!cursor) return;
+    const row = cursor.row + offset;
+    if (row >= 0 && row < rows) grid?.select(Selection.at({ row, column: cursor.column }));
   }
 
   const toggleProfile = () => showPanel(panel === "profile" ? null : "profile");
@@ -1391,6 +1435,28 @@
         run: toggleRepair,
       },
       {
+        id: "toggleCard",
+        label: () => (panel === "card" ? L("Hide Record Card") : L("Show Record Card")),
+        shortcut: { key: "i", command: true, alt: true },
+        inFields: true,
+        enabled: () => (doc.status?.columns ?? 0) > 0,
+        run: toggleCard,
+      },
+      {
+        id: "previousRecord",
+        label: L("Previous Record"),
+        shortcut: { key: "[", command: true },
+        enabled: () => (grid?.selection?.cursor.row ?? 0) > 0,
+        run: () => moveRecord(-1),
+      },
+      {
+        id: "nextRecord",
+        label: L("Next Record"),
+        shortcut: { key: "]", command: true },
+        enabled: () => !!grid?.selection && grid.selection.cursor.row < (doc.status?.rows ?? 0) - 1,
+        run: () => moveRecord(1),
+      },
+      {
         id: "bench",
         label: "Scroll Bench",
         shortcut: { key: "b", command: true, shift: true, alt: true },
@@ -1502,7 +1568,7 @@
         "removeDuplicates",
       ] as Entry[],
     });
-    menus.push({ title: L("View"), entries: ["toggleProfile", "toggleRepair"] as Entry[] });
+    menus.push({ title: L("View"), entries: ["toggleProfile", "toggleRepair", "toggleCard", "previousRecord", "nextRecord"] as Entry[] });
     if (mac) {
       menus.unshift(app);
       menus.push({
@@ -1640,6 +1706,15 @@
         run: toggleProfile,
       },
       {
+        id: "card",
+        label: L("Card"),
+        tooltip: tip("The active row as a form (⌥⌘I)", "toggleCard"),
+        icon: "card",
+        enabled: (doc.status?.columns ?? 0) > 0,
+        active: panel === "card",
+        run: toggleCard,
+      },
+      {
         id: "repair",
         label: L("Repair"),
         tooltip: tip("Find and fix broken rows (⌥⌘R)", "toggleRepair"),
@@ -1693,6 +1768,7 @@
       void measure(selected);
       if (selected && selected.cursor.column !== column) refreshProfile();
       void repairCursorMoved();
+      void refreshCard();
     };
     const parameters = new URLSearchParams(location.search);
     if (inTauri) {
@@ -1784,6 +1860,23 @@
       {showIssue}
       trim={trimProfiled}
       {filterValue}
+    />
+  {:else if panel === "card"}
+    <RecordCard
+      row={card?.row ?? null}
+      title={card?.title ?? ""}
+      position={card?.position ?? ""}
+      fields={card?.fields ?? []}
+      activeColumn={selection?.cursor.column ?? 0}
+      canGoBack={(card?.row ?? 0) > 0}
+      canGoForward={(card?.row ?? 0) < (doc.status?.rows ?? 0) - 1}
+      edit={(row, column, value) => void doc.attempt(() => doc.run("set_cell", { row, column, value }))}
+      selectColumn={(row, column) => {
+        const cursor = grid?.selection?.cursor;
+        if (cursor?.row !== row || cursor?.column !== column) grid?.select(Selection.at({ row, column }));
+      }}
+      previous={() => moveRecord(-1)}
+      next={() => moveRecord(1)}
     />
   {:else if panel === "repair"}
     <RepairPanel

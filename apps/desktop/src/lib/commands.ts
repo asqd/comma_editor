@@ -35,6 +35,11 @@ export function matches(event: KeyboardEvent, shortcut: Shortcut): boolean {
   const command = mac ? event.metaKey : event.ctrlKey;
   const other = mac ? event.ctrlKey : event.metaKey;
   if (command !== !!shortcut.command || event.shiftKey !== !!shortcut.shift || event.altKey !== !!shortcut.alt || other) return false;
+  // Punctuation by the key's place too: the keys of [ and ] type х and ъ on a Russian layout.
+  const places: Record<string, string> = { "[": "BracketLeft", "]": "BracketRight", "=": "Equal", "-": "Minus", ",": "Comma", ".": "Period" };
+  // Some keyboards, on screen or remote, give no place: then the character decides.
+  if (!event.code) return event.key.toLowerCase() === shortcut.key.toLowerCase();
+  if (places[shortcut.key]) return event.code === places[shortcut.key];
   if (shortcut.key.length === 1) return event.code === `Key${shortcut.key.toUpperCase()}` || event.code === `Digit${shortcut.key}`;
   return event.key === shortcut.key;
 }
