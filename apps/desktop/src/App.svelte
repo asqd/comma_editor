@@ -5,7 +5,17 @@
   import { open, save as chooseSavePath } from "@tauri-apps/plugin-dialog";
   import { Grid, type TableSource } from "./grid/Grid";
   import { formatBench, runBench } from "./grid/bench";
-  import { call, CoreFailure, inTauri, type ColumnProfile, type EditResult, type TextEncoding, type FilterRule, type RangeStats, type SaveFormat, type SortKey, type Status, type ViewSpec } from "./lib/api";
+  import {
+    call,
+    CoreFailure,
+    inTauri,
+    type ColumnProfile,
+    type EditResult,
+    type Problem,
+    type ProblemKind,
+    type RepairFix,
+    type RepairOption,
+    type RepairReport, type TextEncoding, type FilterRule, type RangeStats, type SaveFormat, type SortKey, type Status, type ViewSpec } from "./lib/api";
   import { Selection, type Cell } from "./grid/selection";
   import { CellEditor, type Move } from "./grid/editor";
   import CellSheet from "./CellSheet.svelte";
@@ -15,6 +25,7 @@
   import FilterBar from "./FilterBar.svelte";
   import OpenOptions from "./OpenOptions.svelte";
   import ProfilePanel from "./ProfilePanel.svelte";
+  import RepairPanel from "./RepairPanel.svelte";
   import { delimiterName, delimiters, encodingName, encodings, kindName } from "./lib/formats";
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
@@ -48,7 +59,14 @@
     answer: (value: string, text: string, checked: boolean) => void;
   } | null>(null);
   /** The panel at the right of the table, as in the macOS app. */
-  let panel = $state<"profile" | null>(null);
+  let panel = $state<"profile" | "repair" | null>(null);
+  /** File repair: the last check, the selected problem, its row as the file has it and its fixes. */
+  let repair = $state.raw<RepairReport | null>(null);
+  let repairLoading = $state(false);
+  let repairRow = $state<number | null>(null);
+  let repairRaw = $state("");
+  let repairOptions = $state.raw<RepairOption[]>([]);
+  let garbledExample = $state.raw<[string, string] | null>(null);
   let profile = $state.raw<ColumnProfile | null>(null);
   let profiling = $state(false);
   let profiledColumn = $state<number | null>(null);
@@ -73,7 +91,9 @@
   /** The status the view shows rows for; the rows reload when it differs in what they show. */
   const doc = new Document((status, previous) => {
     if (!grid) return;
-    if (!previous || previous.path !== status.path || fresh) {
+    // A file opened, perhaps again: the table and what was found in it start over.
+    const opened = !previous || previous.path !== status.path || fresh;
+    if (opened) {
       fresh = false;
       grid.setSource(table);
     }
@@ -88,6 +108,10 @@
     void showTitle(status);
     if (previous?.change !== status.change || previous?.dirty !== status.dirty) keepDraft();
     if (previous?.change !== status.change || JSON.stringify(previous?.view) !== JSON.stringify(status.view)) refreshProfile();
+    // Broken rows are looked for after every change, and once a large file is read whole.
+    if (opened) repair = null;
+    if (!previous || previous.change !== status.change || previous.hasHeader !== status.hasHeader || (previous.indexing !== null && status.indexing === null))
+      scheduleProblemCheck(previous ? 300 : 0);
   });
 
   /** Writes the draft a few seconds after the last change, or removes it once saved. */
@@ -862,18 +886,119 @@
     });
   }
 
-  function toggleProfile() {
+  /** Shows one of the panels at the right of the table, or none (showSidePanel). */
+  function showPanel(next: "profile" | "repair" | null) {
+    if (next === panel) return;
     if (panel === "profile") {
-      panel = null;
       profile = null;
       profiledColumn = null;
       grid?.setMarker(null);
-      grid?.focus();
-    } else {
-      panel = "profile";
-      refreshProfile();
+    }
+    panel = next;
+    if (next === "profile") refreshProfile();
+    else if (next === "repair") void repairCursorMoved();
+    else grid?.focus();
+  }
+
+  const toggleProfile = () => showPanel(panel === "profile" ? null : "profile");
+  const toggleRepair = () => showPanel(panel === "repair" ? null : "repair");
+
+  // File repair (GridViewController+Repair.swift).
+
+  const LISTED_PROBLEMS = 5000;
+  let repairTimer = 0;
+  let repairAsked = 0;
+  /** After a fix, the problem at this place in the list is selected next. */
+  let pendingIndex: number | null = null;
+
+  /** Looks for broken rows a moment after the last change; a file being read waits. */
+  function scheduleProblemCheck(delay = 300) {
+    clearTimeout(repairTimer);
+    if (!doc.status || doc.status.indexing !== null) return;
+    repairTimer = window.setTimeout(() => void checkProblems(), delay);
+  }
+
+  async function checkProblems() {
+    const asked = ++repairAsked;
+    repairLoading = true;
+    try {
+      const report = await call<RepairReport>("find_problems", { limit: LISTED_PROBLEMS });
+      if (asked !== repairAsked) return;
+      const first = repair === null;
+      repair = report;
+      repairLoading = false;
+      grid?.setRowMarker(report.problems.length > 0 ? (start, count) => call<number[]>("problem_marks", { start, count }) : null);
+      garbledExample = report.garbledSample > 0 ? await call<[string, string] | null>("garbled_example") : null;
+      const total = report.counts.reduce((sum, item) => sum + item.count, 0);
+      // A file that opens with broken rows or garbled text shows them right away.
+      if (first && (total > 0 || report.garbledSample > 0) && panel === null) showPanel("repair");
+      reselectProblem();
+    } catch {
+      if (asked === repairAsked) repairLoading = false;
     }
   }
+
+  /** After a check, keeps the selected problem, or after a fix moves on to the next one. */
+  function reselectProblem() {
+    const problems = repair?.problems ?? [];
+    const kept = problems.find((problem) => problem.row === repairRow);
+    if (kept) void selectProblem(kept, false);
+    else if (pendingIndex !== null && problems.length > 0) void selectProblem(problems[Math.min(pendingIndex, problems.length - 1)], true);
+    else {
+      repairRow = null;
+      repairOptions = [];
+      void repairCursorMoved();
+    }
+    pendingIndex = null;
+  }
+
+  /** Shows a problem's fixes, and with `moveCursor` its row in the table. */
+  async function selectProblem(problem: Problem, moveCursor: boolean) {
+    repairRow = problem.row;
+    repairRaw = await call<string>("raw_text", { row: problem.row, maxChars: 600 }).catch(() => "");
+    const options = await call<RepairOption[]>("repair_options", { row: problem.row }).catch(() => []);
+    if (repairRow === problem.row) repairOptions = options;
+    if (moveCursor) {
+      const visible = await call<number | null>("visible_index", { row: problem.row });
+      if (visible !== null) grid?.select(Selection.at({ row: visible, column: grid.selection?.cursor.column ?? 0 }));
+    }
+  }
+
+  /** The problem of the active row becomes the one selected in the panel. */
+  async function repairCursorMoved() {
+    const cursor = grid?.selection?.cursor;
+    if (panel !== "repair" || !cursor || !repair) return;
+    const record = await call<number | null>("record", { row: cursor.row });
+    const problem = repair.problems.find((item) => item.row === record);
+    if (problem && problem.row !== repairRow) await selectProblem(problem, false);
+  }
+
+  async function applyFix(row: number, fix: RepairFix) {
+    if (!changeable()) return;
+    pendingIndex = repair?.problems.findIndex((problem) => problem.row === row) ?? null;
+    repairRow = null;
+    await doc.attempt(() => doc.run("apply_fix", { row, fix }));
+  }
+
+  async function fixAll(kind: ProblemKind) {
+    if (!changeable()) return;
+    pendingIndex = 0;
+    repairRow = null;
+    await doc.attempt(() => doc.runWith("fix_all", { kind }));
+  }
+
+  const repairRowLabel = (row: number) => {
+    const offset = doc.status?.hasHeader ? 1 : 0;
+    return row < offset ? L("Header") : L("Row %@", count(row - offset + 1));
+  };
+
+  /** The status bar's button to the repair panel: broken rows, or garbled text. */
+  const problemsLabel = $derived.by(() => {
+    if (!repair) return "";
+    const total = repair.counts.reduce((sum, item) => sum + item.count, 0);
+    if (total > 0) return L("Problems: %@", count(total));
+    return repair.garbledSample > 0 ? L("Garbled text") : "";
+  });
 
   /** Selects the next cell after the active row with the problem. */
   async function showIssue(issue: "mismatch" | "padding") {
@@ -1258,6 +1383,14 @@
         run: toggleProfile,
       },
       {
+        id: "toggleRepair",
+        label: () => (panel === "repair" ? L("Hide File Repair") : L("Show File Repair")),
+        shortcut: { key: "r", command: true, alt: true },
+        inFields: true,
+        enabled: () => doc.open,
+        run: toggleRepair,
+      },
+      {
         id: "bench",
         label: "Scroll Bench",
         shortcut: { key: "b", command: true, shift: true, alt: true },
@@ -1369,7 +1502,7 @@
         "removeDuplicates",
       ] as Entry[],
     });
-    menus.push({ title: L("View"), entries: ["toggleProfile"] as Entry[] });
+    menus.push({ title: L("View"), entries: ["toggleProfile", "toggleRepair"] as Entry[] });
     if (mac) {
       menus.unshift(app);
       menus.push({
@@ -1506,6 +1639,15 @@
         active: panel === "profile",
         run: toggleProfile,
       },
+      {
+        id: "repair",
+        label: L("Repair"),
+        tooltip: tip("Find and fix broken rows (⌥⌘R)", "toggleRepair"),
+        icon: "repair",
+        enabled: doc.open,
+        active: panel === "repair",
+        run: toggleRepair,
+      },
     ];
   });
   const idleOrView = () => !!doc.status && doc.status.indexing === null && doc.status.job?.kind !== "edit";
@@ -1550,6 +1692,7 @@
       selection = selected;
       void measure(selected);
       if (selected && selected.cursor.column !== column) refreshProfile();
+      void repairCursorMoved();
     };
     const parameters = new URLSearchParams(location.search);
     if (inTauri) {
@@ -1642,10 +1785,28 @@
       trim={trimProfiled}
       {filterValue}
     />
+  {:else if panel === "repair"}
+    <RepairPanel
+      report={repair}
+      loading={repairLoading}
+      selectedRow={repairRow}
+      rawText={repairRaw}
+      options={repairOptions}
+      {garbledExample}
+      rowLabel={repairRowLabel}
+      columnTitle={(column) => grid?.title(column) ?? ""}
+      select={(problem) => void selectProblem(problem, true)}
+      apply={(row, fix) => void applyFix(row, fix)}
+      fixAll={(kind) => void fixAll(kind)}
+      fixGarbled={() => void change(L("Fixing garbled text…"), { fixGarbled: { range: null } })}
+    />
   {/if}
   </div>
   <footer class="status">
     <span class="info">{doc.problem || status}</span>
+    {#if problemsLabel}
+      <button class="problems" onclick={toggleRepair} title={tip("Find and fix broken rows (⌥⌘R)", "toggleRepair")}>⚠︎ {problemsLabel}</button>
+    {/if}
     {#if busy}
       <span class="busy">{busy}</span>
       {#if doc.status?.job}
@@ -1804,6 +1965,13 @@
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .problems {
+    padding: 0 4px;
+    color: var(--text);
+    background: none;
+    border: 0;
   }
 
   .bench {

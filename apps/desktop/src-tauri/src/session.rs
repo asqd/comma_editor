@@ -9,13 +9,13 @@
 //! file (indexing, sorting and filtering, replacing everywhere) runs in a thread of its own,
 //! and the interface follows it through `status`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use comma_ffi::{
     CellPosition, CellRange, ColumnProfile, CoreDocument, CoreError, EditJob, EditRequest, ExportFormat, FilePreview, Issue,
-    LineEnding, RangeStats, ValueKind,
+    LineEnding, ProblemKind, RangeStats, RepairFix, RepairOption, RepairReport, ValueKind,
     SaveFormat, SearchQuery, TextEncoding, ViewJob, ViewSpec,
 };
 use serde::de::DeserializeOwned;
@@ -110,6 +110,8 @@ struct State {
     job: Option<Job>,
     /// Restored from a draft: changed, though nothing was changed in this session.
     restored: bool,
+    /// Rows of the file the last repair check found broken, to mark their numbers.
+    problem_rows: HashSet<u64>,
     /// Counts jobs, so that a cancelled job ending late leaves the next one alone.
     job_number: u64,
     /// How the last job ended, until the interface takes it with `job_result`.
@@ -340,6 +342,29 @@ struct ReplaceInCell {
 struct ReplaceAll {
     query: SearchQuery,
     replacement: String,
+}
+
+#[derive(Deserialize)]
+struct Limit {
+    limit: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawText {
+    row: u64,
+    max_chars: u64,
+}
+
+#[derive(Deserialize)]
+struct ApplyFix {
+    row: u64,
+    fix: RepairFix,
+}
+
+#[derive(Deserialize)]
+struct FixAll {
+    kind: ProblemKind,
 }
 
 #[derive(Deserialize)]
@@ -754,6 +779,54 @@ impl Sessions {
                     })
                     .collect();
                 reply(marks)
+            }
+            // File repair.
+            "find_problems" => {
+                // Broken rows, the first `limit` listed; their rows are kept to mark.
+                let Limit { limit } = args(args_)?;
+                let report: RepairReport = document.find_problems(limit);
+                session.state().problem_rows = report.problems.iter().map(|problem| problem.row).collect();
+                reply(report)
+            }
+            "problem_marks" => {
+                // 1 for each of `count` visible rows from `start` that the last check found broken.
+                let Span { start, count } = args(args_)?;
+                let rows = session.state().problem_rows.clone();
+                let end = start + count.min(document.info().visible_row_count.saturating_sub(start));
+                let marks: Vec<u8> = (start..end)
+                    .map(|row| u8::from(document.visible_record(row).is_some_and(|record| rows.contains(&record))))
+                    .collect();
+                reply(marks)
+            }
+            "raw_text" => {
+                // A row as the file has it, for the repair panel.
+                let RawText { row, max_chars } = args(args_)?;
+                reply(document.raw_text(row, max_chars)?)
+            }
+            "repair_options" => {
+                let Row { row } = args(args_)?;
+                let options: Vec<RepairOption> = document.repair_options(row)?;
+                reply(options)
+            }
+            "apply_fix" => {
+                let ApplyFix { row, fix } = args(args_)?;
+                document.apply_fix(row, fix)?;
+                status(&session)
+            }
+            "fix_all" => {
+                let FixAll { kind } = args(args_)?;
+                let fixed = document.fix_all(kind);
+                Ok(json!({ "status": session.status(), "fixed": fixed }))
+            }
+            "garbled_example" => {
+                // The first value among the header and the first rows that reads as garbled
+                // text, and how it reads fixed.
+                let rows = document.rows(0, 300 + u64::from(document.info().has_header));
+                let example = rows
+                    .into_iter()
+                    .flatten()
+                    .find_map(|value| comma_ffi::fix_garbled(value.clone()).map(|fixed| (value, fixed)));
+                reply(example)
             }
             _ => Err(Failure::message(format!("unknown command {command}"))),
         }

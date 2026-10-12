@@ -185,3 +185,40 @@ export interface ColumnProfile {
   topValues: { value: string; count: number }[];
   histogram: number[];
 }
+
+export type ProblemKind = "unclosedQuote" | "strayQuote" | "missingFields" | "extraFields";
+
+export interface Problem {
+  /** A row of the file, the header counted. */
+  row: number;
+  kind: ProblemKind;
+  fields: number;
+  /** Lines of the file the row takes. */
+  lines: number;
+}
+
+export interface RepairReport {
+  /** The number of fields most rows have. */
+  expectedFields: number;
+  /** The first problems in file order. */
+  problems: Problem[];
+  counts: { kind: ProblemKind; count: number }[];
+  /** Values in the first rows that look like text read in the wrong encoding. */
+  garbledSample: number;
+}
+
+export type RepairFix =
+  | "quoteAsText"
+  | "removeQuote"
+  | "padFields"
+  | "joinNext"
+  | { mergeFields: { column: number } }
+  | "dropEmptyFields"
+  | "deleteRow";
+
+export interface RepairOption {
+  fix: RepairFix;
+  /** The rows as the fix leaves them. */
+  rows: string[][];
+  rowCount: number;
+}

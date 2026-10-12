@@ -145,6 +145,9 @@ export class Grid {
   private drag: { rows: boolean; x: number; y: number; frame: number } | null = null;
 
   private marker: Marker | null = null;
+  /** Rows marked on their numbers, as broken rows are while the file has them. */
+  private rowMarker: ((start: number, count: number) => Promise<number[]>) | null = null;
+  private readonly rowMarks = new Map<number, number[]>();
   /** Marks of the marker's column, by block of rows. */
   private readonly marks = new Map<number, number[]>();
   private readonly blocks = new Map<number, string[][]>();
@@ -237,6 +240,30 @@ export class Grid {
     this.invalidate();
   }
 
+  /** Marks rows on their numbers, or stops marking them. */
+  setRowMarker(fetch: ((start: number, count: number) => Promise<number[]>) | null): void {
+    this.rowMarker = fetch;
+    this.rowMarks.clear();
+    for (const block of this.blocks.keys()) this.fetchRowMarks(block, this.generation);
+    this.invalidate();
+  }
+
+  private fetchRowMarks(block: number, generation: number): void {
+    const fetch = this.rowMarker;
+    if (!fetch) return;
+    fetch(block * BLOCK, BLOCK)
+      .then((marks) => {
+        if (generation !== this.generation || fetch !== this.rowMarker) return;
+        this.rowMarks.set(block, marks);
+        this.invalidate();
+      })
+      .catch(() => {});
+  }
+
+  private rowMark(row: number): number {
+    return this.rowMarks.get(Math.floor(row / BLOCK))?.[row % BLOCK] ?? 0;
+  }
+
   private fetchMarks(block: number, generation: number): void {
     const marker = this.marker;
     if (!marker) return;
@@ -258,6 +285,7 @@ export class Grid {
   reload(): void {
     this.generation += 1;
     this.marks.clear();
+    this.rowMarks.clear();
     this.blocks.clear();
     this.pending.clear();
     this.queue = [];
@@ -269,6 +297,8 @@ export class Grid {
   update(): void {
     const columns = this.source?.columns ?? 0;
     while (this.widths.length < columns) this.widths.push(DEFAULT_WIDTH);
+    // Columns went, as a delete or a repair takes them.
+    this.widths.length = columns;
     // The last block may have been cut short by the end of what was indexed then.
     for (const [index, rows] of this.blocks) if (rows.length < BLOCK) this.blocks.delete(index);
     this.layout();
@@ -720,6 +750,7 @@ export class Grid {
           this.stats.fetch(performance.now() - started);
           this.blocks.set(block, rows);
           this.fetchMarks(block, generation);
+          this.fetchRowMarks(block, generation);
           if (block === 0 && !this.measured) this.measure(rows);
           this.evict(block);
           this.invalidate();
@@ -741,6 +772,7 @@ export class Grid {
     for (const block of far.slice(0, this.blocks.size - MAX_BLOCKS)) {
       this.blocks.delete(block);
       this.marks.delete(block);
+      this.rowMarks.delete(block);
     }
   }
 
@@ -978,6 +1010,11 @@ export class Grid {
       const bottom = Math.min(height, shift + (selection.bottom - first + 1) * ROW_HEIGHT);
       g.fillStyle = colors.selectedHeader;
       g.fillRect(0, y, gutter, bottom - y);
+    }
+    // Broken rows, marked on their numbers.
+    g.fillStyle = colors.issue;
+    for (let i = 0; i < count; i += 1) {
+      if (this.rowMark(first + i)) g.fillRect(0, shift + i * ROW_HEIGHT, gutter, ROW_HEIGHT);
     }
     g.save();
     g.beginPath();
