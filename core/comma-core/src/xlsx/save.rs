@@ -382,6 +382,13 @@ fn patch_sheet(
             continue;
         }
         let before = origin.and_then(|origin| originals.get(origin)).map(Vec::as_slice).unwrap_or(&[]);
+        // Sorting brought another row's contents here: its cells bring their formats along,
+        // as Excel sorts, and the cells of the file here keep only their places.
+        let sorted_from = document.row_source(row).filter(|&source| origin.is_some() && Some(source) != origin);
+        let source_cells = sorted_from
+            .and_then(|source| rows_by_index.get(source as u32))
+            .map(|span| cell_spans(xml, span))
+            .unwrap_or_default();
         // Where each column of the document was in the file.
         let original_column = |column: usize| if columns_moved { document.column_origin(column) } else { Some(column) };
         let same_place = origin == Some(row) && !columns_moved && !(formulas_moved && has_formula(row));
@@ -407,7 +414,8 @@ fn patch_sheet(
         // Columns of the document that have a value or a cell of the file.
         let mut columns: BTreeSet<usize> = current.iter().enumerate().filter(|(_, field)| !value(field).is_empty()).map(|(column, _)| column).collect();
         for column in 0..document.column_count().max(current.len()) {
-            if original_column(column).is_some_and(|original| cells.iter().any(|cell| cell.column as usize == original)) {
+            let in_file = |cells: &[CellSpan]| original_column(column).is_some_and(|original| cells.iter().any(|cell| cell.column as usize == original));
+            if in_file(&cells) || in_file(&source_cells) {
                 columns.insert(column);
             }
         }
@@ -418,7 +426,12 @@ fn patch_sheet(
             let now = current.get(column);
             let reference = cell_name(row as u32, column as u32);
             let rewrite_formula = formulas_moved && now.is_some_and(|field| matches!(field, Field::Formula(_)));
-            if !rewrite_formula && same_cell(was, now) {
+            let style_of = |cell: Option<&CellSpan>| cell.and_then(|cell| attribute_value(&xml[cell.start..cell.tag_end], "s"));
+            let source_style = sorted_from.map(|_| {
+                style_of(original.and_then(|original| source_cells.iter().find(|cell| cell.column as usize == original)))
+            });
+            let restyled = source_style.as_ref().is_some_and(|style| *style != style_of(cell_span));
+            if !rewrite_formula && !restyled && same_cell(was, now) {
                 if let Some(cell) = cell_span {
                     if origin == Some(row) && original == Some(column) {
                         body.push_str(&xml[cell.start..cell.end]);
@@ -432,9 +445,10 @@ fn patch_sheet(
             let had_formula = cell_span.is_some_and(|cell| has_formula_xml(&xml[cell.start..cell.end]));
             // A cell new to the file in an added row or column takes the style of its
             // neighbour of the file, as Excel formats inserted rows and columns.
-            let style = match cell_span {
-                Some(cell) => attribute_value(&xml[cell.start..cell.tag_end], "s"),
-                None => document
+            let style = match (source_style, cell_span) {
+                (Some(style), _) => style,
+                (None, Some(cell)) => attribute_value(&xml[cell.start..cell.tag_end], "s"),
+                (None, None) => document
                     .format_source(row, column)
                     .filter(|&source| Some(source) != origin.zip(original))
                     .and_then(|(source_row, source_column)| {

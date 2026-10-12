@@ -454,10 +454,11 @@ impl Document {
     /// the file's have no formatting. `None` when nothing gives one.
     pub(crate) fn format_source(&self, row: usize, column: usize) -> Option<(usize, usize)> {
         let rows = self.records.len();
+        // A row sorted here brings its formats from the row of the file it came from.
         let source_row = self
-            .row_origin(row)
-            .or_else(|| (0..row.min(rows)).rev().find_map(|above| self.row_origin(above)))
-            .or_else(|| (row + 1..rows).find_map(|below| self.row_origin(below)))?;
+            .row_source(row)
+            .or_else(|| (0..row.min(rows)).rev().find_map(|above| self.row_source(above)))
+            .or_else(|| (row + 1..rows).find_map(|below| self.row_source(below)))?;
         let columns = self.column_origins.len();
         let source_column = self.column_origin(column).or_else(|| {
             let right = (column + 1..columns).find_map(|right| self.column_origin(right))?;
@@ -479,6 +480,12 @@ impl Document {
     /// The row of the file a row of a sheet was read from; `None` for a row added since.
     pub(crate) fn row_origin(&self, row: usize) -> Option<usize> {
         self.records.get(row)?.origin()
+    }
+
+    /// The row of the file whose contents and formats a row of a sheet holds: its origin,
+    /// unless sorting brought another row's here.
+    pub(crate) fn row_source(&self, row: usize) -> Option<usize> {
+        self.records.get(row)?.source()
     }
 
     /// Whether a row of a sheet may differ from the row of the file it was read from.

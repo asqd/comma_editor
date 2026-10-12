@@ -349,6 +349,8 @@ fn sorting_a_sheet_with_formulas_works_as_excel_sorts() {
         sales.write_number(row, 2, *quantity).unwrap();
         sales.write_formula(row, 3, format!("=B{0}*C{0}", row + 1).as_str()).unwrap();
     }
+    // Coffee's quantity has a format of its own, which goes with it.
+    sales.write_number_with_format(2, 2, 1.0, &rust_xlsxwriter::Format::new().set_num_format("0.0")).unwrap();
     sales.write_formula(4, 3, "=SUM(D2:D4)").unwrap();
     sales.write_formula(5, 3, "=D2").unwrap();
     let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
@@ -359,6 +361,7 @@ fn sorting_a_sheet_with_formulas_works_as_excel_sorts() {
     assert!(workbook.sort_rows(&mut sales, 0).unwrap());
     let items: Vec<String> = (1..4).map(|row| sales.cell(row, 0).unwrap()).collect();
     assert_eq!(items, ["Coffee", "Sugar", "Tea"]);
+    assert_eq!((sales.cell(1, 2).unwrap(), sales.cell(3, 2).unwrap()), ("1.0".to_owned(), "2".to_owned()));
     // A formula moved with its row reads its row; one outside keeps its cells, as in Excel.
     assert_eq!(sales.formula(3, 3).as_deref(), Some("B4*C4"));
     assert_eq!(sales.formula(5, 3).as_deref(), Some("D2"));
@@ -370,6 +373,9 @@ fn sorting_a_sheet_with_formulas_works_as_excel_sorts() {
     assert!(xml.contains("<v>10.004</v>"), "{xml}");
     let reopened = Workbook::from_bytes(saved).unwrap().read_sheet(0, &DisplayLocale::default()).unwrap().document;
     assert_eq!(reopened.cell(3, 0).unwrap(), "Tea");
+    // Formats went with the values: Coffee's 1.0 is on the first row, Tea's price on the third.
+    assert_eq!((reopened.cell(1, 2).unwrap(), reopened.cell(3, 2).unwrap()), ("1.0".to_owned(), "2".to_owned()));
+    assert_eq!(reopened.cell(3, 1).unwrap(), "10.00");
     assert_eq!(reopened.formula(3, 3).as_deref(), Some("B4*C4"));
     assert!(sales.undo());
     assert_eq!(sales.cell(1, 0).unwrap(), "Tea");
