@@ -22,15 +22,44 @@ impl Workbook {
     /// `sheets`, which must hold every sheet with formulas), moving references to the cells after
     /// them. Each document changed takes one undoable step; returns the sheets changed.
     pub fn insert(&self, sheets: &mut [(usize, &mut Document)], index: usize, axis: Axis, at: usize, count: usize) -> Result<Vec<usize>> {
-        self.restructure(sheets, index, axis, at, count, true)
+        self.restructure(sheets, index, axis, at, count, true, None)
+    }
+
+    /// Splits the values of `column` of sheet `index` by `separator` (a regular expression
+    /// when `regex`) into new columns right after it, as `Document::split_column` does, with
+    /// references to the columns after it moved in every sheet; one undoable step. Returns
+    /// the sheets changed and the number of columns added.
+    pub fn split_column(
+        &self,
+        sheets: &mut [(usize, &mut Document)],
+        index: usize,
+        column: usize,
+        separator: &str,
+        regex: bool,
+    ) -> Result<(Vec<usize>, usize)> {
+        let Some(position) = sheets.iter().position(|(sheet, _)| *sheet == index) else { return Ok((Vec::new(), 0)) };
+        let Some((count, values)) = sheets[position].1.split_values(column, separator, regex)? else { return Ok((Vec::new(), 0)) };
+        let changed = self.restructure(sheets, index, Axis::Columns, column + 1, count, true, Some(&values))?;
+        Ok((changed, count))
+    }
+
+    /// Joins the non-empty values of `columns` of sheet `index` with `separator` into a new
+    /// column after the last of them, as `Document::merge_columns` does, with references to the
+    /// columns after it moved in every sheet; one undoable step. Returns the sheets changed.
+    pub fn merge_columns(&self, sheets: &mut [(usize, &mut Document)], index: usize, columns: &[usize], separator: &str) -> Result<Vec<usize>> {
+        let Some(position) = sheets.iter().position(|(sheet, _)| *sheet == index) else { return Ok(Vec::new()) };
+        let Some((at, values)) = sheets[position].1.merge_values(columns, separator)? else { return Ok(Vec::new()) };
+        self.restructure(sheets, index, Axis::Columns, at, 1, true, Some(&values))
     }
 
     /// Deletes `count` rows or columns from `at` in sheet `index`; see `insert`. References to
     /// cells deleted become `#REF!`.
     pub fn delete(&self, sheets: &mut [(usize, &mut Document)], index: usize, axis: Axis, at: usize, count: usize) -> Result<Vec<usize>> {
-        self.restructure(sheets, index, axis, at, count, false)
+        self.restructure(sheets, index, axis, at, count, false, None)
     }
 
+    /// Inserts or deletes rows or columns; columns inserted take `fill`, by row, if given.
+    #[allow(clippy::too_many_arguments)]
     fn restructure(
         &self,
         sheets: &mut [(usize, &mut Document)],
@@ -39,6 +68,7 @@ impl Workbook {
         at: usize,
         count: usize,
         insert: bool,
+        fill: Option<&[Vec<Field>]>,
     ) -> Result<Vec<usize>> {
         let name = self.sheets.get(index).map(|sheet| sheet.name.to_lowercase()).ok_or(Error::RowOutOfRange { row: index, rows: self.sheets.len() })?;
         let Some(position) = sheets.iter().position(|(sheet, _)| *sheet == index) else {
@@ -69,7 +99,7 @@ impl Workbook {
         for (sheet, document) in sheets.iter_mut() {
             let own = self.sheets.get(*sheet).map(|entry| entry.name.to_lowercase()).unwrap_or_default();
             if *sheet == index {
-                restructure_sheet(document, &own, &remap, axis, at, count, insert, &change);
+                restructure_sheet(document, &own, &remap, axis, at, count, insert, &change, fill);
                 changed.push(*sheet);
             } else if remap_formulas(document, &own, &remap) {
                 changed.push(*sheet);
@@ -454,20 +484,28 @@ fn restructure_sheet(
     count: usize,
     insert: bool,
     change: &TableChange,
+    fill: Option<&[Vec<Field>]>,
 ) {
     let template = change.template.as_deref();
     let mut formulas_moved = false;
     let mut records: Vec<Record> = document
         .records
         .iter()
-        .map(|record| {
+        .enumerate()
+        .map(|(row, record)| {
             let mut fields = document.fields(record);
             if let Some(moved) = remapped(&fields, own, remap) {
                 fields = moved;
                 formulas_moved = true;
             }
             if axis == Axis::Columns {
-                if insert && fields.len() > at {
+                let filled = fill.and_then(|fill| fill.get(row)).filter(|fields| fields.iter().any(|field| !super::save::value(field).is_empty()));
+                if insert && let Some(filled) = filled {
+                    if fields.len() < at {
+                        fields.resize(at, Field::Text(String::new()));
+                    }
+                    fields.splice(at..at, (0..count).map(|offset| filled.get(offset).cloned().unwrap_or_else(|| Field::Text(String::new()))));
+                } else if insert && fields.len() > at {
                     fields.splice(at..at, std::iter::repeat_n(Field::Text(String::new()), count));
                 } else if !insert && fields.len() > at {
                     fields.drain(at..(at + count).min(fields.len()));
@@ -508,15 +546,18 @@ fn restructure_sheet(
                 }
             }
             let after = if insert { columns + count } else { columns - count };
-            // Columns inserted into a table get their names in its header row.
+            // Columns inserted into a table get their names in its header row, unless what
+            // fills them names them.
             for (row, column, name) in &change.headers {
                 if let Some(record) = records.get_mut(*row) {
                     let mut fields = document.fields(record);
                     if fields.len() <= *column {
                         fields.resize(column + 1, Field::Text(String::new()));
                     }
-                    fields[*column] = Field::Text(name.clone());
-                    *record = record.with_fields(fields);
+                    if super::save::value(&fields[*column]).is_empty() {
+                        fields[*column] = Field::Text(name.clone());
+                        *record = record.with_fields(fields);
+                    }
                 }
             }
             let length = document.records.len();

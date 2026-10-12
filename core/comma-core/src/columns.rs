@@ -179,6 +179,64 @@ impl Document {
         }))
     }
 
+    /// The parts of the values of `column` split by `separator`, by row, for new columns
+    /// right after it: their number and the values of each row, the header row's naming them
+    /// "Name 1", "Name 2"…; `None` when no value splits.
+    pub(crate) fn split_values(&self, column: usize, separator: &str, regex: bool) -> Result<Option<(usize, Vec<Vec<Field>>)>> {
+        self.check_column_index(column)?;
+        if separator.is_empty() {
+            return Err(Error::InvalidPattern("the separator is empty".into()));
+        }
+        let pattern = if regex { Some(Regex::new(separator).map_err(|error| Error::InvalidPattern(error.to_string()))?) } else { None };
+        let first_data_row = self.header_offset();
+        let parts: Vec<Option<Vec<String>>> = (0..self.records.len())
+            .map(|row| {
+                (row >= first_data_row && !self.records[row].is_blank()).then(|| {
+                    let value = self.value_at(row, column);
+                    match &pattern {
+                        Some(pattern) => pattern.split(&value).map(str::to_owned).collect(),
+                        None => value.split(separator).map(str::to_owned).collect(),
+                    }
+                })
+            })
+            .collect();
+        let count = parts.iter().flatten().map(Vec::len).max().unwrap_or(0);
+        if count <= 1 {
+            return Ok(None);
+        }
+        let header = (first_data_row == 1).then(|| self.value_at(0, column).into_owned());
+        let values = parts
+            .into_iter()
+            .enumerate()
+            .map(|(row, parts)| match (parts, &header) {
+                (Some(parts), _) => parts.into_iter().map(Field::Text).collect(),
+                (None, Some(name)) if row == 0 => (1..=count).map(|n| Field::Text(format!("{name} {n}"))).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        Ok(Some((count, values)))
+    }
+
+    /// The non-empty values of `columns` joined with `separator`, by row, for a new column
+    /// after the last of them: where it goes and its values; `None` without columns.
+    pub(crate) fn merge_values(&self, columns: &[usize], separator: &str) -> Result<Option<(usize, Vec<Vec<Field>>)>> {
+        let mut columns = columns.to_vec();
+        columns.sort_unstable();
+        columns.dedup();
+        let Some(&last) = columns.last() else { return Ok(None) };
+        self.check_column_index(last)?;
+        let header_rows = self.header_offset();
+        let values = (0..self.records.len())
+            .map(|row| {
+                let parts: Vec<String> =
+                    columns.iter().map(|&column| self.value_at(row, column).into_owned()).filter(|value| !value.is_empty()).collect();
+                let joiner = if row < header_rows && separator.trim().is_empty() { " " } else { separator };
+                vec![Field::Text(parts.join(joiner))]
+            })
+            .collect();
+        Ok(Some((last + 1, values)))
+    }
+
     /// Joins the non-empty values of `columns` with `separator` into a new column inserted after
     /// the last of them; the columns themselves stay.
     pub fn merge_columns(&mut self, columns: &[usize], separator: &str) -> Result<()> {

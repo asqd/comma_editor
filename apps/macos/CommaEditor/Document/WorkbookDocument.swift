@@ -222,8 +222,31 @@ final class WorkbookDocument: CSVDocument {
         }
     }
 
-    /// Sorts the rows of a sheet into the file as Excel sorts: formulas move with their rows,
-    /// references from elsewhere and formats stay where they are.
+    /// Splits a column of a sheet through the workbook: references to the columns after it
+    /// move in every sheet.
+    override func splitColumn(_ column: Int, separator: String, regex: Bool, done: @escaping (Int) -> Void) {
+        guard workbook != nil, !isLegacyFormat else { return super.splitColumn(column, separator: separator, regex: regex, done: done) }
+        var added = 0
+        let changed = changeWorkbook(L("Column Split")) { workbook, sheets, index in
+            let split = try workbook.splitColumn(sheets: sheets, index: index, column: UInt64(column), separator: separator, regex: regex)
+            added = Int(split.count)
+            return split.sheets
+        }
+        if changed {
+            done(added)
+        }
+    }
+
+    /// Joins columns of a sheet through the workbook; see `splitColumn`.
+    override func mergeColumns(_ columns: [Int], separator: String) {
+        guard workbook != nil, !isLegacyFormat else { return super.mergeColumns(columns, separator: separator) }
+        changeWorkbook(L("Column Merge")) { workbook, sheets, index in
+            try workbook.mergeColumns(sheets: sheets, index: index, columns: columns.map { UInt64($0) }, separator: separator)
+        }
+    }
+
+    /// Sorts the rows of a sheet into the file as Excel sorts: formulas and formats move with
+    /// their rows, references from elsewhere stay where they are.
     @discardableResult
     override func applySort() -> Bool {
         guard let workbook, rowsMoveReferences, !isLegacyFormat else { return super.applySort() }
@@ -246,6 +269,7 @@ final class WorkbookDocument: CSVDocument {
 
     /// Runs a change of the shown sheet that moves references in every sheet: each sheet is
     /// read first, so no formula is missed; the sheets changed take one undo step together.
+    @discardableResult
     private func changeWorkbook(_ actionName: String, _ change: (CoreWorkbook, [SheetToSave], UInt64) throws -> [UInt64]) -> Bool {
         guard let workbook, !isLegacyFormat else { return false }
         guard !isBusy else {

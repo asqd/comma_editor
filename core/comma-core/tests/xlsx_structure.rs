@@ -542,3 +542,27 @@ fn columns_inserted_into_a_table_join_it() {
     archive.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut table).unwrap();
     assert!(table.contains(r#"ref="A1:D4""#) && table.contains(r#"<tableColumns count="4">"#), "{table}");
 }
+
+#[test]
+fn split_and_merged_columns_move_references() {
+    let (workbook, mut data, mut report) = open(book());
+    // "Item 2" into "Item" and "2" right after A: B and C move to D and E.
+    let (changed, count) = workbook.split_column(&mut [(0, &mut data), (1, &mut report)], 0, 0, " ", false).unwrap();
+    assert_eq!((count, changed), (2, vec![0, 1]));
+    assert_eq!((data.cell(2, 1).unwrap(), data.cell(2, 2).unwrap()), ("Item".to_owned(), "2".to_owned()));
+    assert_eq!(data.formula(2, 4).as_deref(), Some("D3*2"));
+    assert_eq!(report.formula(0, 0).as_deref(), Some("Data!E8"));
+    assert!(data.undo());
+    report.undo();
+    assert_eq!(data.formula(2, 2).as_deref(), Some("B3*2"));
+    // A and B joined into a new column after B.
+    workbook.merge_columns(&mut [(0, &mut data), (1, &mut report)], 0, &[0, 1], ": ").unwrap();
+    assert_eq!(data.cell(2, 2).unwrap(), "Item 2: 20");
+    assert_eq!(data.formula(2, 3).as_deref(), Some("B3*2"));
+    assert_eq!(report.formula(1, 0).as_deref(), Some("SUM(Data!B2:B6)"));
+    let saved = workbook.to_bytes(&[(0, &data), (1, &report)]).unwrap();
+    let (_, reopened, report) = open(saved);
+    assert_eq!(reopened.cell(2, 2).unwrap(), "Item 2: 20");
+    assert_eq!(reopened.formula(7, 3).as_deref(), Some("SUM(B2:B6)"));
+    assert_eq!(report.formula(0, 0).as_deref(), Some("Data!D8"));
+}

@@ -139,6 +139,13 @@ impl From<core::Error> for CoreError {
     }
 }
 
+/// What splitting a column of a sheet did: the sheets changed and the columns added.
+#[derive(uniffi::Record)]
+pub struct ColumnSplit {
+    pub sheets: Vec<u64>,
+    pub count: u64,
+}
+
 /// Why rows or columns of a sheet cannot change: see `comma_core::SheetStructure`.
 #[derive(Debug, uniffi::Enum)]
 pub enum SheetChange {
@@ -2282,8 +2289,29 @@ impl CoreWorkbook {
         Ok(changed.into_iter().map(|sheet| sheet as u64).collect())
     }
 
+    /// Splits a column of sheet `index` into new columns after it, references to the columns
+    /// after it moving in every sheet given; each sheet changed took one undoable step.
+    pub fn split_column(&self, sheets: Vec<SheetToSave>, index: u64, column: u64, separator: String, regex: bool) -> Result<ColumnSplit, CoreError> {
+        let mut documents = sheets.iter().map(|sheet| sheet.document.edit()).collect::<Result<Vec<_>, _>>()?;
+        let mut edited: Vec<(usize, &mut core::Document)> =
+            sheets.iter().zip(documents.iter_mut()).map(|(sheet, document)| (sheet.index as usize, &mut **document)).collect();
+        let (changed, count) = self.inner.split_column(&mut edited, index as usize, column as usize, &separator, regex)?;
+        Ok(ColumnSplit { sheets: changed.into_iter().map(|sheet| sheet as u64).collect(), count: count as u64 })
+    }
+
+    /// Joins columns of sheet `index` into a new column after the last of them, references to
+    /// the columns after it moving in every sheet given; returns the sheets changed.
+    pub fn merge_columns(&self, sheets: Vec<SheetToSave>, index: u64, columns: Vec<u64>, separator: String) -> Result<Vec<u64>, CoreError> {
+        let mut documents = sheets.iter().map(|sheet| sheet.document.edit()).collect::<Result<Vec<_>, _>>()?;
+        let mut edited: Vec<(usize, &mut core::Document)> =
+            sheets.iter().zip(documents.iter_mut()).map(|(sheet, document)| (sheet.index as usize, &mut **document)).collect();
+        let columns: Vec<usize> = columns.into_iter().map(|column| column as usize).collect();
+        let changed = self.inner.merge_columns(&mut edited, index as usize, &columns, &separator)?;
+        Ok(changed.into_iter().map(|sheet| sheet as u64).collect())
+    }
+
     /// Puts the rows of sheet `index` in the order its view sorts them, as Excel sorts:
-    /// formulas move with their rows, references from elsewhere and formats stay. `false`
+    /// formulas and formats move with their rows, references from elsewhere stay. `false`
     /// when nothing moved.
     pub fn sort_rows(&self, document: Arc<CoreDocument>, index: u64) -> Result<bool, CoreError> {
         let mut edited = document.edit()?;

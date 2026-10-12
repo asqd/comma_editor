@@ -248,6 +248,14 @@ enum DebugScript {
                     return
                 }
                 NSLog("COMMA window: no document \(argument)")
+            case "split" where parts.count == 2:
+                // split=<column>:<separator> — as the Split Column dialog does.
+                grid.document.splitColumn(Int(parts[0]) ?? 0, separator: parts[1], regex: false) { count in
+                    NSLog("%@", "COMMA split: \(count) columns")
+                }
+            case "merge" where parts.count == 2:
+                // merge=<column>,<column>…:<separator> — as the Merge Columns dialog does.
+                grid.document.mergeColumns(parts[0].split(separator: ",").compactMap { Int($0) }, separator: parts[1])
             case "appearance":
                 // appearance=dark|light: the app's look, whatever the system's, for screenshots.
                 NSApp.appearance = NSAppearance(named: argument == "dark" ? .darkAqua : .aqua)
