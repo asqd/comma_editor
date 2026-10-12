@@ -10,6 +10,7 @@
 //! and the interface follows it through `status`.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use comma_ffi::{
@@ -106,6 +107,8 @@ struct State {
     saved: Option<u64>,
     indexing: Option<f64>,
     job: Option<Job>,
+    /// Restored from a draft: changed, though nothing was changed in this session.
+    restored: bool,
     /// Counts jobs, so that a cancelled job ending late leaves the next one alone.
     job_number: u64,
     /// How the last job ended, until the interface takes it with `job_result`.
@@ -140,7 +143,7 @@ impl Session {
             delimiter: info.delimiter,
             line_ending: info.line_ending,
             detection_confident: info.detection_confident,
-            dirty: change != state.saved,
+            dirty: state.restored || change != state.saved,
             can_undo: document.can_undo(),
             can_redo: document.can_redo(),
             change,
@@ -387,6 +390,38 @@ impl Sessions {
             .map(|(window, _)| window.clone())
     }
 
+    /// Writes the window's document to `file` in its own format, when it has changes and is
+    /// small enough to copy every few seconds; returns the file it belongs to and the format, or
+    /// `None` when there is nothing to keep.
+    pub fn write_draft(&self, window: &str, file: &Path, largest: u64) -> Outcome<Option<(Option<String>, SaveFormat)>> {
+        let session = self.session(window)?;
+        let status = session.status();
+        if !status.dirty || status.indexing.is_some() || status.job.is_some() {
+            return Ok(None);
+        }
+        if let Some(path) = &status.path
+            && std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > largest)
+        {
+            return Ok(None);
+        }
+        let format = session.document.save_format();
+        session.document.save_with(file.to_string_lossy().into_owned(), format.clone())?;
+        Ok(Some((status.path, format)))
+    }
+
+    /// Opens a draft in the window as the document of `path`, changed since it was saved, and
+    /// saving in `format` as it did.
+    pub fn restore(&self, window: &str, draft: &Path, path: Option<String>, format: SaveFormat) -> Outcome<Value> {
+        let delimiter = Some(format.delimiter.clone());
+        let document = CoreDocument::open_with(draft.to_string_lossy().into_owned(), Some(format.encoding), delimiter)?;
+        document.set_save_format(format)?;
+        let session = Session::new(document, path);
+        session.state().restored = true;
+        session.index();
+        self.set(window, Some(session.clone()));
+        reply(session.status())
+    }
+
     /// Forgets the document of a window that closed.
     pub fn close(&self, window: &str) {
         self.set(window, None);
@@ -588,7 +623,10 @@ impl Sessions {
             "save" => {
                 let path = session.state().path.clone().ok_or_else(|| Failure::message("the document has no file yet"))?;
                 document.save(path)?;
-                session.state().saved = document.last_change_id();
+                let mut state = session.state();
+                state.saved = document.last_change_id();
+                state.restored = false;
+                drop(state);
                 status(&session)
             }
             "save_as" => {
@@ -603,6 +641,7 @@ impl Sessions {
                 let mut state = session.state();
                 state.path = Some(path);
                 state.saved = document.last_change_id();
+                state.restored = false;
                 drop(state);
                 status(&session)
             }
@@ -614,5 +653,84 @@ impl Sessions {
             }
             _ => Err(Failure::message(format!("unknown command {command}"))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A copy of a sample in a folder of its own, removed by the caller.
+    fn sample(name: &str) -> (std::path::PathBuf, String) {
+        let folder = std::env::temp_dir().join(format!("comma-session-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("people.csv");
+        std::fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../samples/russian-windows-1251.csv"), &path).unwrap();
+        (folder, path.to_string_lossy().into_owned())
+    }
+
+    fn status(sessions: &Sessions, window: &str) -> Value {
+        sessions.dispatch(window, "status", Value::Null).unwrap()
+    }
+
+    #[test]
+    fn edits_are_dirty_until_saved_and_after_undo_they_are_not() {
+        let (folder, path) = sample("dirty");
+        let sessions = Sessions::default();
+        sessions.dispatch("main", "open", json!({ "path": path })).unwrap();
+        assert_eq!(status(&sessions, "main")["dirty"], false);
+        sessions.dispatch("main", "set_cell", json!({ "row": 0, "column": 1, "value": "Тверь" })).unwrap();
+        assert_eq!(status(&sessions, "main")["dirty"], true);
+        sessions.dispatch("main", "undo", Value::Null).unwrap();
+        assert_eq!(status(&sessions, "main")["dirty"], false);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_restored_draft_saves_as_the_document_would_have() {
+        let (folder, path) = sample("draft");
+        let sessions = Sessions::default();
+        sessions.dispatch("main", "open", json!({ "path": path })).unwrap();
+        sessions.dispatch("main", "set_cell", json!({ "row": 1, "column": 3, "value": "новый комментарий" })).unwrap();
+
+        // What saving the edit straight away writes.
+        let expected = folder.join("expected.csv");
+        let format = sessions.dispatch("main", "save_format", Value::Null).unwrap();
+        sessions.dispatch("main", "save_copy", json!({ "path": expected, "format": format })).unwrap();
+
+        let draft = folder.join("main.draft");
+        let (draft_path, draft_format) = sessions.write_draft("main", &draft, u64::MAX).unwrap().expect("a draft of the changes");
+        assert_eq!(draft_path.as_deref(), Some(path.as_str()));
+
+        // The app crashed; the next session restores the draft in a window of its own.
+        let next = Sessions::default();
+        let restored = next.restore("window-2", &draft, draft_path, draft_format).unwrap();
+        assert_eq!(restored["dirty"], true);
+        assert_eq!(restored["path"], path.as_str());
+        assert_eq!(restored["encoding"], "Windows-1251");
+        next.dispatch("window-2", "save", Value::Null).unwrap();
+        assert_eq!(status(&next, "window-2")["dirty"], false);
+        assert_eq!(std::fs::read(&path).unwrap(), std::fs::read(&expected).unwrap());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn an_unchanged_document_has_no_draft() {
+        let (folder, path) = sample("clean");
+        let sessions = Sessions::default();
+        sessions.dispatch("main", "open", json!({ "path": path })).unwrap();
+        assert!(sessions.write_draft("main", &folder.join("main.draft"), u64::MAX).unwrap().is_none());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn a_window_showing_a_file_is_found_by_its_path() {
+        let (folder, path) = sample("window");
+        let sessions = Sessions::default();
+        sessions.dispatch("document-3", "open", json!({ "path": path })).unwrap();
+        let relative = folder.join(".").join("people.csv").to_string_lossy().into_owned();
+        assert_eq!(sessions.window_for(&relative).as_deref(), Some("document-3"));
+        assert_eq!(sessions.window_for("/nowhere.csv"), None);
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }

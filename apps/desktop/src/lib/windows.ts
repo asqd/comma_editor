@@ -5,9 +5,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { call, inTauri } from "./api";
 
-/** Opens a window for the file at `path`, or for a new document. */
-export function newWindow(path: string | null): void {
-  const query = path ? `?open=${encodeURIComponent(path)}` : "?new=1";
+/** Opens a window for the file at `path`, for a new document, or for a draft of the last session. */
+export function newWindow(path: string | null, draft?: string): void {
+  const query = draft ? `?draft=${encodeURIComponent(draft)}` : path ? `?open=${encodeURIComponent(path)}` : "?new=1";
   if (!inTauri) {
     window.open(`${location.pathname}${query}${location.search.includes("lang=") ? `&${location.search.slice(1)}` : ""}`, "_blank");
     return;

@@ -18,6 +18,11 @@ const desktop: Record<string, string> = {
   "frame p95 %@ ms": "кадр p95 %@ мс",
   "request p95 %@ ms": "запрос p95 %@ мс",
   "Edited": "Изменён",
+  "Restore the unsaved changes to “%@”?": "Восстановить несохранённые изменения в «%@»?",
+  "CommaEditor closed before they were saved. Restored changes open in a window; save them to keep them.":
+    "CommaEditor закрылся, не сохранив их. Восстановленные изменения откроются в окне; сохраните их, чтобы не потерять.",
+  "Restore": "Восстановить",
+  "Discard": "Удалить",
   // What AppKit says for the macOS app.
   "Do you want to save the changes made to the document “%@”?": "Сохранить изменения в документе «%@»?",
   "Your changes will be lost if you don’t save them.": "Если не сохранить их, изменения будут потеряны.",

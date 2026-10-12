@@ -265,7 +265,7 @@ pub fn formula_functions() -> Vec<String> {
     core::FUNCTIONS.iter().map(|(name, ..)| (*name).to_owned()).collect()
 }
 
-#[derive(uniffi::Enum)]
+#[derive(uniffi::Enum, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum LineEnding {
     Lf,
@@ -273,7 +273,7 @@ pub enum LineEnding {
     Cr,
 }
 
-#[derive(uniffi::Enum)]
+#[derive(uniffi::Enum, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum TextEncoding {
     Utf8,
@@ -391,7 +391,7 @@ pub fn fix_garbled(text: String) -> Option<String> {
 }
 
 /// Encoding, BOM, delimiter and line endings a file is written with.
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct SaveFormat {
     pub encoding: TextEncoding,

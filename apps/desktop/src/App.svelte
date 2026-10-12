@@ -25,6 +25,7 @@
   import { NativeMenu, type Entry } from "./lib/menu";
   import { addRecent, clearRecent, recentFiles } from "./lib/recent";
   import { focusWindowFor, newWindow, quit } from "./lib/windows";
+  import { invoke } from "@tauri-apps/api/core";
   import type { CellRange } from "./lib/api";
 
   const mac = navigator.userAgent.includes("Mac");
@@ -70,7 +71,43 @@
     else if (previous.rows !== status.rows || previous.columns !== status.columns) grid.update();
     grid.setView(status.view);
     void showTitle(status);
+    if (previous?.change !== status.change || previous?.dirty !== status.dirty) keepDraft();
   });
+
+  /** Writes the draft a few seconds after the last change, or removes it once saved. */
+  let draftTimer = 0;
+  function keepDraft() {
+    if (!inTauri || benching) return;
+    clearTimeout(draftTimer);
+    draftTimer = window.setTimeout(() => void invoke("draft_save").catch(() => {}), 3000);
+  }
+
+  /** Opens a draft of the last session in this window. */
+  async function restoreDraft(id: string) {
+    fresh = true;
+    try {
+      doc.show(await invoke<Status>("draft_restore", { id }));
+    } catch (error) {
+      failure = describe(error);
+    }
+  }
+
+  /** Offers each draft the last session left: restored ones open, the first in this window. */
+  async function offerDrafts(drafts: { id: string; path: string | null }[]) {
+    for (const draft of drafts) {
+      const answer = await ask(
+        L("Restore the unsaved changes to “%@”?", name(draft.path)),
+        L("CommaEditor closed before they were saved. Restored changes open in a window; save them to keep them."),
+        [
+          { label: L("Discard"), value: "discard", cancel: true },
+          { label: L("Restore"), value: "restore", default: true },
+        ],
+      );
+      if (answer === "discard") void invoke("draft_discard", { id: draft.id });
+      else if (!doc.open) await restoreDraft(draft.id);
+      else newWindow(null, draft.id);
+    }
+  }
   const table: TableSource = {
     get rows() {
       return doc.status?.rows ?? 0;
@@ -1009,7 +1046,8 @@
     const cursor = grid?.selection?.cursor;
     const plain = !event.metaKey && !event.ctrlKey && !event.altKey;
     if (!cursor || !plain) return false;
-    if (event.key === "Enter" && !event.shiftKey) void edit(cursor);
+    // F2 edits too, as in spreadsheets on Windows and Linux.
+    if ((event.key === "Enter" && !event.shiftKey) || (event.key === "F2" && !event.shiftKey)) void edit(cursor);
     else if (event.key === "Delete" || event.key === "Backspace") void clear();
     else return false;
     return true;
@@ -1062,13 +1100,17 @@
         if (doc.status?.dirty) event.preventDefault();
       });
     }
-    if (parameters.has("open")) void show(parameters.get("open")!);
+    if (parameters.has("draft")) void restoreDraft(parameters.get("draft")!);
+    else if (parameters.has("open")) void show(parameters.get("open")!);
     else if (parameters.has("new")) void newDocument();
     else if (inTauri) {
       void import("./lib/bench-launch").then(({ launch, benchDone }) =>
-        launch().then(({ paths, bench }) => {
+        launch().then(async ({ paths, bench, drafts }) => {
           if (bench) void (paths[0] ? benchAndQuit(paths[0]) : benchDone(false, "--bench: no file"));
-          else void openPaths(paths);
+          else {
+            await offerDrafts(drafts);
+            await openPaths(paths);
+          }
         }),
       );
     }
