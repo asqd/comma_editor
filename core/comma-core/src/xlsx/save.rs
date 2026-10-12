@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::{Cursor, Seek, Write};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
@@ -14,6 +15,7 @@ use quick_xml::events::Event;
 
 use super::refs::MAX_ROWS;
 use super::sheet::{self, Context, cell_attributes};
+use super::package::{CompressedPart, PartWriter};
 use super::{Source, Workbook, anchors, xml};
 use crate::document::{Computed, Document, Field};
 use crate::error::{Result, WorkbookError};
@@ -128,7 +130,7 @@ fn end_tag(text: &str, name: &str) -> Option<usize> {
 
 /// A sheet saved anew, and whether a formula of it changed or moved.
 struct PatchedSheet {
-    xml: String,
+    part: CompressedPart,
     formulas_changed: bool,
 }
 
@@ -137,16 +139,25 @@ impl Workbook {
     /// it with `read_sheet` (by sheet index). Sheets not given, or not changed, are kept as they
     /// are in the file that was opened.
     pub fn save(&self, path: impl AsRef<Path>, sheets: &[(usize, &Document)]) -> Result<()> {
-        let bytes = self.to_bytes(sheets)?;
-        write_atomically(path.as_ref(), |out| Ok(std::io::Write::write_all(out, &bytes)?))
+        if !matches!(self.source, Source::Xlsx { .. }) {
+            return Err(WorkbookError::ReadOnly.into());
+        }
+        write_atomically(path.as_ref(), |out| self.write_to(out, sheets).map(|_| ()))
     }
 
     /// The bytes `save` writes.
     pub fn to_bytes(&self, sheets: &[(usize, &Document)]) -> Result<Vec<u8>> {
+        Ok(self.write_to(Cursor::new(Vec::new()), sheets)?.into_inner())
+    }
+
+    /// Writes the workbook with the sheets' changes to `out`. Sheets written anew are
+    /// compressed as they are made, never whole in memory.
+    fn write_to<W: Write + Seek>(&self, out: W, sheets: &[(usize, &Document)]) -> Result<W> {
         let Source::Xlsx { package, strings, styles } = &self.source else {
             return Err(WorkbookError::ReadOnly.into());
         };
         let mut replaced: HashMap<String, Vec<u8>> = HashMap::new();
+        let mut compressed: HashMap<String, CompressedPart> = HashMap::new();
         let mut formulas_changed = false;
         let date_styles = RefCell::new(DateStyles::new(styles));
         for &(index, document) in sheets {
@@ -168,11 +179,11 @@ impl Workbook {
             let own = entry.name.to_lowercase();
             if let Some(patched) = patch_sheet(&text, &spans, part, &own, document, &context, &date_styles)? {
                 formulas_changed |= patched.formulas_changed;
-                replaced.insert(part.to_lowercase(), patched.xml.into_bytes());
+                compressed.insert(part.to_lowercase(), patched.part);
             }
         }
-        if replaced.is_empty() {
-            return package.write_with(&HashMap::new(), &HashSet::new());
+        if compressed.is_empty() {
+            return package.write_with(out, &HashMap::new(), &mut compressed, &HashSet::new());
         }
 
         // Excel recomputes formulas when it opens the file, as values they use may have changed;
@@ -271,7 +282,7 @@ impl Workbook {
                 replaced.insert("[content_types].xml".to_owned(), remove_elements(&text, "Override", "calcChain").into_bytes());
             }
         }
-        package.write_with(&replaced, &removed)
+        package.write_with(out, &replaced, &mut compressed, &removed)
     }
 }
 
@@ -295,7 +306,7 @@ fn patch_sheet(
     let columns_map = AxisMap::columns(document);
     let columns_moved = !columns_map.is_identity();
     let prefix = element_prefix(xml, data_start, spans.sheet_data_empty);
-    let rows_by_index: HashMap<u32, &RowSpan> = spans.rows.iter().map(|span| (span.row, span)).collect();
+    let rows_by_index = RowIndex::new(&spans.rows);
     let row_count = document.row_count();
     let has_formula = |row: usize| document.row_fields(row).iter().any(|field| matches!(field, Field::Formula(_)));
     // Whether a row of the document is the row of the file at the same place, unchanged.
@@ -309,28 +320,54 @@ fn patch_sheet(
         .collect();
     let originals = original_rows(xml, &rewritten, &rows_by_index, part, context)?;
 
+    // References outside the cells move where rows and columns went; links go with the
+    // contents of their cells, which sorting moves without the rows.
+    let sources_map = AxisMap::sources(document);
+    let moved = !rows_map.is_identity() || columns_moved || !sources_map.is_identity();
+    let rows = |first: u32, last: u32| rows_map.range(first, last);
+    let sources = |first: u32, last: u32| sources_map.range(first, last);
+    let columns = |first: u32, last: u32| columns_map.range(first, last);
+    let remap = Remap { sheet: own, rows: &rows, columns: &columns };
+    let links = Remap { sheet: own, rows: &sources, columns: &columns };
+    let outside = |text: &str| if moved { remap_parts(text, own, &remap, &links) } else { text.to_owned() };
+
+    // What comes before the cells, with the range of the cells in use.
+    let mut body = PartWriter::new()?;
+    let (mut last_row, mut last_column) = (0usize, 0usize);
+    for row in 0..row_count {
+        if let Some(column) = document.row_fields(row).iter().rposition(|field| !value(field).is_empty()) {
+            last_row = row;
+            last_column = last_column.max(column);
+        }
+    }
+    match spans.dimension {
+        Some((start, end)) if end <= data_start => {
+            body.push_str(&outside(&xml[..start]));
+            body.push_str(&dimension(&xml[start..end], last_row, last_column));
+            body.push_str(&outside(&xml[end..data_start]));
+        }
+        _ => body.push_str(&outside(&xml[..data_start])),
+    }
+    if spans.sheet_data_empty {
+        body.push_str(&format!("<{prefix}sheetData>"));
+    }
+
     let mut used: HashSet<u32> = HashSet::new();
-    let mut body = String::with_capacity(data_end.saturating_sub(data_start) + 1024);
     let mut changed = false;
     let mut formulas_changed = false;
-    let (mut last_row, mut last_column) = (0usize, 0usize);
     for row in 0..row_count {
         let origin = document.row_origin(row);
         // A row added at the end may take the place of a row of the file that held formatting
         // but no values.
         let origin_index = origin.or_else(|| {
             let index = row as u32;
-            (row >= read_rows && rows_by_index.contains_key(&index) && !used.contains(&index)).then_some(row)
+            (row >= read_rows && rows_by_index.get(index).is_some() && !used.contains(&index)).then_some(row)
         });
-        let span = origin_index.and_then(|origin| rows_by_index.get(&(origin as u32)).copied());
+        let span = origin_index.and_then(|origin| rows_by_index.get(origin as u32));
         if let Some(origin) = origin_index {
             used.insert(origin as u32);
         }
         let current = document.row_fields(row);
-        if let Some(column) = current.iter().rposition(|field| !value(field).is_empty()) {
-            last_row = row;
-            last_column = last_column.max(column);
-        }
         let number = (row + 1).to_string();
         if untouched(row) && origin.is_some() {
             // The row of the file, moved here if it moved.
@@ -401,7 +438,7 @@ fn patch_sheet(
                     .format_source(row, column)
                     .filter(|&source| Some(source) != origin.zip(original))
                     .and_then(|(source_row, source_column)| {
-                        let span = rows_by_index.get(&(source_row as u32))?;
+                        let span = rows_by_index.get(source_row as u32)?;
                         let cell = cell_spans(xml, span).into_iter().find(|cell| cell.column as usize == source_column)?;
                         attribute_value(&xml[cell.start..cell.tag_end], "s")
                     }),
@@ -468,33 +505,11 @@ fn patch_sheet(
     if !changed {
         return Ok(None);
     }
-
-    // References outside the cells move where rows and columns went; links go with the
-    // contents of their cells, which sorting moves without the rows.
-    let sources_map = AxisMap::sources(document);
-    let moved = !rows_map.is_identity() || columns_moved || !sources_map.is_identity();
-    let rows = |first: u32, last: u32| rows_map.range(first, last);
-    let sources = |first: u32, last: u32| sources_map.range(first, last);
-    let columns = |first: u32, last: u32| columns_map.range(first, last);
-    let remap = Remap { sheet: own, rows: &rows, columns: &columns };
-    let links = Remap { sheet: own, rows: &sources, columns: &columns };
-    let outside = |text: &str| if moved { remap_parts(text, own, &remap, &links) } else { text.to_owned() };
-    let mut out = String::with_capacity(xml.len() + body.len() / 8);
-    match spans.dimension {
-        Some((start, end)) if end <= data_start => {
-            out.push_str(&outside(&xml[..start]));
-            out.push_str(&dimension(&xml[start..end], last_row, last_column));
-            out.push_str(&outside(&xml[end..data_start]));
-        }
-        _ => out.push_str(&outside(&xml[..data_start])),
-    }
     if spans.sheet_data_empty {
-        out.push_str(&format!("<{prefix}sheetData>{body}</{prefix}sheetData>"));
-    } else {
-        out.push_str(&body);
+        body.push_str(&format!("</{prefix}sheetData>"));
     }
-    out.push_str(&outside(&xml[data_end..]));
-    Ok(Some(PatchedSheet { xml: out, formulas_changed }))
+    body.push_str(&outside(&xml[data_end..]));
+    Ok(Some(PatchedSheet { part: body.finish()?, formulas_changed }))
 }
 
 /// Where rows or columns of the file are in the document: each one read, and those past them,
@@ -838,6 +853,30 @@ struct Spans {
     rows: Vec<RowSpan>,
 }
 
+/// The rows of the file by number: found by halving, as a file lists its rows in order, or
+/// looked up in a map when one does not.
+enum RowIndex<'a> {
+    Sorted(&'a [RowSpan]),
+    Map(HashMap<u32, &'a RowSpan>),
+}
+
+impl<'a> RowIndex<'a> {
+    fn new(rows: &'a [RowSpan]) -> Self {
+        if rows.windows(2).all(|pair| pair[0].row < pair[1].row) {
+            Self::Sorted(rows)
+        } else {
+            Self::Map(rows.iter().map(|span| (span.row, span)).collect())
+        }
+    }
+
+    fn get(&self, row: u32) -> Option<&'a RowSpan> {
+        match self {
+            Self::Sorted(rows) => rows.binary_search_by_key(&row, |span| span.row).ok().map(|index| &rows[index]),
+            Self::Map(map) => map.get(&row).copied(),
+        }
+    }
+}
+
 struct RowSpan {
     /// Row of the sheet, from 0.
     row: u32,
@@ -916,11 +955,11 @@ fn cell_spans(xml: &str, row: &RowSpan) -> Vec<CellSpan> {
 fn original_rows(
     xml: &str,
     rows: &[u32],
-    spans: &HashMap<u32, &RowSpan>,
+    spans: &RowIndex,
     part: &str,
     context: &Context,
 ) -> Result<Vec<Vec<Field>>> {
-    let mut wanted: Vec<&RowSpan> = rows.iter().filter_map(|row| spans.get(row).copied()).collect();
+    let mut wanted: Vec<&RowSpan> = rows.iter().filter_map(|&row| spans.get(row)).collect();
     if wanted.is_empty() {
         return Ok(Vec::new());
     }
@@ -936,7 +975,7 @@ fn original_rows(
 }
 
 /// A row of the file, unchanged, written at another row: the row and its cells renumbered.
-fn push_moved_row(body: &mut String, xml: &str, span: &RowSpan, row: u32, prefix: &str) {
+fn push_moved_row(body: &mut PartWriter, xml: &str, span: &RowSpan, row: u32, prefix: &str) {
     let tag = set_attribute(&xml[span.start..span.tag_end], "r", Some(&(row + 1).to_string()));
     let tag = set_attribute(&tag, "spans", None);
     if span.tag_end == span.end {

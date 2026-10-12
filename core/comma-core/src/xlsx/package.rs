@@ -1,7 +1,7 @@
 //! The zip archive of a workbook and the relationships that tie its parts together.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Cursor, Read};
+use std::io::{self, BufWriter, Cursor, Read, Seek, Write};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, sync_channel};
 
@@ -107,28 +107,39 @@ impl Package {
 
     /// The archive again, with some parts replaced (by lower-case name) and some left out. The
     /// other parts are copied compressed, as they are, in their order.
-    pub(crate) fn write_with(&self, replaced: &HashMap<String, Vec<u8>>, removed: &HashSet<String>) -> Result<Vec<u8>> {
+    pub(crate) fn write_with<W: Write + Seek>(
+        &self,
+        out: W,
+        replaced: &HashMap<String, Vec<u8>>,
+        compressed: &mut HashMap<String, CompressedPart>,
+        removed: &HashSet<String>,
+    ) -> Result<W> {
         let mut archive = self.archive.clone();
-        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
-        let zip_error = |error: zip::result::ZipError| Error::Io(io::Error::other(error));
+        let mut writer = ZipWriter::new(out);
         for index in 0..archive.len() {
             let file = archive.by_index_raw(index).map_err(zip_error)?;
             let name = file.name().trim_start_matches('/').to_lowercase();
             if removed.contains(&name) {
                 continue;
             }
+            if let Some(part) = compressed.get_mut(&name) {
+                let original = file.name().to_owned();
+                drop(file);
+                let made = part.0.by_index_raw(0).map_err(zip_error)?;
+                writer.raw_copy_file_rename(made, original).map_err(zip_error)?;
+                continue;
+            }
             match replaced.get(&name) {
                 Some(bytes) => {
-                    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
                     let original = file.name().to_owned();
                     drop(file);
-                    writer.start_file(original, options).map_err(zip_error)?;
+                    writer.start_file(original, deflated()).map_err(zip_error)?;
                     io::Write::write_all(&mut writer, bytes)?;
                 }
                 None => writer.raw_copy_file(file).map_err(zip_error)?,
             }
         }
-        Ok(writer.finish().map_err(zip_error)?.into_inner())
+        writer.finish().map_err(zip_error)
     }
 
     /// The relationships of a part (`""` for the package itself).
@@ -159,6 +170,49 @@ impl Package {
             }
         }
         Ok(relationships)
+    }
+}
+
+fn zip_error(error: zip::result::ZipError) -> Error {
+    Error::Io(io::Error::other(error))
+}
+
+fn deflated() -> SimpleFileOptions {
+    SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)
+}
+
+/// A part made anew, compressed while it was written, to go into the package as it is.
+pub(crate) struct CompressedPart(ZipArchive<Cursor<Vec<u8>>>);
+
+/// Writes a part compressed as its text comes, so that a large sheet is never whole in memory.
+pub(crate) struct PartWriter {
+    writer: BufWriter<ZipWriter<Cursor<Vec<u8>>>>,
+    error: Option<io::Error>,
+}
+
+impl PartWriter {
+    pub(crate) fn new() -> Result<Self> {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        writer.start_file("part", deflated()).map_err(zip_error)?;
+        Ok(Self { writer: BufWriter::with_capacity(1 << 16, writer), error: None })
+    }
+
+    /// Adds text; an error comes out of `finish`.
+    pub(crate) fn push_str(&mut self, text: &str) {
+        if self.error.is_none()
+            && let Err(error) = self.writer.write_all(text.as_bytes())
+        {
+            self.error = Some(error);
+        }
+    }
+
+    pub(crate) fn finish(self) -> Result<CompressedPart> {
+        if let Some(error) = self.error {
+            return Err(error.into());
+        }
+        let writer = self.writer.into_inner().map_err(|error| Error::Io(error.into_error()))?;
+        let bytes = writer.finish().map_err(zip_error)?;
+        Ok(CompressedPart(ZipArchive::new(bytes).map_err(zip_error)?))
     }
 }
 
