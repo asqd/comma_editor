@@ -54,8 +54,16 @@ enum MainMenu {
     }
 
     private static func makeFileMenu() -> NSMenu {
+        // AppKit fills the menu with the recent documents. It knows the menu by the name a nib
+        // gives it, and adds a menu of its own when it finds none.
         let recent = NSMenuItem(title: L("Open Recent"), action: nil, keyEquivalent: "")
-        recent.submenu = RecentDocumentsMenu.shared.menu
+        let recentMenu = NSMenu(title: L("Open Recent"))
+        recentMenu.addItem(withTitle: L("Clear Menu"), action: #selector(NSDocumentController.clearRecentDocuments(_:)), keyEquivalent: "")
+        let setName = NSSelectorFromString("_setMenuName:")
+        if recentMenu.responds(to: setName) {
+            recentMenu.perform(setName, with: "NSRecentDocumentsMenu")
+        }
+        recent.submenu = recentMenu
 
         return menu([
             item(L("New"), #selector(NSDocumentController.newDocument(_:)), "n"),
@@ -277,54 +285,6 @@ enum MainMenu {
 
     private static func key(_ functionKey: Int) -> String {
         String(Character(UnicodeScalar(UInt32(functionKey))!))
-    }
-}
-
-/// File ▸ Open Recent, filled from NSDocumentController's list each time it opens.
-@MainActor
-final class RecentDocumentsMenu: NSObject, NSMenuDelegate {
-    static let shared = RecentDocumentsMenu()
-    let menu = NSMenu()
-
-    override private init() {
-        super.init()
-        menu.delegate = self
-    }
-
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
-        let controller = NSDocumentController.shared
-        for url in controller.recentDocumentURLs {
-            let item = NSMenuItem(
-                title: FileManager.default.displayName(atPath: url.path),
-                action: #selector(openRecent(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = url
-            item.image = NSWorkspace.shared.icon(forFile: url.path)
-            item.image?.size = NSSize(width: 16, height: 16)
-            menu.addItem(item)
-        }
-        if !controller.recentDocumentURLs.isEmpty {
-            menu.addItem(.separator())
-        }
-        menu.addItem(
-            NSMenuItem(
-                title: L("Clear Menu"),
-                action: #selector(NSDocumentController.clearRecentDocuments(_:)),
-                keyEquivalent: ""
-            )
-        )
-    }
-
-    @objc private func openRecent(_ sender: NSMenuItem) {
-        guard let url = sender.representedObject as? URL else { return }
-        NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
-            if let error {
-                NSApp.presentError(error)
-            }
-        }
     }
 }
 

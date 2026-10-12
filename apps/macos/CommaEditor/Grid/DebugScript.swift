@@ -56,16 +56,23 @@ enum DebugScript {
             // Only edits: a new group, even an empty one, clears what Redo would bring back.
             let edits: Set<String> = ["paste", "filldown", "action", "fixall", "cardedit", "replaceall", "formulaapply", "recipeapply", "save", "exportto", "close", "docaction"]
             // A command that changes nothing would leave an empty group, which counts as a change.
-            let navigates = name == "action" && !GridViewController.editingActions.contains(Selector(argument))
+            // Moving through the card commits a field being edited, which is an edit.
+            let commitsCard = ["nextRecord:", "previousRecord:"].contains(argument)
+            let navigates = name == "action" && !GridViewController.editingActions.contains(Selector(argument)) && !commitsCard
             let groups = groupsSteps && undoManager?.groupingLevel == 0 && edits.contains(name) && !navigates
-            if groups {
-                undoManager?.beginUndoGrouping()
+            // The step's own group, with no group for the event around it: one for the event
+            // would be closed by the event loop later, after the step closed it, and leave the
+            // undo manager broken for an edit finishing in the background.
+            if groups, let manager = undoManager {
+                manager.groupsByEvent = false
+                manager.beginUndoGrouping()
             }
             defer {
-                // Beginning a group first opens one for the event, which only the event loop
-                // closes; a step is no event, so both close here.
-                while groups, let manager = undoManager, manager.groupingLevel > 0 {
-                    manager.endUndoGrouping()
+                if groups, let manager = undoManager {
+                    while manager.groupingLevel > 0 {
+                        manager.endUndoGrouping()
+                    }
+                    manager.groupsByEvent = true
                 }
             }
             switch name {
