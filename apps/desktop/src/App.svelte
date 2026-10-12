@@ -3,7 +3,7 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { open, save as chooseSavePath } from "@tauri-apps/plugin-dialog";
-  import { Grid, type TableSource } from "./grid/Grid";
+  import { Grid, type ColumnLayout, type TableSource } from "./grid/Grid";
   import { formatBench, runBench } from "./grid/bench";
   import {
     call,
@@ -108,6 +108,7 @@
       grid.reload();
     else if (previous.rows !== status.rows || previous.columns !== status.columns) grid.update();
     grid.setView(status.view);
+    restoreLayout(previous, status);
     void showTitle(status);
     if (previous?.change !== status.change || previous?.dirty !== status.dirty) keepDraft();
     if (previous?.change !== status.change || JSON.stringify(previous?.view) !== JSON.stringify(status.view)) {
@@ -119,6 +120,32 @@
     if (!previous || previous.change !== status.change || previous.hasHeader !== status.hasHeader || (previous.indexing !== null && status.indexing === null))
       scheduleProblemCheck(previous ? 300 : 0);
   });
+
+  /**
+   * Column widths and hidden columns before and after a change that inserted or deleted a
+   * column, by the change ids around it: undo and redo bring them back, as in the macOS app.
+   */
+  const layouts: { before: number | null; after: number | null; old: ColumnLayout; next: ColumnLayout }[] = [];
+
+  function restoreLayout(previous: Status | null, status: Status) {
+    if (!grid || !previous) return;
+    for (const entry of layouts) {
+      if (previous.change === entry.after && status.change === entry.before) grid.columnLayout = entry.old;
+      else if (previous.change === entry.before && status.change === entry.after) grid.columnLayout = entry.next;
+    }
+  }
+
+  /** Runs a change to the columns, shifting the layout with `shift` and keeping it for undo. */
+  async function changeColumns(work: () => Promise<unknown>, shift: () => void): Promise<boolean> {
+    if (!grid || !doc.status) return false;
+    const before = doc.status.change;
+    const old = grid.columnLayout;
+    if (!(await doc.attempt(work))) return false;
+    shift();
+    grid.update();
+    layouts.push({ before, after: doc.status.change, old, next: grid.columnLayout });
+    return true;
+  }
 
   /** Writes the draft a few seconds after the last change, or removes it once saved. */
   let draftTimer = 0;
@@ -164,7 +191,7 @@
     get header() {
       return doc.status?.header ?? [];
     },
-    fetch: (start, count) => call<string[][]>("rows", { start, count }),
+    fetch: (start, count) => call<{ rows: string[][]; numbers: number[] }>("rows", { start, count }),
   };
 
   /** A file was just opened, perhaps again: the grid starts over. */
@@ -222,6 +249,9 @@
     const delimiter = status.delimiter === "\t" ? L("Tab") : status.delimiter === " " ? L("Space") : status.delimiter;
     parts.push(L("Delimiter: %@", delimiter));
     parts.push({ lf: "LF", crLf: "CRLF", cr: "CR" }[status.lineEnding]);
+    void layoutChanged;
+    const hidden = grid?.hiddenCount ?? 0;
+    if (hidden > 0) parts.push(L("Hidden columns: %@", count(hidden)));
     if (status.view.sort.length > 0) {
       const keys = status.view.sort.map((key) => `${grid?.title(key.column) ?? key.column} ${key.ascending ? "↑" : "↓"}`);
       parts.push(L("Sorted by %@", keys.join(", ")));
@@ -540,8 +570,8 @@
   async function cellValue(cell: Cell): Promise<string> {
     const loaded = grid?.value(cell);
     if (loaded !== undefined) return loaded;
-    const [row] = await call<string[][]>("rows", { start: cell.row, count: 1 });
-    return row?.[cell.column] ?? "";
+    const { rows } = await call<{ rows: string[][] }>("rows", { start: cell.row, count: 1 });
+    return rows[0]?.[cell.column] ?? "";
   }
 
   /** Edits a cell: in place, or in a window when its value has line breaks or `window` asks. */
@@ -605,13 +635,14 @@
     if (!grid || !doc.status || !changeable()) return;
     const cursor = grid.selection?.cursor ?? { row: 0, column: doc.status.columns - 1 };
     const at = cursor.column + (right ? 1 : 0);
-    if (await doc.attempt(() => doc.run("insert_column", { at }))) grid.select(Selection.at({ row: cursor.row, column: at }));
+    if (await changeColumns(() => doc.run("insert_column", { at }), () => grid!.insertColumn(at))) grid.select(Selection.at({ row: cursor.row, column: at }));
   }
 
   async function deleteColumn() {
     const cursor = grid?.selection?.cursor;
     if (!grid || !cursor || (doc.status?.columns ?? 0) < 2 || !changeable()) return;
-    await doc.attempt(() => doc.run("delete_column", { at: cursor.column }));
+    const at = cursor.column;
+    await changeColumns(() => doc.run("delete_column", { at }), () => grid!.deleteColumn(at));
   }
 
   /** Renames a column, which the header row names; files without one have no names to change. */
@@ -923,7 +954,8 @@
       return;
     }
     const asked = ++cardAsked;
-    const [values = []] = await call<string[][]>("rows", { start: cursor.row, count: 1 });
+    const { rows } = await call<{ rows: string[][] }>("rows", { start: cursor.row, count: 1 });
+    const values = rows[0] ?? [];
     const record = await call<number | null>("record", { row: cursor.row });
     if (asked !== cardAsked) return;
     const number = record === null ? cursor.row + 1 : record - (status.hasHeader ? 1 : 0) + 1;
@@ -1067,6 +1099,95 @@
     filterBar?.addRule(rule);
   }
 
+  // The table's view (GridViewController+Tables.swift and +FrozenRows.swift): kept in the
+  // window only, as in the macOS app.
+
+  /** The selected columns, or the active one. */
+  function selectedColumns(): number[] {
+    const range = grid?.selection?.range;
+    if (!range) return [];
+    return Array.from({ length: range.right - range.left + 1 }, (_, index) => range.left + index);
+  }
+
+  /** Fits the selected columns, or all of them with a single cell selected. */
+  function fitColumns() {
+    if (!grid || !doc.status) return;
+    const selected = grid.selection;
+    const columns = selected && !selected.single ? selectedColumns() : Array.from({ length: doc.status.columns }, (_, column) => column);
+    void grid.fitColumns(columns);
+  }
+
+  function hideColumns() {
+    if (!grid || !doc.status) return;
+    const columns = selectedColumns();
+    if (doc.status.columns - grid.hiddenCount - columns.filter((column) => !grid!.isHidden(column)).length < 1) return;
+    grid.hideColumns(columns);
+    // The cursor goes to the next shown column, to the right or else to the left.
+    const cursor = grid.selection!.cursor;
+    const right = Math.max(...columns) + 1;
+    const next = grid.shownColumn(Math.min(right, doc.status.columns - 1), right < doc.status.columns ? 1 : -1);
+    if (next !== null) grid.select(Selection.at({ row: cursor.row, column: next }));
+    layoutChanged += 1;
+  }
+
+  function showAllColumns() {
+    grid?.showAllColumns();
+    layoutChanged += 1;
+  }
+
+  /** Bumps when the view's layout changes, for the menus and the status bar. */
+  let layoutChanged = $state(0);
+
+  function freezeColumns(through: number | null) {
+    grid?.freezeColumns(through === null ? 0 : through + 1);
+    layoutChanged += 1;
+  }
+
+  function freezeRows(through: number | null) {
+    grid?.freezeRows(through === null ? 0 : through + 1);
+    layoutChanged += 1;
+  }
+
+  function setLines(lines: number) {
+    grid?.setLinesPerRow(lines);
+    layoutChanged += 1;
+  }
+
+  function toggleInvisibles() {
+    grid?.setInvisibles(!grid.showsInvisibles);
+    layoutChanged += 1;
+  }
+
+  /** Rows can move while not sorted, filtered or not (GridViewController.canMoveRows). */
+  const canMoveRows = () => idle() && (doc.status?.view.sort.length ?? 1) === 0;
+
+  /** Moves the selected rows before visible row `before`, keeping them selected. */
+  async function moveRows(before: number) {
+    const selected = grid?.selection;
+    if (!grid || !selected || !canMoveRows()) return;
+    const { top, bottom } = selected.range;
+    if (before >= top && before <= bottom + 1) return;
+    const moved = await doc.attempt(() => doc.runWith("move_rows", { top, bottom, to: before }));
+    if (!moved) return;
+    const start = before > bottom ? before - (bottom - top + 1) : before;
+    const shift = start - top;
+    grid.select(
+      new Selection({ row: selected.anchor.row + shift, column: selected.anchor.column }, { row: selected.cursor.row + shift, column: selected.cursor.column }),
+    );
+  }
+
+  /** Moves a column; the core shows every row again, as it reorders the fields. */
+  async function moveColumn(from: number, to: number) {
+    if (!grid || !idle() || to < 0 || to >= (doc.status?.columns ?? 0)) return;
+    const row = grid.selection?.cursor.row ?? 0;
+    const moved = await doc.attempt(async () => {
+      const reply = await doc.runWith<{ status: Status; moved: boolean }>("move_column", { from, to });
+      if (reply.moved) grid!.moveColumn(from, to);
+    });
+    grid.update();
+    if (moved) grid.select(Selection.at({ row, column: to }));
+  }
+
   /** Opens the filter bar with a condition for the column whose filter icon was clicked. */
   async function filterColumn(column: number) {
     filtering = true;
@@ -1105,6 +1226,11 @@
           { label: L("Insert Column Right"), shortcut: shortcutOf("insertColumnRight"), disabled: busy, run: () => void insertColumn(true) },
           { label: L("Delete Column"), shortcut: shortcutOf("deleteColumn"), disabled: busy || status.columns < 2, run: () => void deleteColumn() },
           null,
+          menuItem("fitColumns"),
+          menuItem("hideColumn"),
+          menuItem("showAllColumns"),
+          (grid?.frozenColumns ?? 0) > 0 ? menuItem("unfreezeColumns") : menuItem("freezeColumns"),
+          null,
           { label: L("First Row Is Header"), checked: status.hasHeader, disabled: busy, run: () => void toggleHeader() },
         ],
       };
@@ -1132,6 +1258,8 @@
         { label: L("Insert Row Above"), shortcut: shortcutOf("insertRowAbove"), disabled: busy || view, run: () => void insertRow(false) },
         { label: L("Insert Row Below"), shortcut: shortcutOf("insertRowBelow"), disabled: busy || view, run: () => void insertRow(true) },
         { label: L("Delete Rows"), shortcut: shortcutOf("deleteRows"), disabled: busy, run: () => void deleteRows() },
+        null,
+        cell.row < (grid?.frozenRows ?? 0) ? menuItem("unfreezeRows") : menuItem("freezeRows"),
       ],
     };
   }
@@ -1457,6 +1585,122 @@
         run: () => moveRecord(1),
       },
       {
+        id: "fitColumns",
+        label: L("Fit Column Width"),
+        shortcut: { key: "0", command: true, alt: true },
+        enabled: () => (doc.status?.columns ?? 0) > 0,
+        run: fitColumns,
+      },
+      {
+        id: "hideColumn",
+        label: L("Hide Column"),
+        enabled: () => {
+          void layoutChanged;
+          return !!grid?.selection && (doc.status?.columns ?? 0) - (grid?.hiddenCount ?? 0) > (grid?.selection?.columnCount ?? 1);
+        },
+        run: hideColumns,
+      },
+      {
+        id: "showAllColumns",
+        label: () => {
+          void layoutChanged;
+          const hidden = grid?.hiddenCount ?? 0;
+          return hidden > 0 ? L("Show All Columns (%@ hidden)", count(hidden)) : L("Show All Columns");
+        },
+        enabled: () => {
+          void layoutChanged;
+          return (grid?.hiddenCount ?? 0) > 0;
+        },
+        run: showAllColumns,
+      },
+      {
+        id: "freezeColumns",
+        label: L("Freeze Columns Through This One"),
+        enabled: () => !!grid?.selection && (doc.status?.columns ?? 0) > 1,
+        run: () => freezeColumns(grid!.selection!.cursor.column),
+      },
+      {
+        id: "unfreezeColumns",
+        label: L("Unfreeze Columns"),
+        enabled: () => {
+          void layoutChanged;
+          return (grid?.frozenColumns ?? 0) > 0;
+        },
+        run: () => freezeColumns(null),
+      },
+      {
+        id: "freezeRows",
+        label: L("Freeze Rows Through This One"),
+        enabled: () => !!grid?.selection && (doc.status?.rows ?? 0) > 1,
+        run: () => freezeRows(grid!.selection!.cursor.row),
+      },
+      {
+        id: "unfreezeRows",
+        label: L("Unfreeze Rows"),
+        enabled: () => {
+          void layoutChanged;
+          return (grid?.frozenRows ?? 0) > 0;
+        },
+        run: () => freezeRows(null),
+      },
+      ...(
+        [
+          [1, L("One Line")],
+          [2, L("Up to 2 Lines")],
+          [3, L("Up to 3 Lines")],
+          [5, L("Up to 5 Lines")],
+        ] as const
+      ).map(
+        ([lines, label]): Command => ({
+          id: `lines:${lines}`,
+          label,
+          checked: () => {
+            void layoutChanged;
+            return grid?.linesPerRow === lines;
+          },
+          run: () => setLines(lines),
+        }),
+      ),
+      {
+        id: "toggleInvisibles",
+        label: L("Show Invisible Characters"),
+        shortcut: { key: "i", command: true, shift: true },
+        inFields: true,
+        checked: () => {
+          void layoutChanged;
+          return !!grid?.showsInvisibles;
+        },
+        run: toggleInvisibles,
+      },
+      {
+        id: "moveRowsUp",
+        label: L("Move Rows Up"),
+        shortcut: { key: "ArrowUp", command: true, control: true },
+        enabled: () => canMoveRows() && (grid?.selection?.range.top ?? 0) > 0,
+        run: () => void moveRows(grid!.selection!.range.top - 1),
+      },
+      {
+        id: "moveRowsDown",
+        label: L("Move Rows Down"),
+        shortcut: { key: "ArrowDown", command: true, control: true },
+        enabled: () => canMoveRows() && !!grid?.selection && grid.selection.range.bottom < (doc.status?.rows ?? 0) - 1,
+        run: () => void moveRows(grid!.selection!.range.bottom + 2),
+      },
+      {
+        id: "moveColumnLeft",
+        label: L("Move Column Left"),
+        shortcut: { key: "ArrowLeft", command: true, control: true },
+        enabled: () => idle() && (grid?.selection?.cursor.column ?? 0) > 0,
+        run: () => void moveColumn(grid!.selection!.cursor.column, grid!.selection!.cursor.column - 1),
+      },
+      {
+        id: "moveColumnRight",
+        label: L("Move Column Right"),
+        shortcut: { key: "ArrowRight", command: true, control: true },
+        enabled: () => idle() && !!grid?.selection && grid.selection.cursor.column < (doc.status?.columns ?? 0) - 1,
+        run: () => void moveColumn(grid!.selection!.cursor.column, grid!.selection!.cursor.column + 1),
+      },
+      {
         id: "bench",
         label: "Scroll Bench",
         shortcut: { key: "b", command: true, shift: true, alt: true },
@@ -1536,11 +1780,15 @@
           "insertRowAbove",
           "insertRowBelow",
           "deleteRows",
+          "moveRowsUp",
+          "moveRowsDown",
           "-",
           "insertColumnLeft",
           "insertColumnRight",
           "deleteColumn",
           "renameColumn",
+          "moveColumnLeft",
+          "moveColumnRight",
           "-",
           "sortAscending",
           "sortDescending",
@@ -1568,7 +1816,28 @@
         "removeDuplicates",
       ] as Entry[],
     });
-    menus.push({ title: L("View"), entries: ["toggleProfile", "toggleRepair", "toggleCard", "previousRecord", "nextRecord"] as Entry[] });
+    menus.push({
+      title: L("View"),
+      entries: [
+        "toggleProfile",
+        "toggleRepair",
+        "toggleCard",
+        "previousRecord",
+        "nextRecord",
+        "-",
+        "freezeColumns",
+        "unfreezeColumns",
+        "freezeRows",
+        "unfreezeRows",
+        "-",
+        "hideColumn",
+        "showAllColumns",
+        "fitColumns",
+        "-",
+        "toggleInvisibles",
+        { title: L("Text Wrapping"), entries: ["lines:1", "lines:2", "lines:3", "lines:5"] },
+      ] as Entry[],
+    });
     if (mac) {
       menus.unshift(app);
       menus.push({
@@ -1596,6 +1865,7 @@
     void finding;
     void filtering;
     void panel;
+    void layoutChanged;
     void installed?.refresh();
   });
 
@@ -1762,6 +2032,10 @@
     grid.onMenu = openMenu;
     grid.onHeader = headerClick;
     grid.onFilterIcon = (column) => void filterColumn(column);
+    grid.onMoveRows = (before) => void moveRows(before);
+    grid.onMoveColumn = (from, to) => void moveColumn(from, to);
+    grid.canMoveRows = canMoveRows;
+    grid.missingText = L("This row has no such field");
     grid.onSelect = (selected) => {
       const column = selection?.cursor.column;
       selection = selected;
@@ -1790,6 +2064,8 @@
       addEventListener("beforeunload", (event) => {
         if (doc.status?.dirty) event.preventDefault();
       });
+      // A browser has no menu bar: tests and the console run the menus' commands by name.
+      (window as unknown as { commaCommand: (id: string) => void }).commaCommand = (id) => commands.menu(id);
     }
     if (parameters.has("draft")) void restoreDraft(parameters.get("draft")!);
     else if (parameters.has("open")) void show(parameters.get("open")!);

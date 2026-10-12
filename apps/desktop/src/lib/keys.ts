@@ -9,6 +9,19 @@ export interface Shortcut {
   command?: boolean;
   shift?: boolean;
   alt?: boolean;
+  /**
+   * ⌃ with ⌘ on a Mac; Ctrl+Shift with arrows already extends the selection elsewhere, so there
+   * it is Alt and Shift with Ctrl.
+   */
+  control?: boolean;
+}
+
+/** The modifiers a shortcut takes on this system. */
+export function modifiers(shortcut: Shortcut): { command: boolean; shift: boolean; alt: boolean; control: boolean } {
+  if (!shortcut.control) return { command: !!shortcut.command, shift: !!shortcut.shift, alt: !!shortcut.alt, control: false };
+  return mac
+    ? { command: !!shortcut.command, shift: !!shortcut.shift, alt: !!shortcut.alt, control: true }
+    : { command: !!shortcut.command, shift: true, alt: true, control: false };
 }
 
 const macKeys: Record<string, string> = {
@@ -30,9 +43,10 @@ const otherKeys: Record<string, string> = {
 
 export function shortcutLabel(shortcut: Shortcut): string {
   const key = shortcut.key.length === 1 ? shortcut.key.toUpperCase() : shortcut.key;
+  const held = modifiers(shortcut);
   if (mac) {
-    return `${shortcut.alt ? "⌥" : ""}${shortcut.shift ? "⇧" : ""}${shortcut.command ? "⌘" : ""}${macKeys[key] ?? key}`;
+    return `${held.control ? "⌃" : ""}${held.alt ? "⌥" : ""}${held.shift ? "⇧" : ""}${held.command ? "⌘" : ""}${macKeys[key] ?? key}`;
   }
-  const parts = [shortcut.command ? "Ctrl" : "", shortcut.alt ? "Alt" : "", shortcut.shift ? "Shift" : "", otherKeys[key] ?? key];
+  const parts = [held.command ? "Ctrl" : "", held.alt ? "Alt" : "", held.shift ? "Shift" : "", otherKeys[key] ?? key];
   return parts.filter(Boolean).join("+");
 }

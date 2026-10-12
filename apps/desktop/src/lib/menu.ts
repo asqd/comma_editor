@@ -4,7 +4,7 @@
 import { CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tauri-apps/api/menu";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { labelOf, type Commands } from "./commands";
-import { mac, type Shortcut } from "./keys";
+import { mac, modifiers, type Shortcut } from "./keys";
 
 /** An entry of a menu: a command, a separator, a submenu, or an item the system provides. */
 export type Entry =
@@ -17,7 +17,8 @@ export type Entry =
 function accelerator(shortcut: Shortcut): string {
   const keys: Record<string, string> = { ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" };
   const key = shortcut.key.length === 1 ? shortcut.key.toUpperCase() : (keys[shortcut.key] ?? shortcut.key);
-  return [shortcut.command ? "CmdOrCtrl" : "", shortcut.alt ? "Alt" : "", shortcut.shift ? "Shift" : "", key].filter(Boolean).join("+");
+  const held = modifiers(shortcut);
+  return [held.control ? "Ctrl" : "", held.command ? "CmdOrCtrl" : "", held.alt ? "Alt" : "", held.shift ? "Shift" : "", key].filter(Boolean).join("+");
 }
 
 export class NativeMenu {

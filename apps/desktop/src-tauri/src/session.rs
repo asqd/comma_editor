@@ -293,6 +293,19 @@ struct InsertRows {
 }
 
 #[derive(Deserialize)]
+struct MoveRows {
+    top: u64,
+    bottom: u64,
+    to: u64,
+}
+
+#[derive(Deserialize)]
+struct MoveColumn {
+    from: u64,
+    to: u64,
+}
+
+#[derive(Deserialize)]
 struct RowRange {
     top: u64,
     bottom: u64,
@@ -545,8 +558,15 @@ impl Sessions {
         match command {
             "status" => status(&session),
             "rows" => {
+                // The rows, and the numbers they show: their place in the file, as the macOS app
+                // numbers rows, also when sorted or filtered.
                 let Span { start, count } = args(args_)?;
-                reply(document.visible_rows(start, count))
+                let rows = document.visible_rows(start, count);
+                let header = u64::from(document.info().has_header);
+                let numbers: Vec<u64> = (start..start + rows.len() as u64)
+                    .map(|row| document.visible_record(row).map_or(row + 1, |record| record + 1 - header))
+                    .collect();
+                Ok(json!({ "rows": rows, "numbers": numbers }))
             }
             "record" => {
                 // The row of the file a visible row shows, to keep it selected across views.
@@ -581,6 +601,19 @@ impl Sessions {
                 let records = (top..=bottom).filter_map(|row| document.visible_record(row)).collect();
                 document.delete_rows(records)?;
                 status(&session)
+            }
+            "move_rows" => {
+                // Visible rows `top..=bottom` before visible row `to`, as the macOS app moves them.
+                let MoveRows { top, bottom, to } = args(args_)?;
+                let rows = (top..=bottom).filter_map(|row| document.visible_record(row)).collect();
+                let moved = document.move_rows(rows, document.insertion_row(to))?;
+                Ok(json!({ "status": session.status(), "moved": moved }))
+            }
+            "move_column" => {
+                // `to` is the column's place after the move; the core shows every row again.
+                let MoveColumn { from, to } = args(args_)?;
+                let moved = document.move_column(from, to)?;
+                Ok(json!({ "status": session.status(), "moved": moved }))
             }
             "insert_column" => {
                 let At { at } = args(args_)?;

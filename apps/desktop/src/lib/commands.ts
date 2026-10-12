@@ -2,7 +2,7 @@
 // the keyboard runs them, through `Commands`, so that a key runs a command once whether the
 // page or the menu sees it first.
 
-import { mac, type Shortcut } from "./keys";
+import { mac, modifiers, type Shortcut } from "./keys";
 
 export interface Command {
   id: string;
@@ -32,9 +32,11 @@ export function fieldFocused(): boolean {
 
 /** Whether `event` is `shortcut`; letters by the key's place, so that any layout works. */
 export function matches(event: KeyboardEvent, shortcut: Shortcut): boolean {
+  const held = modifiers(shortcut);
   const command = mac ? event.metaKey : event.ctrlKey;
-  const other = mac ? event.ctrlKey : event.metaKey;
-  if (command !== !!shortcut.command || event.shiftKey !== !!shortcut.shift || event.altKey !== !!shortcut.alt || other) return false;
+  const control = mac ? event.ctrlKey : false;
+  if (!mac && event.metaKey) return false;
+  if (command !== held.command || event.shiftKey !== held.shift || event.altKey !== held.alt || control !== held.control) return false;
   // Punctuation by the key's place too: the keys of [ and ] type х and ъ on a Russian layout.
   const places: Record<string, string> = { "[": "BracketLeft", "]": "BracketRight", "=": "Equal", "-": "Minus", ",": "Comma", ".": "Period" };
   // Some keyboards, on screen or remote, give no place: then the character decides.
