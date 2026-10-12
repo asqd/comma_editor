@@ -10,6 +10,7 @@
   import CellSheet from "./CellSheet.svelte";
   import Alert, { type Button } from "./Alert.svelte";
   import SaveSheet from "./SaveSheet.svelte";
+  import FindBar from "./FindBar.svelte";
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
@@ -34,6 +35,9 @@
   } | null>(null);
   /** The format of a file being saved, asked before the file is chosen. */
   let saving = $state<{ format: SaveFormat; answer: (format: SaveFormat | null) => void } | null>(null);
+  /** The find bar, with the replace row or not, and the selection it may search in. */
+  let finding = $state<{ replacing: boolean; selection: CellRange | null } | null>(null);
+  let findBar = $state<ReturnType<typeof FindBar>>();
   /** A menu open at the pointer. */
   let menu = $state<{ x: number; y: number; items: (MenuItem | null)[] } | null>(null);
   /** A value with line breaks being edited in a window of its own. */
@@ -498,6 +502,18 @@
       return;
     }
     const command = mac ? event.metaKey : event.ctrlKey;
+    if (command && event.code === "KeyF" && !event.shiftKey && doc.open) {
+      event.preventDefault();
+      const replacing = event.altKey || (finding?.replacing ?? false);
+      if (finding && finding.replacing === replacing) findBar?.focus();
+      else finding = { replacing, selection: grid?.selection?.range ?? null };
+      return;
+    }
+    if (command && !event.altKey && event.code === "KeyG" && finding) {
+      event.preventDefault();
+      void findBar?.next(!event.shiftKey);
+      return;
+    }
     if (command && !event.altKey && event.code === "KeyS" && doc.open) {
       event.preventDefault();
       void (event.shiftKey ? saveAs() : save());
@@ -558,6 +574,21 @@
   <header class="toolbar">
     <button onclick={choose} title={openShortcut}>{L("Open…")}</button>
   </header>
+  {#if finding && doc.status}
+    <FindBar
+      bind:this={findBar}
+      document={doc}
+      replacing={finding.replacing}
+      selection={finding.selection}
+      titles={Array.from({ length: doc.status.columns }, (_, column) => grid?.title(column) ?? "")}
+      cursor={() => grid?.selection?.cursor ?? null}
+      select={(cell) => grid?.select(Selection.at(cell))}
+      close={() => {
+        finding = null;
+        grid?.focus();
+      }}
+    />
+  {/if}
   <main class="table" bind:this={host}>
     {#if !doc.open}
       <div class="empty">
@@ -644,8 +675,8 @@
 
 <style>
   .app {
-    display: grid;
-    grid-template-rows: auto 1fr auto;
+    display: flex;
+    flex-direction: column;
     height: 100%;
   }
 
@@ -660,6 +691,8 @@
 
   .table {
     position: relative;
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
     background: var(--grid-background);
   }

@@ -13,6 +13,8 @@ export class Document {
   /** The last problem, for the status bar. */
   problem = $state("");
   private polling = 0;
+  /** Those waiting for the running job to end, and how it ended. */
+  private waiting: ((result: { ok?: unknown; error?: unknown } | null) => void)[] = [];
 
   /**
    * @param changed runs after every new status, with the one before: the grid reloads its
@@ -48,6 +50,12 @@ export class Document {
     }
   }
 
+  /** How the running job ends; `null` at once when none runs. */
+  waitForJob(): Promise<{ ok?: unknown; error?: unknown } | null> {
+    if (!this.status?.job) return Promise.resolve(null);
+    return new Promise((resolve) => this.waiting.push(resolve));
+  }
+
   async refresh(): Promise<void> {
     if (this.status) this.show(await call<Status>("status"));
   }
@@ -71,6 +79,7 @@ export class Document {
       if (before?.job && !status.job) {
         const result = await call<{ ok?: unknown; error?: unknown } | null>("job_result");
         if (result?.error) this.problem = sentence(result.error);
+        for (const resolve of this.waiting.splice(0)) resolve(result);
       }
       this.show(status);
     } catch (error) {
