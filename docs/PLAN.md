@@ -276,6 +276,8 @@ Windows и Linux позже на Tauri поверх того же ядра. Сн
 
 ## Windows и Linux
 
+Подробный план с этапами и рисками — [PORTING.md](PORTING.md).
+
 - [ ] Оболочка на Tauri поверх `comma-core`: сетка на canvas с виртуализацией,
       команды ядра через Tauri commands.
 - [ ] Сборка и тесты ядра на Windows и Linux в CI.
