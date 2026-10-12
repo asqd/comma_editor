@@ -271,6 +271,7 @@ name = "comma-ffi"
 version = "1.0.0"
 dependencies = [
  "comma-core",
+ "serde",
  "thiserror",
  "uniffi",
 ]

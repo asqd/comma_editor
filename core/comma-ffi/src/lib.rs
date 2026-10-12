@@ -1,6 +1,9 @@
 //! UniFFI bindings of `comma-core` for the macOS app.
 //!
 //! Indices cross the boundary as `u64`; rows include the header row, if there is one.
+//!
+//! With the `serde` feature the records, enums and errors also cross as JSON, for the Tauri
+//! app: fields and variants in camelCase.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -10,6 +13,7 @@ use comma_core as core;
 uniffi::setup_scaffolding!();
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum CoreError {
     /// `code` is the system's error number, which the app turns into the system's own words.
     #[error("{message}")]
@@ -60,6 +64,7 @@ pub enum CoreError {
 
 /// Why an Excel workbook or one of its sheets cannot be read.
 #[derive(Debug, uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum WorkbookProblem {
     NotAWorkbook,
     /// A web page saved with a workbook's extension, as many exports are.
@@ -141,6 +146,7 @@ impl From<core::Error> for CoreError {
 
 /// What splitting a column of a sheet did: the sheets changed and the columns added.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct ColumnSplit {
     pub sheets: Vec<u64>,
     pub count: u64,
@@ -148,6 +154,7 @@ pub struct ColumnSplit {
 
 /// Why rows or columns of a sheet cannot change: see `comma_core::SheetStructure`.
 #[derive(Debug, uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum SheetChange {
     Rows,
     Columns,
@@ -177,6 +184,7 @@ impl From<core::SheetStructure> for SheetChange {
 }
 
 #[derive(Debug, uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum FormulaErrorKind {
     UnexpectedEnd,
     UnexpectedText,
@@ -193,6 +201,7 @@ pub enum FormulaErrorKind {
 /// What is wrong with a formula or with its value in one row. `position` is a character
 /// offset in the formula, for syntax errors.
 #[derive(Debug, uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct FormulaProblem {
     pub kind: FormulaErrorKind,
     pub position: u64,
@@ -222,12 +231,14 @@ impl From<core::FormulaError> for FormulaProblem {
 
 /// The value of a formula in one row, or why it failed.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct FormulaOutcome {
     pub value: Option<String>,
     pub problem: Option<FormulaProblem>,
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct FormulaReport {
     pub rows: u64,
     pub errors: u64,
@@ -255,6 +266,7 @@ pub fn formula_functions() -> Vec<String> {
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum LineEnding {
     Lf,
     CrLf,
@@ -262,6 +274,7 @@ pub enum LineEnding {
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum TextEncoding {
     Utf8,
     Utf16Le,
@@ -335,6 +348,7 @@ fn open_options(encoding: Option<TextEncoding>, delimiter: Option<String>) -> Re
 
 /// The first rows of a file as they would open with some options.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct FilePreview {
     pub encoding: TextEncoding,
     pub delimiter: String,
@@ -378,6 +392,7 @@ pub fn fix_garbled(text: String) -> Option<String> {
 
 /// Encoding, BOM, delimiter and line endings a file is written with.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct SaveFormat {
     pub encoding: TextEncoding,
     pub bom: bool,
@@ -460,12 +475,14 @@ impl From<core::LineEnding> for LineEnding {
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum QuoteStyle {
     Minimal,
     Always,
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct DocumentInfo {
     /// Display name, e.g. "UTF-8" or "Windows-1251".
     pub encoding: String,
@@ -495,12 +512,14 @@ pub struct DocumentInfo {
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct SortKey {
     pub column: u64,
     pub ascending: bool,
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum FilterOp {
     Contains,
     NotContains,
@@ -516,6 +535,7 @@ pub enum FilterOp {
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct FilterRule {
     /// `None` means any column.
     pub column: Option<u64>,
@@ -525,12 +545,14 @@ pub struct FilterRule {
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct ViewSpec {
     pub sort: Vec<SortKey>,
     pub filters: Vec<FilterRule>,
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct SearchQuery {
     pub text: String,
     pub case_sensitive: bool,
@@ -543,6 +565,7 @@ pub struct SearchQuery {
 
 /// Visible rows `top..=bottom` and columns `left..=right`.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct CellRange {
     pub top: u64,
     pub left: u64,
@@ -573,6 +596,7 @@ impl From<core::CellRange> for CellRange {
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum ValueKind {
     Empty,
     Integer,
@@ -609,12 +633,14 @@ impl From<ValueKind> for core::ValueKind {
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum Issue {
     Mismatch,
     Padding,
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct ValueCount {
     pub value: String,
     pub count: u64,
@@ -622,6 +648,7 @@ pub struct ValueCount {
 
 /// Statistics of one column over the visible rows.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct ColumnProfile {
     pub kind: ValueKind,
     pub total: u64,
@@ -640,6 +667,7 @@ pub struct ColumnProfile {
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum ProblemKind {
     UnclosedQuote,
     StrayQuote,
@@ -671,6 +699,7 @@ impl From<ProblemKind> for core::ProblemKind {
 
 /// A broken row; `row` counts the header row.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct Problem {
     pub row: u64,
     pub kind: ProblemKind,
@@ -680,12 +709,14 @@ pub struct Problem {
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct ProblemCount {
     pub kind: ProblemKind,
     pub count: u64,
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct RepairReport {
     /// The number of fields most rows have.
     pub expected_fields: u64,
@@ -698,6 +729,7 @@ pub struct RepairReport {
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum RepairFix {
     QuoteAsText,
     RemoveQuote,
@@ -738,6 +770,7 @@ impl From<RepairFix> for core::Fix {
 
 /// A fix with the first rows it would produce.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct RepairOption {
     pub fix: RepairFix,
     pub rows: Vec<Vec<String>>,
@@ -757,6 +790,7 @@ pub fn kind_fits(value: ValueKind, column: ValueKind) -> bool {
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum ExportFormat {
     Json,
     Markdown,
@@ -778,6 +812,7 @@ impl From<ExportFormat> for core::ExportFormat {
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum TextTransform {
     Trim,
     CollapseSpaces,
@@ -799,6 +834,7 @@ impl From<TextTransform> for core::TextTransform {
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct RangeStats {
     pub cells: u64,
     pub filled: u64,
@@ -815,6 +851,7 @@ pub fn parse_pasted_text(text: String) -> Vec<Vec<String>> {
 
 /// A visible row and a column.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct CellPosition {
     pub row: u64,
     pub column: u64,
@@ -928,6 +965,7 @@ struct Recorder {
 
 /// How far indexing of a large file has come.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct IndexProgress {
     pub done: bool,
     pub indexed_bytes: u64,
@@ -956,6 +994,7 @@ impl ViewJob {
 
 /// A change to many rows; see `core::Edit`.
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum EditRequest {
     ReplaceAll { query: SearchQuery, replacement: String },
     Transform { range: CellRange, transform: TextTransform },
@@ -967,6 +1006,8 @@ pub enum EditRequest {
     SplitColumn { column: u64, separator: String, regex: bool },
     MergeColumns { columns: Vec<u64>, separator: String },
     RemoveDuplicates { columns: Vec<u64>, normalize: bool },
+    /// Not available through serde: a recipe is an object of the core.
+    #[cfg_attr(feature = "serde", serde(skip))]
     ApplyRecipe { recipe: Arc<CoreRecipe> },
 }
 
@@ -990,6 +1031,7 @@ impl From<EditRequest> for core::Edit {
 
 /// What an edit did: cells changed, columns added or rows removed, and for formulas the report.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct EditResult {
     /// Whether the document changed; an undoable step was recorded.
     pub changed: bool,
@@ -1590,9 +1632,19 @@ impl CoreDocument {
         }
     }
 
+    /// The change the next undo reverts; `None` with nothing to undo. Changes never share an id,
+    /// so a document is unchanged since a save while this is what it was then.
+    pub fn last_change_id(&self) -> Option<u64> {
+        self.lock().last_change_id()
+    }
+
     /// Whether the core has a step to undo: old steps of large changes are dropped to save memory.
     pub fn can_undo(&self) -> bool {
         self.lock().can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.lock().can_redo()
     }
 
     pub fn undo(&self) -> bool {
@@ -1655,6 +1707,7 @@ impl CoreDocument {
 // Comparing two tables.
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct DiffOptions {
     /// Key columns of this table; empty compares rows by position.
     pub key: Vec<u64>,
@@ -1663,6 +1716,7 @@ pub struct DiffOptions {
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct DiffColumnInfo {
     pub name: Option<String>,
     pub left: Option<u64>,
@@ -1680,6 +1734,7 @@ impl From<&core::DiffColumn> for DiffColumnInfo {
 }
 
 #[derive(uniffi::Enum, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum DiffStatus {
     OnlyLeft,
     OnlyRight,
@@ -1710,6 +1765,7 @@ impl From<DiffStatus> for core::DiffStatus {
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct DiffSummary {
     pub only_left: u64,
     pub only_right: u64,
@@ -1720,6 +1776,7 @@ pub struct DiffSummary {
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct DiffCellValue {
     pub left: Option<String>,
     pub right: Option<String>,
@@ -1728,6 +1785,7 @@ pub struct DiffCellValue {
 
 /// A row of the comparison; rows are rows of the files, header included.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct DiffRow {
     pub status: DiffStatus,
     pub left_row: Option<u64>,
@@ -1892,6 +1950,7 @@ pub struct CoreRecipe {
 
 /// One step of a recipe for a list: a kind (`replace`, `uppercase`…) and its arguments.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct RecipeStepInfo {
     pub kind: String,
     pub arguments: Vec<String>,
@@ -1901,6 +1960,7 @@ pub struct RecipeStepInfo {
 
 /// A filter condition: `op` is `contains`, `equals`, `greater_than`…; any column when `None`.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct RecipeFilterInfo {
     pub column: Option<String>,
     pub op: String,
@@ -2022,6 +2082,7 @@ mod recording_tests {
 // MARK: Workbooks
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum SheetVisibility {
     Visible,
     Hidden,
@@ -2029,6 +2090,7 @@ pub enum SheetVisibility {
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct SheetInfo {
     pub name: String,
     pub visibility: SheetVisibility,
@@ -2038,6 +2100,7 @@ pub struct SheetInfo {
 
 /// How the system shows numbers and dates, which Excel follows.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct DisplayLocale {
     pub decimal_separator: String,
     pub group_separator: String,
@@ -2078,6 +2141,7 @@ impl From<DisplayLocale> for core::DisplayLocale {
 
 /// Rows `top..=bottom` and columns `left..=right` of a sheet.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct SheetRange {
     pub top: u64,
     pub left: u64,
@@ -2087,6 +2151,7 @@ pub struct SheetRange {
 
 /// Columns `first..=last` as the sheet sets them.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct ColumnLayout {
     pub first: u64,
     pub last: u64,
@@ -2096,6 +2161,7 @@ pub struct ColumnLayout {
 }
 
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct SheetLayout {
     pub merged: Vec<SheetRange>,
     pub columns: Vec<ColumnLayout>,
@@ -2173,6 +2239,7 @@ pub struct SheetToSave {
 
 /// What computing formulas again did.
 #[derive(uniffi::Record)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct RecalcReport {
     /// Sheets whose shown values changed.
     pub sheets: Vec<u64>,
@@ -2183,6 +2250,7 @@ pub struct RecalcReport {
 }
 
 #[derive(uniffi::Enum)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum SheetAxis {
     Rows,
     Columns,
