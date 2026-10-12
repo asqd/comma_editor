@@ -68,7 +68,7 @@ enum Arg {
 /// Functions whose arguments are ranges by design, which an array formula may hand values.
 const RANGE_FUNCTIONS: &[&str] = &[
     "SUM", "SUMPRODUCT", "AVERAGE", "COUNT", "COUNTA", "COUNTBLANK", "MIN", "MAX", "PRODUCT", "AND", "OR", "INDEX",
-    "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP", "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS", "AVERAGEIF",
+    "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP", "SUMIF", "SUMIFS", "COUNTIF", "COUNTIFS", "AVERAGEIF", "SUBTOTAL",
 ];
 
 /// Whether an expression reads more than one cell somewhere in it.
@@ -130,6 +130,7 @@ pub(crate) fn arity(name: &str) -> Option<(usize, usize)> {
         "TRUNC" | "LEFT" | "RIGHT" | "WEEKDAY" => (1, 2),
         "SUMIF" | "AVERAGEIF" | "INDEX" | "MATCH" | "FIND" | "SEARCH" => (2, 3),
         "SUMIFS" => (3, many),
+        "SUBTOTAL" => (2, many),
         "COUNTIFS" => (2, many),
         "VLOOKUP" | "HLOOKUP" => (3, 4),
         "XLOOKUP" => (3, 6),
@@ -455,6 +456,24 @@ impl<C: Cells> Evaluator<'_, C> {
         let optional = |index: usize| args.get(index).filter(|arg| **arg != Expr::Missing);
         Ok(match name {
             "SUM" => Value::Number(numbers!(args).iter().sum()),
+            // Totals rows of tables use it. Rows hidden by a filter count, as rows of the file
+            // are all shown here, and so do subtotals inside the ranges, which Excel leaves out.
+            "SUBTOTAL" => {
+                let code = number!(&args[0]).trunc() as i64;
+                let function = match code {
+                    1 | 101 => "AVERAGE",
+                    2 | 102 => "COUNT",
+                    3 | 103 => "COUNTA",
+                    4 | 104 => "MAX",
+                    5 | 105 => "MIN",
+                    6 | 106 => "PRODUCT",
+                    9 | 109 => "SUM",
+                    // Deviations and variances are left to Excel.
+                    7 | 8 | 10 | 11 | 107 | 108 | 110 | 111 => return Err(Unsupported),
+                    _ => return Ok(error(VALUE)),
+                };
+                return self.call(function, &args[1..]);
+            }
             "PRODUCT" => Value::Number(numbers!(args).iter().product()),
             "AVERAGE" => {
                 let numbers = numbers!(args);

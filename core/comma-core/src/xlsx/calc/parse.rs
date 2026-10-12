@@ -645,8 +645,9 @@ fn canonical_function(word: &str) -> String {
 }
 
 /// Russian names of the functions Excel shows in Russian.
-const RUSSIAN: [(&str, &str); 53] = [
+const RUSSIAN: [(&str, &str); 54] = [
     ("СУММ", "SUM"),
+    ("ПРОМЕЖУТОЧНЫЕ.ИТОГИ", "SUBTOTAL"),
     ("СРЗНАЧ", "AVERAGE"),
     ("МИН", "MIN"),
     ("МАКС", "MAX"),

@@ -402,3 +402,34 @@ fn structured_references_to_tables_are_computed() {
     assert_eq!(document.cell(1, 3).unwrap(), "30");
     assert_eq!(document.cell(5, 0).unwrap(), "70");
 }
+
+#[test]
+fn totals_rows_of_tables_are_computed() {
+    use rust_xlsxwriter::{Table, TableColumn, TableFunction};
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sheet = workbook.add_worksheet();
+    for (row, (item, left)) in [("Tea", 10.0), ("Coffee", 5.0), ("Sugar", 45.0)].iter().enumerate() {
+        sheet.write_string(row as u32 + 1, 0, *item).unwrap();
+        sheet.write_number(row as u32 + 1, 1, *left).unwrap();
+    }
+    let columns = vec![
+        TableColumn::new().set_header("Item").set_total_label("Total"),
+        TableColumn::new().set_header("Left").set_total_function(TableFunction::Sum),
+    ];
+    sheet.add_table(0, 0, 4, 1, &Table::new().set_name("Stock").set_columns(&columns).set_total_row(true)).unwrap();
+    sheet.write_formula(6, 0, "=SUBTOTAL(1,B2:B4)").unwrap();
+    sheet.write_formula(7, 0, "=SUBTOTAL(103,A2:A4)").unwrap();
+    sheet.write_formula(8, 0, "=SUBTOTAL(7,B2:B4)").unwrap();
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    let mut document = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    let report = workbook.recalculate(&mut [(0, &mut document)], NOW).unwrap();
+    // SUBTOTAL(109,[Left]) in the totals row, an average and a count of the rows.
+    assert_eq!(document.cell(4, 1).unwrap(), "60");
+    assert_eq!(document.cell(6, 0).unwrap(), "20");
+    assert_eq!(document.cell(7, 0).unwrap(), "3");
+    // A deviation is left to Excel.
+    assert_eq!(report.not_computed, 1);
+    document.set_cell(2, 1, "15").unwrap();
+    workbook.recalculate(&mut [(0, &mut document)], NOW).unwrap();
+    assert_eq!(document.cell(4, 1).unwrap(), "70");
+}
