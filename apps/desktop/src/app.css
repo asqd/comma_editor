@@ -21,6 +21,7 @@
   --grid-mark: #c96a00;
   --grid-mark-background: rgb(255 149 0 / 0.15);
   --grid-missing: rgb(60 60 67 / 0.12);
+  --grid-formula: rgb(52 199 89 / 0.8);
   --grid-selected-header: rgb(10 102 216 / 0.14);
   font: 13px system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif;
 }
@@ -48,6 +49,7 @@
     --grid-mark: #ff9f0a;
     --grid-mark-background: rgb(255 159 10 / 0.15);
     --grid-missing: rgb(235 235 245 / 0.12);
+    --grid-formula: rgb(48 209 88 / 0.8);
     --grid-selected-header: rgb(76 155 255 / 0.2);
   }
 }

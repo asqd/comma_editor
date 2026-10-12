@@ -21,8 +21,11 @@ export interface TableSource {
   readonly columns: number;
   /** Column titles; empty when the file has no header row. */
   readonly header: readonly string[];
-  /** Up to `count` rows from `start`, fewer at the end, with the numbers they show. */
-  fetch(start: number, count: number): Promise<{ rows: string[][]; numbers: number[] }>;
+  /**
+   * Up to `count` rows from `start`, fewer at the end, with the numbers they show; for a sheet of
+   * a workbook, each row's cells with formulas too, as `[column, formula]`.
+   */
+  fetch(start: number, count: number): Promise<{ rows: string[][]; numbers: number[]; formulas?: [number, string][][] }>;
 }
 
 /**
@@ -88,6 +91,7 @@ interface Colors {
   mark: string;
   markBackground: string;
   missing: string;
+  formula: string;
 }
 
 /** What is under a point of the grid. */
@@ -138,6 +142,11 @@ export class Grid {
   onMoveColumn: ((from: number, to: number) => void) | null = null;
   /** Words for a missing field's tooltip. */
   missingText = "";
+  /**
+   * Whether fields a row lacks are marked with invisible characters: not on a sheet, whose rows
+   * end at their last value.
+   */
+  marksMissing = true;
   /** Whether rows can be dragged now: not while sorted. */
   canMoveRows: () => boolean = () => false;
 
@@ -193,6 +202,8 @@ export class Grid {
   private readonly rowMarks = new Map<number, number[]>();
   private readonly blocks = new Map<number, string[][]>();
   private readonly numbers = new Map<number, number[]>();
+  /** Cells with formulas, by block of rows. */
+  private readonly formulas = new Map<number, [number, string][][]>();
   private readonly pending = new Set<number>();
   private queue: number[] = [];
   private inFlight = 0;
@@ -295,6 +306,7 @@ export class Grid {
     this.generation += 1;
     this.blocks.clear();
     this.numbers.clear();
+    this.formulas.clear();
     this.marks.clear();
     this.rowMarks.clear();
     this.pending.clear();
@@ -641,6 +653,10 @@ export class Grid {
     return this.top;
   }
 
+  get scrollLeft(): number {
+    return this.left;
+  }
+
   scrollTo(top: number, left = this.left): void {
     this.top = Math.min(Math.max(0, top), this.maxTop);
     this.left = Math.min(Math.max(0, left), this.maxLeft);
@@ -975,7 +991,8 @@ export class Grid {
       const mark = this.marker && hit.column === this.marker.column ? this.mark(hit.row) : 0;
       const row = this.row(hit.row);
       if (mark) tip = this.marker!.describe(mark);
-      else if (this.invisibles && row && hit.column >= row.length) tip = this.missingText;
+      else if (this.invisibles && this.marksMissing && row && hit.column >= row.length) tip = this.missingText;
+      else tip = this.formula(hit) ?? "";
     }
     if (this.scroller.title !== tip) this.scroller.title = tip;
     const resizing = y < HEADER_HEIGHT && this.edgeAt(x) !== null;
@@ -1104,6 +1121,12 @@ export class Grid {
     return this.numbers.get(Math.floor(index / BLOCK))?.[index % BLOCK];
   }
 
+  /** The formula of a cell of a sheet, as Excel shows it, once its row is fetched. */
+  formula(cell: Cell): string | undefined {
+    const cells = this.formulas.get(Math.floor(cell.row / BLOCK))?.[cell.row % BLOCK];
+    return cells?.find(([column]) => column === cell.column)?.[1];
+  }
+
   /** Asks for the blocks of the rows in view, and one on each side, dropping requests no longer in view. */
   private request(rows: number[]): void {
     const total = this.source?.rows ?? 0;
@@ -1132,11 +1155,12 @@ export class Grid {
       this.inFlight += 1;
       source
         .fetch(block * BLOCK, BLOCK)
-        .then(({ rows, numbers }) => {
+        .then(({ rows, numbers, formulas }) => {
           if (generation !== this.generation) return;
           this.stats.fetch(performance.now() - started);
           this.blocks.set(block, rows);
           this.numbers.set(block, numbers);
+          if (formulas) this.formulas.set(block, formulas);
           this.fetchMarks(block, generation);
           this.fetchRowMarks(block, generation);
           this.evict(block);
@@ -1159,6 +1183,7 @@ export class Grid {
     for (const block of far.slice(0, this.blocks.size - MAX_BLOCKS)) {
       this.blocks.delete(block);
       this.numbers.delete(block);
+      this.formulas.delete(block);
       this.marks.delete(block);
       this.rowMarks.delete(block);
     }
@@ -1209,6 +1234,7 @@ export class Grid {
       mark: color("--grid-mark"),
       markBackground: color("--grid-mark-background"),
       missing: color("--grid-missing"),
+      formula: color("--grid-formula"),
     };
   }
 
@@ -1352,6 +1378,7 @@ export class Grid {
           }
           const values = this.row(row);
           if (!values) complete = false;
+          const formulas = this.formulas.get(Math.floor(row / BLOCK))?.[row % BLOCK];
           for (const column of partColumns) {
             const x = this.columnX(column);
             const cellWidth = this.columnWidth(column);
@@ -1367,7 +1394,7 @@ export class Grid {
             } else if (column === marked && this.mark(row)) {
               g.fillStyle = colors.issue;
               g.fillRect(x, y, cellWidth, rowHeight);
-            } else if (this.invisibles && column >= values.length) {
+            } else if (this.invisibles && this.marksMissing && column >= values.length) {
               // A field the row does not have.
               g.fillStyle = colors.missing;
               g.fillRect(x, y, cellWidth, rowHeight);
@@ -1382,6 +1409,16 @@ export class Grid {
             g.textAlign = "left";
             this.drawText(values[column], x, y, cellWidth);
             g.restore();
+            // A cell with a formula: a green corner, as the macOS app marks it.
+            if (formulas?.some(([formulaColumn]) => formulaColumn === column)) {
+              g.fillStyle = colors.formula;
+              g.beginPath();
+              g.moveTo(x, y);
+              g.lineTo(x + 6, y);
+              g.lineTo(x, y + 6);
+              g.closePath();
+              g.fill();
+            }
           }
         }
         // Grid lines between the columns and under the rows.

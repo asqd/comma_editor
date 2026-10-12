@@ -144,6 +144,58 @@ export interface Status {
   job: { kind: "view" | "edit"; fraction: number | null } | null;
   /** Steps recorded so far while a recipe is recorded. */
   recording: number | null;
+  /** A sheet of an Excel workbook: rows numbered as Excel numbers them, cells with formulas. */
+  isSheet: boolean;
+  /** Bumps when formulas computed again changed what the table shows. */
+  revision: number;
+  /** The workbook, for a sheet of one. */
+  book: BookStatus | null;
+}
+
+export interface SheetInfo {
+  name: string;
+  visibility: "visible" | "hidden" | "veryHidden";
+  /** A sheet of cells; charts and old macro sheets are not. */
+  isTable: boolean;
+}
+
+/** An Excel workbook open in the window (WorkbookDocument in the macOS app). */
+export interface BookStatus {
+  sheets: SheetInfo[];
+  /** The sheet shown. */
+  index: number;
+  /** A sheet being read, and the share read. */
+  loading: { index: number; fraction: number } | null;
+  /** Excel 97–2003, which is only read. */
+  legacy: boolean;
+  /** The first row of every sheet names its columns. */
+  csvMode: boolean;
+  /** Formulas that read themselves, and ones Excel computes when it opens the file. */
+  circular: number;
+  notComputed: number;
+  /** Rows others refer to: they move only through the workbook, and not at all when locked. */
+  rowsFixed: boolean;
+  /** Tables, drawings or pivot tables hold the rows and columns where they are. */
+  structureLocked: boolean;
+  /** Why reading a sheet or computing formulas failed, once. */
+  problem: unknown;
+}
+
+/** Columns `first..=last` as a sheet sets them; widths in characters of Excel's default font. */
+export interface SheetColumns {
+  first: number;
+  last: number;
+  width: number | null;
+  hidden: boolean;
+}
+
+export interface SheetLayout {
+  merged: { top: number; left: number; bottom: number; right: number }[];
+  columns: SheetColumns[];
+  defaultColumnWidth: number | null;
+  /** Rows of the sheet frozen at the top, its first row counted. */
+  frozenRows: number;
+  frozenColumns: number;
 }
 
 export interface RangeStats {

@@ -75,8 +75,10 @@ export class Document {
   show(status: Status): Status {
     const previous = this.status;
     this.status = status;
+    // Reading a sheet or computing formulas failed after the command that started it.
+    if (status.book?.problem) this.problem = sentence(status.book.problem);
     this.changed(status, previous);
-    if ((status.indexing !== null || status.job !== null) && !this.polling) {
+    if ((status.indexing !== null || status.job !== null || status.book?.loading) && !this.polling) {
       this.polling = window.setTimeout(() => this.poll(), POLL_MS);
     }
     return status;

@@ -34,6 +34,9 @@
     summary: Summary | null;
     leftOffset: number;
     rightOffset: number;
+    /** The sheets with cells of the other file, when it is a workbook, and the one compared. */
+    sheets: { index: number; name: string }[];
+    sheet: number;
   }
   interface Row {
     status: DiffStatus;
@@ -148,6 +151,17 @@
     if (info.reading || info.comparing !== null) timer = window.setTimeout(poll, 100);
   }
 
+  /** Compares with another sheet of the other workbook, read first. */
+  async function chooseSheet(sheet: number) {
+    started = false;
+    shownFor = null;
+    total = 0;
+    pages = new Map();
+    await call("diff_sheet", { id, sheet });
+    clearTimeout(timer);
+    timer = window.setTimeout(poll, 50);
+  }
+
   async function run() {
     await call("diff_run", { id, options: { key: key < 0 ? [] : [key], ignoreCase, trim } });
     shownFor = null;
@@ -233,6 +247,14 @@
         {#each shared as column, index (column.left)}<option value={column.left}>{columnName(column, index)}</option>{/each}
       </select>
     </label>
+    {#if (info?.sheets.length ?? 0) > 1}
+      <label title={otherName}>
+        {L("Sheet of the other file:")}
+        <select value={info!.sheet} disabled={busy} onchange={(event) => void chooseSheet(Number(event.currentTarget.value))}>
+          {#each info!.sheets as sheet (sheet.index)}<option value={sheet.index}>{sheet.name}</option>{/each}
+        </select>
+      </label>
+    {/if}
     <label><input type="checkbox" bind:checked={ignoreCase} disabled={busy} onchange={run} />{L("Ignore case")}</label>
     <label><input type="checkbox" bind:checked={trim} disabled={busy} onchange={run} />{L("Ignore surrounding spaces")}</label>
     <span class="spacer"></span>

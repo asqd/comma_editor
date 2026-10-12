@@ -6,6 +6,7 @@
 //! on macOS, from Finder as `Opened` events; the interface opens them, focusing a window that
 //! already shows a file.
 
+mod book;
 pub mod session;
 
 use std::path::{Path, PathBuf};

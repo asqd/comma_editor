@@ -51,6 +51,12 @@ export class Selection {
     return extend ? new Selection(this.anchor, cell) : Selection.at(cell);
   }
 
+  /** Moved by `rows`, as when the first row stops or starts being a row of the table. */
+  shifted(rows: number): Selection {
+    const shift = (cell: Cell) => ({ row: Math.max(0, cell.row + rows), column: cell.column });
+    return new Selection(shift(this.anchor), shift(this.cursor));
+  }
+
   /** Kept within a table of `rows` × `columns`; `null` when the table is empty. */
   clamped(rows: number, columns: number): Selection | null {
     if (rows === 0 || columns === 0) return null;

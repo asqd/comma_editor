@@ -15,11 +15,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use comma_ffi::{
-    CellPosition, CellRange, ColumnProfile, CoreDocument, CoreError, CoreRecipe, DiffColumnInfo, DiffJob, DiffOptions, DiffResult, DiffRow,
-    DiffStatus, EditJob, EditRequest, ExportFormat, FilePreview, Issue,
-    LineEnding, ProblemKind, RangeStats, RepairFix, RepairOption, RepairReport, ValueKind,
-    SaveFormat, SearchQuery, TextEncoding, ViewJob, ViewSpec,
+    CellPosition, CellRange, ColumnProfile, CoreDocument, CoreError, CoreRecipe, CoreWorkbook, DiffColumnInfo, DiffJob, DiffOptions, DiffResult,
+    DiffRow, DiffStatus, EditJob, EditRequest, ExportFormat, FilePreview, Issue, LineEnding, ProblemKind, RangeStats, RepairFix, RepairOption,
+    RepairReport, SaveFormat, SearchQuery, SheetAxis, SheetJob, TextEncoding, ValueKind, ViewJob, ViewSpec,
 };
+
+use crate::book::{self, Book, Locale, Opening};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -83,6 +84,12 @@ pub struct Status {
     job: Option<JobStatus>,
     /// Steps recorded so far while a recipe is recorded.
     recording: Option<u64>,
+    /// A sheet of an Excel workbook: rows numbered as Excel numbers them, cells with formulas.
+    is_sheet: bool,
+    /// Bumps when formulas computed again changed what the table shows.
+    revision: u64,
+    /// The workbook, for a sheet of one: its sheets, the one shown, the one being read.
+    book: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -101,7 +108,9 @@ enum Job {
 }
 
 struct Session {
+    /// The table of a delimited file; a workbook's is the sheet it shows.
     document: Arc<CoreDocument>,
+    book: Option<Mutex<Book>>,
     state: Mutex<State>,
 }
 
@@ -127,19 +136,80 @@ struct State {
 impl Session {
     fn new(document: Arc<CoreDocument>, path: Option<String>) -> Arc<Self> {
         let saved = document.last_change_id();
-        Arc::new(Self { document, state: Mutex::new(State { path, saved, ..State::default() }) })
+        Arc::new(Self { document, book: None, state: Mutex::new(State { path, saved, ..State::default() }) })
+    }
+
+    fn with_book(book: Book, path: String) -> Arc<Self> {
+        Arc::new(Self { document: book.shown(), book: Some(Mutex::new(book)), state: Mutex::new(State { path: Some(path), ..State::default() }) })
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    fn book(&self) -> Option<MutexGuard<'_, Book>> {
+        self.book.as_ref().map(|book| book.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+
+    /// The table shown: the file's, or the workbook's sheet shown.
+    fn document(&self) -> Arc<CoreDocument> {
+        match self.book() {
+            Some(book) => book.shown(),
+            None => self.document.clone(),
+        }
+    }
+
+    /// Runs a change of a workbook that moves references in every sheet; `false` when nothing
+    /// changed.
+    fn change_book(&self, change: impl FnOnce(&CoreWorkbook, Vec<comma_ffi::SheetToSave>, u64) -> Result<Vec<u64>, CoreError>) -> Outcome<bool> {
+        let mut book = self.book().ok_or_else(|| Failure::message("not a workbook"))?;
+        Ok(book.change(change)?)
+    }
+
+    /// Shows a sheet of the workbook: at once when it was read before, else once it is read in
+    /// a thread of its own, which the interface follows through `status`.
+    fn show_sheet(self: &Arc<Self>, index: usize) {
+        let Some(mut book) = self.book() else { return };
+        if index >= book.sheets.len() || !book.sheets[index].is_table || book.show(index) {
+            return;
+        }
+        let Some((job, number)) = book.begin_loading(index) else { return };
+        let workbook = book.workbook.clone();
+        let locale = book.locale.display.clone();
+        drop(book);
+        let session = self.clone();
+        std::thread::spawn(move || {
+            let read = workbook.read_sheet(index as u64, locale, job);
+            let Some(mut book) = session.book() else { return };
+            if book.loading.as_ref().is_none_or(|loading| loading.number != number) {
+                return;
+            }
+            book.loading = None;
+            match read {
+                Ok(Some(sheet)) => {
+                    book.adopt(index, sheet.document, serde_json::to_value(sheet.layout).unwrap_or(Value::Null));
+                    book.show(index);
+                }
+                Ok(None) => {}
+                Err(error) => book.problem = serde_json::to_value(error).ok(),
+            }
+        });
+    }
+
     fn status(&self) -> Status {
-        let document = &self.document;
+        let mut book = self.book();
+        if let Some(book) = book.as_mut() {
+            book.settle();
+        }
+        let document = book.as_ref().map_or_else(|| self.document.clone(), |book| book.shown());
         let info = document.info();
         let header = if info.has_header { document.row(0).unwrap_or_default() } else { Vec::new() };
         let change = document.last_change_id();
         let state = self.state();
+        let (dirty, can_undo, can_redo) = match book.as_ref() {
+            Some(book) => (state.restored || book.dirty(), book.can_undo(), book.can_redo()),
+            None => (state.restored || change != state.saved, document.can_undo(), document.can_redo()),
+        };
         Status {
             path: state.path.clone(),
             rows: info.visible_row_count,
@@ -152,9 +222,9 @@ impl Session {
             delimiter: info.delimiter,
             line_ending: info.line_ending,
             detection_confident: info.detection_confident,
-            dirty: state.restored || change != state.saved,
-            can_undo: document.can_undo(),
-            can_redo: document.can_redo(),
+            dirty,
+            can_undo,
+            can_redo,
             change,
             view: document.view_spec(),
             indexing: state.indexing,
@@ -163,6 +233,9 @@ impl Session {
                 Job::Edit(job) => JobStatus { kind: "edit", fraction: Some(job.fraction()) },
             }),
             recording: document.recorded_step_count(),
+            is_sheet: info.is_sheet,
+            revision: book.as_ref().map_or(0, |book| book.revision),
+            book: book.as_mut().map(|book| book.status()),
         }
     }
 
@@ -188,6 +261,7 @@ impl Session {
     /// Runs `job` in a thread of its own. A new view replaces one still being computed, as a
     /// newer sort or filter makes the older one moot; other work waits for the running job.
     fn start(self: &Arc<Self>, job: Job) -> Outcome<()> {
+        let job_document = self.document();
         let mut state = self.state();
         match (&state.job, &job) {
             (None, _) => {}
@@ -198,11 +272,12 @@ impl Session {
         state.finished = None;
         let number = state.job_number;
         let session = self.clone();
+        let document = job_document;
         match &job {
             Job::View(view) => {
                 let view = view.clone();
                 std::thread::spawn(move || {
-                    let shown = view.run() && session.document.finish_view(view);
+                    let shown = view.run() && document.finish_view(view);
                     session.finish(number, Ok(json!({ "shown": shown })));
                 });
             }
@@ -210,7 +285,7 @@ impl Session {
                 let edit = edit.clone();
                 std::thread::spawn(move || {
                     edit.run();
-                    let outcome = session.document.finish_edit(edit).map(|result| json!(result)).map_err(Failure::from);
+                    let outcome = document.finish_edit(edit).map(|result| json!(result)).map_err(Failure::from);
                     session.finish(number, outcome);
                 });
             }
@@ -232,12 +307,20 @@ impl Session {
 /// the other file is read whole in the background, then compared as often as the options change.
 struct Diff {
     left: Arc<CoreDocument>,
+    /// The sheet compared, when the table is a workbook's: the other workbook's namesake is
+    /// compared with it.
+    left_sheet: Option<String>,
+    path: String,
+    locale: Option<comma_ffi::DisplayLocale>,
     state: Mutex<DiffState>,
 }
 
 #[derive(Default)]
 struct DiffState {
     right: Option<Arc<CoreDocument>>,
+    /// The other file when it is an Excel workbook, and the sheet of it compared.
+    workbook: Option<Arc<CoreWorkbook>>,
+    sheet: u64,
     reading: bool,
     job: Option<Arc<DiffJob>>,
     /// Counts comparisons, so that a cancelled one ending late leaves the next one alone.
@@ -248,9 +331,74 @@ struct DiffState {
     cancelled: bool,
 }
 
+/// The other table of a comparison: the file's, or a sheet of a workbook and its index.
+type OtherTable = (Arc<CoreDocument>, Option<Arc<CoreWorkbook>>, u64);
+
 impl Diff {
     fn state(&self) -> MutexGuard<'_, DiffState> {
         self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Reads the other file in a thread of its own: a delimited file whole, or a sheet of a
+    /// workbook, the one of the same name as the sheet compared or the one Excel opens at
+    /// unless `sheet` names another.
+    fn read(self: &Arc<Self>, sheet: Option<u64>) {
+        let diff = self.clone();
+        let has_header = self.left.info().has_header;
+        {
+            let mut state = self.state();
+            state.reading = true;
+            state.right = None;
+            state.result = None;
+            state.failure = None;
+        }
+        std::thread::spawn(move || {
+            let opened = diff.state().workbook.clone();
+            let read = (|| -> Result<OtherTable, Failure> {
+                if opened.is_none() && !book::is_workbook(&diff.path) {
+                    // The other file is read whole, its encoding and delimiter detected.
+                    let right = CoreDocument::open_with(diff.path.clone(), None, None)?;
+                    while right.is_indexing() {
+                        right.continue_indexing(INDEXING_STEP);
+                    }
+                    right.set_has_header(has_header);
+                    return Ok((right, None, 0));
+                }
+                let workbook = match opened {
+                    Some(workbook) => workbook,
+                    None => CoreWorkbook::open(diff.path.clone())?,
+                };
+                let sheets = workbook.sheets();
+                let active = workbook.active_sheet() as usize;
+                let namesake = diff.left_sheet.as_ref().and_then(|name| {
+                    sheets.iter().position(|sheet| sheet.is_table && sheet.name.to_lowercase() == name.to_lowercase())
+                });
+                let fallback = if sheets.get(active).is_some_and(|sheet| sheet.is_table) {
+                    active
+                } else {
+                    sheets.iter().position(|sheet| sheet.is_table).unwrap_or(0)
+                };
+                let index = sheet.map_or(namesake.unwrap_or(fallback), |sheet| sheet as usize);
+                let locale = diff.locale.clone().ok_or_else(|| Failure::message("a workbook needs the locale"))?;
+                let loaded = workbook
+                    .read_sheet(index as u64, locale, SheetJob::new())?
+                    .ok_or_else(|| Failure::message("the sheet was not read"))?;
+                // A sheet reads as the table it is compared with: its first row names the
+                // columns when the table's does.
+                loaded.document.set_has_header(has_header);
+                Ok((loaded.document, Some(workbook), index as u64))
+            })();
+            let mut state = diff.state();
+            state.reading = false;
+            match read {
+                Ok((right, workbook, sheet)) => {
+                    state.right = Some(right);
+                    state.workbook = workbook;
+                    state.sheet = sheet;
+                }
+                Err(failure) => state.failure = serde_json::to_value(failure).ok(),
+            }
+        });
     }
 }
 
@@ -284,6 +432,8 @@ struct Open {
     path: String,
     encoding: Option<TextEncoding>,
     delimiter: Option<String>,
+    /// How the system shows numbers and dates, for a workbook.
+    locale: Option<Locale>,
 }
 
 #[derive(Deserialize)]
@@ -337,6 +487,11 @@ struct Token {
 }
 
 #[derive(Deserialize)]
+struct DiffSheet {
+    sheet: u64,
+}
+
+#[derive(Deserialize)]
 struct DiffRun {
     options: DiffOptions,
 }
@@ -364,6 +519,12 @@ struct DiffOpen {
 #[derive(Deserialize)]
 struct FilePath {
     path: String,
+}
+
+#[derive(Deserialize)]
+struct DiffStart {
+    path: String,
+    locale: Option<comma_ffi::DisplayLocale>,
 }
 
 #[derive(Deserialize)]
@@ -534,7 +695,7 @@ struct Edit {
 /// Makes a change to many rows: at once in a table of up to `JOB_ROWS` rows, as the macOS app
 /// does, and in a background job in a larger one. `result` is `null` while the job runs.
 fn edit(session: &Arc<Session>, request: EditRequest) -> Outcome<Value> {
-    let document = &session.document;
+    let document = &session.document();
     if document.row_count() < JOB_ROWS {
         let result = document.apply_edit(request)?;
         return Ok(json!({ "status": session.status(), "result": result }));
@@ -563,6 +724,42 @@ struct SaveAs {
 #[derive(Deserialize)]
 struct Row {
     row: u64,
+}
+
+#[derive(Deserialize)]
+struct SetCellAt {
+    row: u64,
+    column: u64,
+}
+
+#[derive(Deserialize)]
+struct Index {
+    index: u64,
+}
+
+#[derive(Deserialize)]
+struct Step {
+    step: isize,
+}
+
+/// Runs of consecutive rows `(first, count)`, the last first, so that deleting one leaves the
+/// others where they are.
+fn runs(mut rows: Vec<u64>) -> Vec<(u64, u64)> {
+    rows.sort_unstable();
+    rows.dedup();
+    let mut runs: Vec<(u64, u64)> = Vec::new();
+    for row in rows {
+        match runs.last_mut() {
+            Some((first, count)) if *first + *count == row => *count += 1,
+            _ => runs.push((row, 1)),
+        }
+    }
+    runs.reverse();
+    runs
+}
+
+fn sheet_to_save(sheet: &comma_ffi::SheetToSave) -> comma_ffi::SheetToSave {
+    comma_ffi::SheetToSave { index: sheet.index, document: sheet.document.clone() }
 }
 
 impl Sessions {
@@ -597,7 +794,21 @@ impl Sessions {
                     (None, Some(right)) => (diff.left.diff_columns(right.clone()), diff.left.suggest_diff_key(right.clone())),
                     _ => (Vec::new(), Vec::new()),
                 };
-                let offset = |document: &CoreDocument| u64::from(document.info().has_header);
+                // Rows numbered as the tables number them: a sheet as Excel does, from its first row.
+                let offset = |document: &CoreDocument| {
+                    let info = document.info();
+                    u64::from(!info.is_sheet && info.has_header)
+                };
+                // The sheets with cells of the other workbook, to choose among.
+                let sheets: Vec<Value> = state.workbook.as_ref().map_or_else(Vec::new, |workbook| {
+                    workbook
+                        .sheets()
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(_, sheet)| sheet.is_table)
+                        .map(|(index, sheet)| json!({ "index": index, "name": sheet.name }))
+                        .collect()
+                });
                 Ok(json!({
                     "reading": state.reading,
                     "ready": state.right.is_some(),
@@ -609,7 +820,18 @@ impl Sessions {
                     "summary": state.result.as_ref().map(|result| result.summary()),
                     "leftOffset": offset(&diff.left),
                     "rightOffset": state.right.as_ref().map(|right| offset(right)).unwrap_or(0),
+                    "sheets": sheets,
+                    "sheet": state.sheet,
                 }))
+            }
+            "diff_sheet" => {
+                // Compares with another sheet of the other workbook.
+                let DiffSheet { sheet } = args(args_)?;
+                if let Some(job) = diff.state().job.take() {
+                    job.cancel();
+                }
+                diff.read(Some(sheet));
+                Ok(Value::Null)
             }
             "diff_run" => {
                 // Compares again with these options; a comparison still running is cancelled.
@@ -754,7 +976,8 @@ impl Sessions {
     pub fn write_draft(&self, window: &str, file: &Path, largest: u64) -> Outcome<Option<(Option<String>, SaveFormat)>> {
         let session = self.session(window)?;
         let status = session.status();
-        if !status.dirty || status.indexing.is_some() || status.job.is_some() {
+        // A workbook keeps no draft: its file is written only when saved, as in the macOS app.
+        if session.book.is_some() || !status.dirty || status.indexing.is_some() || status.job.is_some() {
             return Ok(None);
         }
         if let Some(path) = &status.path
@@ -791,7 +1014,17 @@ impl Sessions {
         // Commands that make the window's document.
         match command {
             "open" => {
-                let Open { path, encoding, delimiter } = args(args_)?;
+                let Open { path, encoding, delimiter, locale } = args(args_)?;
+                if book::is_workbook(&path) {
+                    let locale = locale.ok_or_else(|| Failure::message("a workbook needs the locale"))?;
+                    let book = Book::open(&path, locale).map_err(|opening| match opening {
+                        Opening::Core(error) => Failure::from(error),
+                        Opening::NoTables => Failure::message(book::NO_TABLES),
+                    })?;
+                    let session = Session::with_book(book, path);
+                    self.set(window, Some(session.clone()));
+                    return reply(session.status());
+                }
                 let document = CoreDocument::open_with(path.clone(), encoding, delimiter)?;
                 let session = Session::new(document, Some(path));
                 session.index();
@@ -807,7 +1040,7 @@ impl Sessions {
                 self.set(window, None);
                 return Ok(Value::Null);
             }
-            "diff_state" | "diff_run" | "diff_cancel" | "diff_count" | "diff_rows" | "diff_open" | "diff_close" => {
+            "diff_state" | "diff_run" | "diff_cancel" | "diff_count" | "diff_rows" | "diff_open" | "diff_close" | "diff_sheet" => {
                 return self.diff_command(command, args_);
             }
             "adopt" => {
@@ -861,20 +1094,51 @@ impl Sessions {
         }
 
         let session = self.session(window)?;
-        let document = &session.document;
+        let document = &session.document();
         let status = |session: &Session| reply(session.status());
+        // Rows of a sheet move through its workbook, which moves the references to them, unless
+        // tables, drawings or pivot tables hold them; their own do not when something refers to them.
+        let info = document.info();
+        let workbook = session.book.is_some() && !session.book().is_some_and(|book| book.legacy);
+        let rows_move_references = workbook && info.sheet_rows_fixed && !info.sheet_structure_locked;
+        let columns_move_references = workbook && !info.sheet_structure_locked;
         match command {
             "status" => status(&session),
             "rows" => {
                 // The rows, and the numbers they show: their place in the file, as the macOS app
                 // numbers rows, also when sorted or filtered.
+                // A sheet numbers its rows as Excel does, which its formulas refer to; its cells
+                // with formulas come with them, as Excel shows them.
                 let Span { start, count } = args(args_)?;
                 let rows = document.visible_rows(start, count);
-                let header = u64::from(document.info().has_header);
+                let header = if info.is_sheet { 0 } else { u64::from(info.has_header) };
                 let numbers: Vec<u64> = (start..start + rows.len() as u64)
                     .map(|row| document.visible_record(row).map_or(row + 1, |record| record + 1 - header))
                     .collect();
-                Ok(json!({ "rows": rows, "numbers": numbers }))
+                if !info.is_sheet {
+                    return Ok(json!({ "rows": rows, "numbers": numbers }));
+                }
+                let book = session.book();
+                let formulas: Vec<Vec<(u64, String)>> = document
+                    .visible_formula_columns(start, count)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(offset, columns)| {
+                        let record = document.visible_record(start + offset as u64).unwrap_or(start + offset as u64);
+                        columns
+                            .into_iter()
+                            .filter_map(|column| {
+                                let formula = document.formula(record, column)?;
+                                let shown = match book.as_ref() {
+                                    Some(book) => book.shown_formula(formula),
+                                    None => format!("={formula}"),
+                                };
+                                Some((column, shown))
+                            })
+                            .collect()
+                    })
+                    .collect();
+                Ok(json!({ "rows": rows, "numbers": numbers, "formulas": formulas }))
             }
             "record" => {
                 // The row of the file a visible row shows, to keep it selected across views.
@@ -884,6 +1148,42 @@ impl Sessions {
             "visible_index" => {
                 let Row { row } = args(args_)?;
                 reply(document.visible_index(row))
+            }
+            "cell_text" => {
+                // What editing a cell of a sheet starts from: its formula, or what was typed into
+                // it when it shows that in a number format; and, for a cell a merged area hides,
+                // the area's first cell, which is edited instead, as in Excel.
+                let SetCellAt { row, column } = args(args_)?;
+                let record = document.visible_record(row).ok_or_else(|| Failure::message("no such row"))?;
+                let merged = document.merged_into(record, column).and_then(|first| {
+                    let row = document.visible_index(first[0])?;
+                    (first[0] != record || first[1] != column).then(|| json!({ "row": row, "column": first[1] }))
+                });
+                let formula = document.formula(record, column).map(|formula| match session.book() {
+                    Some(book) => book.shown_formula(formula),
+                    None => format!("={formula}"),
+                });
+                Ok(json!({ "formula": formula, "input": document.cell_input(record, column), "merged": merged }))
+            }
+
+            // Sheets of a workbook.
+            "show_sheet" => {
+                let Index { index } = args(args_)?;
+                session.show_sheet(index as usize);
+                status(&session)
+            }
+            "step_sheet" => {
+                // The next or the previous sheet that can be shown.
+                let Step { step } = args(args_)?;
+                let next = session.book().and_then(|book| book.neighbour(step));
+                if let Some(index) = next {
+                    session.show_sheet(index);
+                }
+                status(&session)
+            }
+            "sheet_layout" => {
+                // How Excel lays out the sheet shown: widths, hidden columns, frozen panes.
+                reply(session.book().map(|book| book.layout()))
             }
 
             // Cells, rows and columns.
@@ -899,51 +1199,104 @@ impl Sessions {
                 status(&session)
             }
             "insert_rows" => {
+                // Rows inserted inside a sheet move the references below them; rows added at
+                // the end move nothing.
                 let InsertRows { at, count } = args(args_)?;
-                document.insert_rows(document.insertion_row(at), count)?;
+                let row = document.insertion_row(at);
+                if rows_move_references && row < document.row_count() {
+                    session.change_book(|workbook, sheets, index| workbook.insert(sheets, index, SheetAxis::Rows, row, count))?;
+                } else {
+                    document.insert_rows(row, count)?;
+                }
                 status(&session)
             }
             "delete_rows" => {
                 // Visible rows `top..=bottom`: a range, as a whole table may be selected.
                 let RowRange { top, bottom } = args(args_)?;
-                let records = (top..=bottom).filter_map(|row| document.visible_record(row)).collect();
-                document.delete_rows(records)?;
+                let records: Vec<u64> = (top..=bottom).filter_map(|row| document.visible_record(row)).collect();
+                if rows_move_references {
+                    let runs = runs(records);
+                    session.change_book(|workbook, sheets, index| {
+                        let mut changed = Vec::new();
+                        for (at, count) in runs {
+                            changed.extend(workbook.delete(sheets.iter().map(sheet_to_save).collect(), index, SheetAxis::Rows, at, count)?);
+                        }
+                        Ok(changed)
+                    })?;
+                } else {
+                    document.delete_rows(records)?;
+                }
                 status(&session)
             }
             "move_rows" => {
                 // Visible rows `top..=bottom` before visible row `to`, as the macOS app moves them.
                 let MoveRows { top, bottom, to } = args(args_)?;
-                let rows = (top..=bottom).filter_map(|row| document.visible_record(row)).collect();
-                let moved = document.move_rows(rows, document.insertion_row(to))?;
+                let rows: Vec<u64> = (top..=bottom).filter_map(|row| document.visible_record(row)).collect();
+                let to = document.insertion_row(to);
+                let moved = if rows_move_references {
+                    session.change_book(|workbook, sheets, index| workbook.move_rows(sheets, index, rows, to))?
+                } else {
+                    document.move_rows(rows, to)?
+                };
                 Ok(json!({ "status": session.status(), "moved": moved }))
             }
             "move_column" => {
                 // `to` is the column's place after the move; the core shows every row again.
                 let MoveColumn { from, to } = args(args_)?;
-                let moved = document.move_column(from, to)?;
+                let moved = if columns_move_references {
+                    session.change_book(|workbook, sheets, index| workbook.move_column(sheets, index, from, to))?
+                } else {
+                    document.move_column(from, to)?
+                };
                 Ok(json!({ "status": session.status(), "moved": moved }))
             }
             "insert_column" => {
                 let At { at } = args(args_)?;
-                document.insert_column(at)?;
+                if columns_move_references && at < document.column_count() {
+                    session.change_book(|workbook, sheets, index| workbook.insert(sheets, index, SheetAxis::Columns, at, 1))?;
+                } else {
+                    document.insert_column(at)?;
+                }
                 status(&session)
             }
             "delete_column" => {
                 let At { at } = args(args_)?;
-                document.delete_column(at)?;
+                if columns_move_references {
+                    session.change_book(|workbook, sheets, index| workbook.delete(sheets, index, SheetAxis::Columns, at, 1))?;
+                } else {
+                    document.delete_column(at)?;
+                }
                 status(&session)
             }
             "set_has_header" => {
+                // In a workbook, CSV mode: every sheet takes the setting.
                 let HasHeader { has_header } = args(args_)?;
-                document.set_has_header(has_header);
+                match session.book() {
+                    Some(mut book) => book.set_csv_mode(has_header),
+                    None => document.set_has_header(has_header),
+                }
                 status(&session)
             }
             "undo" => {
-                document.undo();
+                match session.book() {
+                    Some(mut book) => {
+                        book.undo();
+                    }
+                    None => {
+                        document.undo();
+                    }
+                }
                 status(&session)
             }
             "redo" => {
-                document.redo();
+                match session.book() {
+                    Some(mut book) => {
+                        book.redo();
+                    }
+                    None => {
+                        document.redo();
+                    }
+                }
                 status(&session)
             }
 
@@ -999,9 +1352,27 @@ impl Sessions {
                 edit(&session, EditRequest::ReplaceAll { query, replacement })
             }
             "edit" => {
-                // A change to many rows: text, empty cells, splitting, merging, duplicates.
+                // A change to many rows: text, empty cells, splitting, merging, duplicates. In a
+                // workbook, splitting and merging columns move the references to the columns
+                // after them in every sheet.
                 let Edit { request } = args(args_)?;
-                edit(&session, request)
+                let added = match request {
+                    EditRequest::SplitColumn { column, separator, regex } if workbook => {
+                        let mut added = 0;
+                        let changed = session.change_book(|workbook, sheets, index| {
+                            let split = workbook.split_column(sheets, index, column, separator, regex)?;
+                            added = split.count;
+                            Ok(split.sheets)
+                        })?;
+                        (changed, added)
+                    }
+                    EditRequest::MergeColumns { columns, separator } if workbook => {
+                        let changed = session.change_book(|workbook, sheets, index| workbook.merge_columns(sheets, index, columns, separator))?;
+                        (changed, u64::from(changed))
+                    }
+                    request => return edit(&session, request),
+                };
+                Ok(json!({ "status": session.status(), "result": { "changed": added.0, "count": added.1, "report": null } }))
             }
 
             // Sorting and filtering.
@@ -1015,10 +1386,22 @@ impl Sessions {
                 status(&session)
             }
             "apply_sort" => {
-                document.apply_sort()?;
+                // A sheet sorts as Excel sorts: formulas and formats move with their rows.
+                match session.book() {
+                    Some(book) if rows_move_references => {
+                        let index = book.index as u64;
+                        book.workbook.sort_rows(document.clone(), index)?;
+                    }
+                    _ => {
+                        document.apply_sort()?;
+                    }
+                }
                 status(&session)
             }
             "cancel_job" => {
+                if let Some(mut book) = session.book() {
+                    book.cancel_loading();
+                }
                 match &session.state().job {
                     Some(Job::View(job)) => job.cancel(),
                     Some(Job::Edit(job)) => job.cancel(),
@@ -1040,7 +1423,10 @@ impl Sessions {
             "save_format" => reply(document.save_format()),
             "save" => {
                 let path = session.state().path.clone().ok_or_else(|| Failure::message("the document has no file yet"))?;
-                document.save(path)?;
+                match session.book() {
+                    Some(mut book) => book.save(&path)?,
+                    None => document.save(path)?,
+                }
                 let mut state = session.state();
                 state.saved = document.last_change_id();
                 state.restored = false;
@@ -1059,6 +1445,16 @@ impl Sessions {
                 let mut state = session.state();
                 state.path = Some(path);
                 state.saved = document.last_change_id();
+                state.restored = false;
+                drop(state);
+                status(&session)
+            }
+            "save_book_as" => {
+                // A workbook saves as itself, in a file of its own from now on.
+                let FilePath { path } = args(args_)?;
+                session.book().ok_or_else(|| Failure::message("not a workbook"))?.save(&path)?;
+                let mut state = session.state();
+                state.path = Some(path);
                 state.restored = false;
                 drop(state);
                 status(&session)
@@ -1119,29 +1515,16 @@ impl Sessions {
 
             // Comparing with another file.
             "diff_start" => {
-                let FilePath { path } = args(args_)?;
+                // The other file may be a workbook: its sheets read as the locale shows them.
+                let DiffStart { path, locale } = args(args_)?;
                 if document.is_indexing() {
                     return Err(Failure::Core(CoreError::Busy));
                 }
                 let id = self.next.fetch_add(1, Ordering::Relaxed);
-                let diff = Arc::new(Diff { left: document.clone(), state: Mutex::new(DiffState { reading: true, ..DiffState::default() }) });
+                let left_sheet = session.book().map(|book| book.name().to_owned());
+                let diff = Arc::new(Diff { left: document.clone(), left_sheet, path, locale, state: Mutex::new(DiffState::default()) });
                 self.diffs.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(id, diff.clone());
-                let has_header = document.info().has_header;
-                std::thread::spawn(move || {
-                    // The other file is read whole, its encoding and delimiter detected.
-                    let read = CoreDocument::open_with(path, None, None).inspect(|right| {
-                        while right.is_indexing() {
-                            right.continue_indexing(INDEXING_STEP);
-                        }
-                        right.set_has_header(has_header);
-                    });
-                    let mut state = diff.state();
-                    state.reading = false;
-                    match read {
-                        Ok(right) => state.right = Some(right),
-                        Err(error) => state.failure = serde_json::to_value(Failure::from(error)).ok(),
-                    }
-                });
+                diff.read(None);
                 reply(json!({ "id": id }))
             }
 
@@ -1387,6 +1770,72 @@ mod tests {
         assert!(sessions.dispatch("main", "recipe_delete", json!({ "file": "../first.csv" })).is_err(), "only recipe files go");
         sessions.dispatch("main", "recipe_delete", json!({ "file": file })).unwrap();
         assert_eq!(sessions.dispatch("main", "recipes", Value::Null).unwrap(), json!([]));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    fn locale() -> Value {
+        json!({
+            "display": {
+                "decimalSeparator": ".", "groupSeparator": ",", "shortDate": "dd.mm.yyyy",
+                "monthNames": [], "monthAbbreviations": [], "dayNames": [], "dayAbbreviations": [],
+                "am": "AM", "pm": "PM", "trueText": "TRUE", "falseText": "FALSE"
+            },
+            "formulas": { "comma": false, "russian": false },
+            "utcOffset": 0
+        })
+    }
+
+    fn cells(sessions: &Sessions, window: &str) -> Value {
+        sessions.dispatch(window, "rows", json!({ "start": 0, "count": 10 })).unwrap()
+    }
+
+    #[test]
+    fn a_workbook_computes_its_formulas_moves_references_undoes_and_saves() {
+        let folder = std::env::temp_dir().join(format!("comma-session-book-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let csv = folder.join("numbers.csv");
+        let path = folder.join("numbers.xlsx");
+        std::fs::write(&csv, "a,b\n1,2\n3,4\n").unwrap();
+        let sessions = Sessions::default();
+        sessions.dispatch("csv", "open", json!({ "path": csv })).unwrap();
+        sessions.dispatch("csv", "export_file", json!({ "path": path, "format": "xlsx", "name": "Numbers" })).unwrap();
+
+        let opened = sessions.dispatch("book", "open", json!({ "path": path, "locale": locale() })).unwrap();
+        assert_eq!(opened["isSheet"], true);
+        assert_eq!(opened["book"]["sheets"][0]["name"], "Numbers");
+        assert_eq!(opened["hasHeader"], false, "a sheet shows as Excel shows it");
+        assert_eq!(cells(&sessions, "book")["numbers"], json!([1, 2, 3]));
+
+        sessions.dispatch("book", "insert_column", json!({ "at": 2 })).unwrap();
+        sessions.dispatch("book", "set_cell", json!({ "row": 1, "column": 2, "value": "=A2+B2" })).unwrap();
+        let rows = cells(&sessions, "book");
+        assert_eq!(rows["rows"][1][2], "3");
+        assert_eq!(rows["formulas"][1], json!([[2, "=A2+B2"]]));
+        sessions.dispatch("book", "set_cell", json!({ "row": 1, "column": 0, "value": "10" })).unwrap();
+        assert_eq!(cells(&sessions, "book")["rows"][1][2], "12", "what depends on a cell is computed again");
+
+        // A row inserted above moves the formula and what it reads.
+        let inserted = sessions.dispatch("book", "insert_rows", json!({ "at": 1, "count": 1 })).unwrap();
+        assert_eq!(inserted["rows"], 4);
+        assert_eq!(cells(&sessions, "book")["formulas"][2], json!([[2, "=A3+B3"]]));
+        sessions.dispatch("book", "undo", Value::Null).unwrap();
+        assert_eq!(cells(&sessions, "book")["formulas"][1], json!([[2, "=A2+B2"]]));
+        assert_eq!(status(&sessions, "book")["dirty"], true);
+
+        let saved = sessions.dispatch("book", "save", Value::Null).unwrap();
+        assert_eq!(saved["dirty"], false);
+        sessions.dispatch("again", "open", json!({ "path": path, "locale": locale() })).unwrap();
+        let rows = cells(&sessions, "again");
+        assert_eq!(rows["rows"][1], json!(["10", "2", "12"]));
+        assert_eq!(rows["formulas"][1], json!([[2, "=A2+B2"]]));
+        let text = sessions.dispatch("again", "cell_text", json!({ "row": 1, "column": 2 })).unwrap();
+        assert_eq!(text["formula"], "=A2+B2");
+
+        // CSV mode: the first row names the columns, rows keep Excel's numbers.
+        let csv_mode = sessions.dispatch("again", "set_has_header", json!({ "hasHeader": true })).unwrap();
+        assert_eq!(csv_mode["header"], json!(["a", "b"]));
+        assert_eq!(cells(&sessions, "again")["numbers"], json!([2, 3]));
+        assert!(sessions.write_draft("book", &folder.join("book.draft"), u64::MAX).unwrap().is_none(), "workbooks keep no drafts");
         std::fs::remove_dir_all(folder).unwrap();
     }
 

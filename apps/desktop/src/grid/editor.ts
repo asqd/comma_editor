@@ -63,6 +63,18 @@ export class CellEditor {
     this.commit(cell, value === this.original ? null : value, move);
   }
 
+  /** The cell being edited, if any. */
+  get target(): Cell | null {
+    return this.cell;
+  }
+
+  /** Goes on editing in another cell, as when the cell typed into turns out to be hidden. */
+  retarget(cell: Cell): void {
+    if (!this.cell) return;
+    this.cell = cell;
+    this.place();
+  }
+
   cancel(): void {
     this.close();
   }

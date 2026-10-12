@@ -2081,7 +2081,7 @@ mod recording_tests {
 
 // MARK: Workbooks
 
-#[derive(uniffi::Enum)]
+#[derive(uniffi::Enum, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum SheetVisibility {
     Visible,
@@ -2089,7 +2089,7 @@ pub enum SheetVisibility {
     VeryHidden,
 }
 
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct SheetInfo {
     pub name: String,
@@ -2099,7 +2099,7 @@ pub struct SheetInfo {
 }
 
 /// How the system shows numbers and dates, which Excel follows.
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct DisplayLocale {
     pub decimal_separator: String,
@@ -2140,7 +2140,7 @@ impl From<DisplayLocale> for core::DisplayLocale {
 }
 
 /// Rows `top..=bottom` and columns `left..=right` of a sheet.
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct SheetRange {
     pub top: u64,
@@ -2150,7 +2150,7 @@ pub struct SheetRange {
 }
 
 /// Columns `first..=last` as the sheet sets them.
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct ColumnLayout {
     pub first: u64,
@@ -2160,7 +2160,7 @@ pub struct ColumnLayout {
     pub hidden: bool,
 }
 
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase"))]
 pub struct SheetLayout {
     pub merged: Vec<SheetRange>,

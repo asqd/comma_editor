@@ -24,6 +24,7 @@ const desktop: Record<string, string> = {
   "Restore": "Восстановить",
   "Nothing to fix": "Исправлять нечего",
   "Discard": "Удалить",
+  "CSV and Excel": "CSV и Excel",
   // What AppKit says for the macOS app.
   "Do you want to save the changes made to the document “%@”?": "Сохранить изменения в документе «%@»?",
   "Your changes will be lost if you don’t save them.": "Если не сохранить их, изменения будут потеряны.",

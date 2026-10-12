@@ -15,7 +15,7 @@
     type ProblemKind,
     type RepairFix,
     type RepairOption,
-    type RepairReport, type TextEncoding, type FilterRule, type RangeStats, type SaveFormat, type SortKey, type Status, type ViewSpec } from "./lib/api";
+    type RepairReport, type TextEncoding, type FilterRule, type RangeStats, type SaveFormat, type SheetLayout, type SortKey, type Status, type ViewSpec } from "./lib/api";
   import { Selection, type Cell } from "./grid/selection";
   import { CellEditor, type Move } from "./grid/editor";
   import CellSheet from "./CellSheet.svelte";
@@ -29,6 +29,8 @@
   import RecordCard, { type Field } from "./RecordCard.svelte";
   import FormulaSheet from "./FormulaSheet.svelte";
   import RecipesSheet from "./RecipesSheet.svelte";
+  import SheetTabs from "./SheetTabs.svelte";
+  import { sheetColumns, workbookLocale } from "./lib/workbook";
   import type { Recipe } from "./lib/recipes";
   import { describeFormula, type FormulaReport } from "./lib/formula";
   import { delimiterName, delimiters, encodingName, encodings, kindName } from "./lib/formats";
@@ -105,12 +107,22 @@
     if (!grid) return;
     // A file opened, perhaps again: the table and what was found in it start over.
     const opened = !previous || previous.path !== status.path || fresh;
+    // Another sheet of the workbook: the table is built anew, as it was left on that sheet or
+    // as the file lays it out.
+    const sheetShown = !opened && !!status.book && previous.book?.index !== status.book.index;
+    grid.marksMissing = !status.isSheet;
     if (opened) {
       fresh = false;
+      sheetStates.clear();
       grid.setSource(table);
-    }
-    else if (
+      if (status.book) void showSheetState(status, null);
+    } else if (sheetShown) {
+      sheetStates.set(previous.book!.index, currentSheetState(previous));
+      grid.setSource(table);
+      void showSheetState(status, sheetStates.get(status.book!.index) ?? null);
+    } else if (
       previous.change !== status.change ||
+      previous.revision !== status.revision ||
       previous.hasHeader !== status.hasHeader ||
       JSON.stringify(previous.view) !== JSON.stringify(status.view)
     )
@@ -125,20 +137,98 @@
       void refreshCard();
     }
     // Broken rows are looked for after every change, and once a large file is read whole.
-    if (opened) repair = null;
-    if (!previous || previous.change !== status.change || previous.hasHeader !== status.hasHeader || (previous.indexing !== null && status.indexing === null))
+    if (opened || sheetShown) repair = null;
+    if (!previous || sheetShown || previous.change !== status.change || previous.hasHeader !== status.hasHeader || (previous.indexing !== null && status.indexing === null))
       scheduleProblemCheck(previous ? 300 : 0);
+    if (opened || sheetShown || previous?.change !== status.change || previous?.revision !== status.revision) void inspectCell();
   });
+
+  // Sheets of a workbook (GridViewController+Sheets.swift): the table's state on each sheet as
+  // one moves between them, and the layout Excel gives each sheet at first.
+
+  /** How the table looked on a sheet, to show it the same way on coming back. */
+  interface SheetViewState {
+    layout: ColumnLayout;
+    frozenColumns: number;
+    /** Rows of the sheet frozen at the top, its first row counted, whatever the mode. */
+    frozenTop: number;
+    selection: Selection | null;
+    top: number;
+    left: number;
+  }
+  const sheetStates = new Map<number, SheetViewState>();
+
+  function currentSheetState(status: Status): SheetViewState {
+    return {
+      layout: grid!.columnLayout,
+      frozenColumns: grid!.frozenColumns,
+      frozenTop: grid!.frozenRows + (status.hasHeader ? 1 : 0),
+      selection: grid!.selection,
+      top: grid!.scrollTop,
+      left: grid!.scrollLeft,
+    };
+  }
+
+  /** Lays out the sheet shown: as it was left, or as Excel shows it. */
+  async function showSheetState(status: Status, state: SheetViewState | null) {
+    if (!grid) return;
+    const index = status.book?.index;
+    const offset = status.hasHeader ? 1 : 0;
+    if (!state) {
+      const layout = await call<SheetLayout | null>("sheet_layout").catch(() => null);
+      const shown = doc.status;
+      if (!grid || !shown || shown.book?.index !== index) return;
+      const columns = shown.columns;
+      grid.columnLayout = sheetColumns(layout, columns, 140);
+      const first = grid.shownColumn(0) ?? 0;
+      state = {
+        layout: grid.columnLayout,
+        frozenColumns: Math.min(layout?.frozenColumns ?? 0, Math.max(0, columns - 1)),
+        frozenTop: layout?.frozenRows ?? 0,
+        selection: shown.rows > 0 ? Selection.at({ row: 0, column: first }) : null,
+        top: 0,
+        left: 0,
+      };
+    }
+    grid.columnLayout = state.layout;
+    grid.freezeColumns(state.frozenColumns);
+    grid.freezeRows(Math.min(Math.max(0, state.frozenTop - offset), Math.max(0, (doc.status?.rows ?? 0) - 1)));
+    grid.select(state.selection, false);
+    grid.scrollTo(state.top, state.left);
+    layoutChanged += 1;
+  }
+
+  /** Shows a sheet of the workbook; one not read before is read first, its progress shown. */
+  async function chooseSheet(index: number) {
+    const book = doc.status?.book;
+    if (!book || index === book.index || editor?.editing) return;
+    await doc.attempt(() => doc.run("show_sheet", { index }));
+  }
+
+  /** The formula of the active cell of a sheet, for the status bar. */
+  let activeFormula = $state("");
+  let inspected = 0;
+  async function inspectCell() {
+    const asked = ++inspected;
+    const cursor = grid?.selection;
+    if (!doc.status?.isSheet || !cursor || !cursor.single) {
+      activeFormula = "";
+      return;
+    }
+    const text = await call<{ formula: string | null }>("cell_text", { row: cursor.cursor.row, column: cursor.cursor.column }).catch(() => null);
+    if (asked === inspected) activeFormula = text?.formula ?? "";
+  }
 
   /**
    * Column widths and hidden columns before and after a change that inserted or deleted a
    * column, by the change ids around it: undo and redo bring them back, as in the macOS app.
    */
-  const layouts: { before: number | null; after: number | null; old: ColumnLayout; next: ColumnLayout }[] = [];
+  const layouts: { sheet: number | null; before: number | null; after: number | null; old: ColumnLayout; next: ColumnLayout }[] = [];
 
   function restoreLayout(previous: Status | null, status: Status) {
-    if (!grid || !previous) return;
+    if (!grid || !previous || previous.book?.index !== status.book?.index) return;
     for (const entry of layouts) {
+      if (entry.sheet !== (status.book?.index ?? null)) continue;
       if (previous.change === entry.after && status.change === entry.before) grid.columnLayout = entry.old;
       else if (previous.change === entry.before && status.change === entry.after) grid.columnLayout = entry.next;
     }
@@ -152,7 +242,7 @@
     if (!(await doc.attempt(work))) return false;
     shift();
     grid.update();
-    layouts.push({ before, after: doc.status.change, old, next: grid.columnLayout });
+    layouts.push({ sheet: doc.status.book?.index ?? null, before, after: doc.status.change, old, next: grid.columnLayout });
     return true;
   }
 
@@ -252,13 +342,19 @@
         parts.push(L("Average: %@", number.format(stats.sum / stats.numbers)));
       }
     }
+    else if (activeFormula) parts.push(`ƒ  ${activeFormula.replace(/\r\n|\r|\n/g, " ")}`);
+    if (status.book && status.book.circular > 0) parts.unshift(`⚠︎ ${L("Circular references: %@", count(status.book.circular))}`);
     if (status.view.filters.length > 0) parts.push(L("Showing %@ of %@", count(status.rows), count(status.dataRows)));
     else parts.push(L("Rows: %@", count(status.rows)));
     parts.push(L("Columns: %@", count(status.columns)));
-    parts.push(status.hasBom ? L("%@ with BOM", status.encoding) : status.encoding);
-    const delimiter = status.delimiter === "\t" ? L("Tab") : status.delimiter === " " ? L("Space") : status.delimiter;
-    parts.push(L("Delimiter: %@", delimiter));
-    parts.push({ lf: "LF", crLf: "CRLF", cr: "CR" }[status.lineEnding]);
+    if (status.isSheet) {
+      parts.push(status.book?.legacy ? L("Excel 97–2003 workbook, view only") : L("Excel workbook"));
+    } else {
+      parts.push(status.hasBom ? L("%@ with BOM", status.encoding) : status.encoding);
+      const delimiter = status.delimiter === "\t" ? L("Tab") : status.delimiter === " " ? L("Space") : status.delimiter;
+      parts.push(L("Delimiter: %@", delimiter));
+      parts.push({ lf: "LF", crLf: "CRLF", cr: "CR" }[status.lineEnding]);
+    }
     void layoutChanged;
     const hidden = grid?.hiddenCount ?? 0;
     if (hidden > 0) parts.push(L("Hidden columns: %@", count(hidden)));
@@ -266,12 +362,15 @@
       const keys = status.view.sort.map((key) => `${grid?.title(key.column) ?? key.column} ${key.ascending ? "↑" : "↓"}`);
       parts.push(L("Sorted by %@", keys.join(", ")));
     }
+    if (status.book && status.book.notComputed > 0) parts.push(L("Formulas Excel will compute: %@", count(status.book.notComputed)));
     return parts.join("   ·   ");
   });
 
   const busy = $derived.by(() => {
     const status = doc.status;
     if (!status) return "";
+    const loading = status.book?.loading;
+    if (loading) return L("Reading “%@”: %@", status.book!.sheets[loading.index]?.name ?? "", `${Math.floor(loading.fraction * 100)} %`);
     if (status.indexing !== null) return L("Reading the file: %@", `${Math.floor(status.indexing * 100)} %`);
     if (exporting > 0) return L("Exporting…");
     if (status.job?.kind === "view") return L("Sorting and filtering…");
@@ -294,13 +393,13 @@
       };
     }
     try {
-      const status = await doc.run("open", { path, ...options });
+      const status = await doc.run("open", { path, ...options, locale: workbookLocale() });
       openSeconds = (performance.now() - started) / 1000;
       reading = options;
       addRecent(path);
       void installMenu();
       // Once per window, as in the macOS app: a guessed encoding or delimiter is shown to check.
-      if (!status.detectionConfident && !askedAboutDetection && !benching) {
+      if (!status.isSheet && !status.detectionConfident && !askedAboutDetection && !benching) {
         askedAboutDetection = true;
         checking = { uncertain: true };
       }
@@ -317,7 +416,9 @@
           multiple: false,
           directory: false,
           filters: [
+            { name: L("CSV and Excel"), extensions: ["csv", "tsv", "tab", "txt", "xlsx", "xlsm", "xls"] },
             { name: "CSV", extensions: ["csv", "tsv", "tab", "txt"] },
+            { name: L("Excel workbook"), extensions: ["xlsx", "xlsm", "xls"] },
             { name: "*", extensions: ["*"] },
           ],
         })
@@ -374,7 +475,7 @@
       : await askText(message, status.path?.replace(/[^\\/]*$/, "") ?? "", L("Compare"));
     if (!path) return;
     try {
-      const { id } = await call<{ id: number }>("diff_start", { path });
+      const { id } = await call<{ id: number }>("diff_start", { path, locale: workbookLocale().display });
       diffWindow(id, windowName(), name(status.path), name(path), L("%@ and %@", name(status.path), name(path)));
     } catch (error) {
       await report(error);
@@ -489,6 +590,7 @@
   /** Asks for the format and then the file, and saves in that format from now on. */
   async function saveAs(): Promise<boolean> {
     if (!doc.status) return false;
+    if (doc.status.book) return saveBookAs();
     const current = await call<SaveFormat>("save_format");
     const format = await new Promise<SaveFormat | null>((answer) => (saving = { format: current, answer }));
     if (!format) return false;
@@ -500,6 +602,26 @@
     if (!path) return false;
     try {
       await doc.run("save_as", { path, format });
+      addRecent(path);
+      void installMenu();
+      return true;
+    } catch (error) {
+      await report(error);
+      return false;
+    }
+  }
+
+  /** A workbook saves as itself, in its own format: no CSV options (WorkbookDocument.saveAs). */
+  async function saveBookAs(): Promise<boolean> {
+    const status = doc.status;
+    if (!status?.book || status.book.legacy) return false;
+    const extension = /\.xlsm$/i.test(status.path ?? "") ? "xlsm" : "xlsx";
+    const path = inTauri
+      ? await chooseSavePath({ defaultPath: name(status.path), filters: [{ name: L("Excel workbook"), extensions: [extension] }] })
+      : await askText(L("Save As…"), status.path ?? `${name(status.path)}.${extension}`, L("Save"));
+    if (!path) return false;
+    try {
+      await doc.run("save_book_as", { path });
       addRecent(path);
       void installMenu();
       return true;
@@ -590,10 +712,36 @@
     return answer === "discard" || (await save());
   }
 
-  /** Whether the document can change now; says why not in the status bar. */
-  function changeable(): boolean {
+  /** An Excel 97–2003 workbook, open for viewing only. */
+  const readOnly = () => !!doc.status?.book?.legacy;
+
+  /**
+   * Says why a workbook open for viewing only does not change, and offers to export the sheet,
+   * which can be changed (CSVDocument.presentReadOnlyNotice).
+   */
+  async function readOnlyNotice() {
+    const answer = await ask(
+      L("Excel 97–2003 workbooks open for viewing only"),
+      L("CommaEditor cannot save workbooks in this old format. To change the data, export the sheet with File ▸ Export As ▸ Excel Workbook (XLSX) or File ▸ Export… as CSV, and open the copy."),
+      [
+        { label: L("Export…"), value: "export" },
+        { label: L("OK"), value: "ok", default: true, cancel: true },
+      ],
+    );
+    if (answer === "export") await exportCopy(false);
+  }
+
+  /**
+   * Whether the document can change now; says why not in the status bar. `edits` is false for
+   * what only changes how the table shows, which a workbook open for viewing only takes too.
+   */
+  function changeable(edits = true): boolean {
     const status = doc.status;
     if (!status) return false;
+    if (edits && status.book?.legacy) {
+      void readOnlyNotice();
+      return false;
+    }
     if (status.indexing !== null) {
       doc.problem = `${L("The file is still being read.")} ${L("Changes and saving are possible once the whole file is read; the progress is in the status bar.")}`;
       return false;
@@ -612,19 +760,50 @@
     return rows[0]?.[cell.column] ?? "";
   }
 
-  /** Edits a cell: in place, or in a window when its value has line breaks or `window` asks. */
+  /**
+   * Edits a cell: in place, or in a window when its value has line breaks or `window` asks. A
+   * cell of a sheet is edited as its formula, or as what was typed into it when it shows that
+   * in a number format; a cell a merged area hides, as the area's first cell, as in Excel.
+   */
   async function edit(cell: Cell, typed?: string, inWindow = false) {
     if (!grid || !editor || !changeable()) return;
-    const value = await cellValue(cell);
+    if (typed !== undefined && !inWindow) {
+      // Typing replaces the value: the editor opens at once, so that no key typed next is lost.
+      // A cell a merged area hides hands the typing on to the area's first cell.
+      editShown = grid.value(cell) ?? "";
+      editor.start(cell, editShown, typed);
+      if (!doc.status?.isSheet) return;
+      const text = await call<{ merged: Cell | null }>("cell_text", cell).catch(() => null);
+      const target = editor.target;
+      if (text?.merged && target?.row === cell.row && target.column === cell.column) {
+        editor.retarget(text.merged);
+        grid.select(Selection.at(text.merged));
+      }
+      return;
+    }
+    const shown = await cellValue(cell);
+    let value = shown;
+    if (doc.status?.isSheet) {
+      const text = await call<{ formula: string | null; input: string | null; merged: Cell | null }>("cell_text", cell).catch(() => null);
+      if (text?.merged) {
+        grid.select(Selection.at(text.merged));
+        await edit(text.merged, typed, inWindow);
+        return;
+      }
+      value = text?.formula ?? text?.input ?? shown;
+    }
+    editShown = shown;
     if (inWindow || value.includes("\n") || value.includes("\r")) {
       sheet = { cell, heading: L("Row %ld, column %@", cell.row + 1, grid.title(cell.column)), value };
       return;
     }
     editor.start(cell, value, typed);
   }
+  /** The value shown in the cell being edited: typing it again changes nothing. */
+  let editShown = "";
 
   async function write(cell: Cell, value: string | null, move: Move) {
-    if (value !== null) await doc.attempt(() => doc.run("set_cell", { row: cell.row, column: cell.column, value }));
+    if (value !== null && value !== editShown) await doc.attempt(() => doc.run("set_cell", { row: cell.row, column: cell.column, value }));
     if (!grid || !move) return;
     const to = {
       row: move === "down" ? cell.row + 1 : cell.row,
@@ -704,10 +883,22 @@
     grid.select(row === null ? null : Selection.at({ row, column: cursor.column }));
   }
 
+  /**
+   * The first row names the columns, or is a row of the table. In a workbook it is CSV mode, the
+   * setting of every sheet: the selections kept for the other sheets move with their rows.
+   * Frozen rows stay the same rows of the file.
+   */
   async function toggleHeader() {
     const status = doc.status;
-    if (!status || !changeable()) return;
+    if (!status || !changeable(false)) return;
+    const frozenTop = (grid?.frozenRows ?? 0) + (status.hasHeader ? 1 : 0);
+    const shift = status.hasHeader ? 1 : -1;
     await keepingRow(() => doc.run("set_has_header", { hasHeader: !status.hasHeader }));
+    for (const state of sheetStates.values()) {
+      if (state.selection) state.selection = state.selection.shifted(shift);
+    }
+    grid?.freezeRows(Math.max(0, Math.min(frozenTop - (doc.status?.hasHeader ? 1 : 0), (doc.status?.rows ?? 1) - 1)));
+    layoutChanged += 1;
   }
 
   /** Copies the selection as tab-separated text, which spreadsheets paste as cells; or cuts it. */
@@ -852,7 +1043,7 @@
       if (!result) return;
       grid.insertColumn(at);
       grid.update();
-      layouts.push({ before, after: doc.status.change, old, next: grid.columnLayout });
+      layouts.push({ sheet: doc.status.book?.index ?? null, before, after: doc.status.change, old, next: grid.columnLayout });
       grid.select(Selection.at({ row, column: at }));
       report = result.report;
     } else {
@@ -1099,7 +1290,7 @@
     const values = rows[0] ?? [];
     const record = await call<number | null>("record", { row: cursor.row });
     if (asked !== cardAsked) return;
-    const number = record === null ? cursor.row + 1 : record - (status.hasHeader ? 1 : 0) + 1;
+    const number = record === null ? cursor.row + 1 : record - (status.hasHeader && !status.isSheet ? 1 : 0) + 1;
     card = {
       row: cursor.row,
       title: L("Row %@", count(number)),
@@ -1477,13 +1668,13 @@
       {
         id: "checkEncoding",
         label: L("Check Encoding and Delimiter…"),
-        enabled: () => !!status()?.path,
+        enabled: () => !!status()?.path && !status()?.isSheet,
         run: () => (checking = { uncertain: false }),
       },
       {
         id: "reopenEncoding:auto",
         label: L("Detect Automatically"),
-        enabled: () => !!status()?.path,
+        enabled: () => !!status()?.path && !status()?.isSheet,
         checked: () => reading.encoding === null,
         run: () => void reopen(null, reading.delimiter),
       },
@@ -1491,7 +1682,7 @@
         (encoding): Command => ({
           id: `reopenEncoding:${encoding}`,
           label: encodingName(encoding),
-          enabled: () => !!status()?.path,
+          enabled: () => !!status()?.path && !status()?.isSheet,
           checked: () => reading.encoding === encoding,
           run: () => void reopen(encoding, reading.delimiter),
         }),
@@ -1499,7 +1690,7 @@
       {
         id: "reopenDelimiter:auto",
         label: L("Detect Automatically"),
-        enabled: () => !!status()?.path,
+        enabled: () => !!status()?.path && !status()?.isSheet,
         checked: () => reading.delimiter === null,
         run: () => void reopen(reading.encoding, null),
       },
@@ -1507,7 +1698,7 @@
         (delimiter): Command => ({
           id: `reopenDelimiter:${delimiter}`,
           label: delimiterName(delimiter),
-          enabled: () => !!status()?.path,
+          enabled: () => !!status()?.path && !status()?.isSheet,
           checked: () => reading.delimiter === delimiter,
           run: () => void reopen(reading.encoding, delimiter),
         }),
@@ -1745,6 +1936,23 @@
         run: () => moveRecord(1),
       },
       {
+        id: "previousSheet",
+        label: L("Previous Sheet"),
+        // ⌃PageUp on a Mac, Ctrl+PageUp elsewhere, as in Excel.
+        shortcut: mac ? { key: "PageUp", control: true } : { key: "PageUp", command: true },
+        inFields: true,
+        enabled: () => neighbourSheet(-1) !== null,
+        run: () => void chooseSheet(neighbourSheet(-1)!),
+      },
+      {
+        id: "nextSheet",
+        label: L("Next Sheet"),
+        shortcut: mac ? { key: "PageDown", control: true } : { key: "PageDown", command: true },
+        inFields: true,
+        enabled: () => neighbourSheet(1) !== null,
+        run: () => void chooseSheet(neighbourSheet(1)!),
+      },
+      {
         id: "fitColumns",
         label: L("Fit Column Width"),
         shortcut: { key: "0", command: true, alt: true },
@@ -1888,12 +2096,97 @@
         run: () => void bench().then((text) => (benchText = text)),
       },
     ];
+    // A workbook open for viewing only takes no changes; a sheet's rows and columns change as
+    // its workbook lets them (GridViewController.validateMenuItem).
+    for (const command of list) {
+      const enabled = command.enabled;
+      const editing = EDITING.has(command.id) || command.id.startsWith("text:") || command.id.startsWith("recipe:");
+      command.enabled = () => (!editing || !readOnly()) && sheetAllows(command.id) && (enabled?.() ?? true);
+    }
     // Windows and Linux redo with Ctrl-Y too.
     if (!mac) list.push({ ...list.find((command) => command.id === "redo")!, id: "redoY", shortcut: { key: "y", command: true } });
     for (const [index, path] of recentFiles().entries()) {
       list.push({ id: `recent:${index}`, label: `${name(path)} — ${path.slice(0, -name(path).length - 1)}`, run: () => void openPaths([path]) });
     }
     return list;
+  }
+
+  /** Commands that change the file, which a document open for viewing only does not take. */
+  const EDITING = new Set([
+    "save",
+    "saveAs",
+    "clear",
+    "editCell",
+    "editInWindow",
+    "fillDown",
+    "insertRowAbove",
+    "insertRowBelow",
+    "deleteRows",
+    "insertColumnLeft",
+    "insertColumnRight",
+    "deleteColumn",
+    "renameColumn",
+    "reorderRows",
+    "fillFromAbove",
+    "fillEmpty",
+    "splitColumn",
+    "mergeColumns",
+    "computedColumn",
+    "fixGarbled",
+    "removeDuplicates",
+    "moveRowsUp",
+    "moveRowsDown",
+    "moveColumnLeft",
+    "moveColumnRight",
+    "recording",
+  ]);
+
+  /**
+   * Whether a sheet takes a command: rows and columns move with the references to them, unless
+   * tables, drawings, comments, charts or pivot tables hold them where they are; then only
+   * adding at the end is left.
+   */
+  function sheetAllows(id: string): boolean {
+    const status = doc.status;
+    const book = status?.book;
+    if (!status?.isSheet || !book) return true;
+    const locked = book.structureLocked;
+    const cursor = grid?.selection?.cursor;
+    switch (id) {
+      case "insertColumnRight":
+        return !locked || cursor?.column === status.columns - 1;
+      case "insertColumnLeft":
+      case "deleteColumn":
+      case "splitColumn":
+      case "mergeColumns":
+      case "moveColumnLeft":
+      case "moveColumnRight":
+        return !locked;
+      case "insertRowBelow":
+        return !(locked && book.rowsFixed) || cursor?.row === status.rows - 1;
+      case "insertRowAbove":
+      case "deleteRows":
+        return !(locked && book.rowsFixed);
+      case "moveRowsUp":
+      case "moveRowsDown":
+      case "reorderRows":
+        return !locked || !book.rowsFixed;
+      case "removeDuplicates":
+        return !book.rowsFixed;
+      default:
+        return true;
+    }
+  }
+
+  /** The visible table before or after the shown sheet (WorkbookDocument.neighbourSheet). */
+  function neighbourSheet(step: 1 | -1): number | null {
+    const book = doc.status?.book;
+    if (!book) return null;
+    for (let index = book.index + step; index >= 0 && index < book.sheets.length; index += step) {
+      const sheet = book.sheets[index];
+      if (sheet.isTable && sheet.visibility === "visible") return index;
+    }
+    return null;
   }
 
   let commands = new Commands(commandList());
@@ -2017,6 +2310,8 @@
         "toggleCard",
         "previousRecord",
         "nextRecord",
+        "previousSheet",
+        "nextSheet",
         "-",
         "freezeColumns",
         "unfreezeColumns",
@@ -2237,6 +2532,7 @@
       if (selected && selected.cursor.column !== column) refreshProfile();
       void repairCursorMoved();
       void refreshCard();
+      void inspectCell();
     };
     const parameters = new URLSearchParams(location.search);
     void loadRecipes();
@@ -2373,6 +2669,17 @@
     />
   {/if}
   </div>
+  {#if doc.status?.book}
+    <SheetTabs
+      sheets={doc.status.book.sheets}
+      selected={doc.status.book.index}
+      loading={doc.status.book.loading?.index ?? null}
+      csvMode={doc.status.book.csvMode}
+      modeEnabled={idle() && doc.status.dataRows + (doc.status.hasHeader ? 1 : 0) > 0}
+      select={(index) => void chooseSheet(index)}
+      setMode={() => void toggleHeader()}
+    />
+  {/if}
   <footer class="status">
     <span class="info">{doc.problem || status}</span>
     {#if problemsLabel}
@@ -2380,7 +2687,7 @@
     {/if}
     {#if busy}
       <span class="busy">{busy}</span>
-      {#if doc.status?.job}
+      {#if doc.status?.job || doc.status?.book?.loading}
         <button class="small" onclick={() => doc.run("cancel_job")}>{L("Cancel")}</button>
       {/if}
     {/if}
