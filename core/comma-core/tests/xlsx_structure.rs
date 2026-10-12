@@ -169,6 +169,36 @@ fn drawings_keep_rows_in_place() {
 }
 
 #[test]
+fn comments_and_shapes_follow_rows() {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sheet = workbook.add_worksheet();
+    for row in 0..10u32 {
+        sheet.write_number(row, 0, f64::from(row)).unwrap();
+    }
+    // Notes on B3 and B6, a text box from D2 down to G8.
+    sheet.insert_note(2, 1, &rust_xlsxwriter::Note::new("Third")).unwrap();
+    sheet.insert_note(5, 1, &rust_xlsxwriter::Note::new("Sixth")).unwrap();
+    sheet.insert_shape(1, 3, &rust_xlsxwriter::Shape::textbox().set_text("Box")).unwrap();
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    let mut document = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    assert!(!document.sheet_structure_locked());
+    // Two rows before row 2, then row 8 (the sixth, as it was) goes; a column before A, so
+    // the box, right of the cells read, moves too.
+    workbook.insert(&mut [(0, &mut document)], 0, Axis::Rows, 1, 2).unwrap();
+    workbook.delete(&mut [(0, &mut document)], 0, Axis::Rows, 7, 1).unwrap();
+    workbook.insert(&mut [(0, &mut document)], 0, Axis::Columns, 0, 1).unwrap();
+    let saved = workbook.to_bytes(&[(0, &document)]).unwrap();
+    let comments = part(&saved, "xl/comments1.xml");
+    assert!(comments.contains(r#"ref="C5""#) && !comments.contains("Sixth"), "{comments}");
+    let notes = part(&saved, "xl/drawings/vmlDrawing1.vml");
+    assert!(notes.contains("<x:Row>4</x:Row><x:Column>2</x:Column>") && notes.matches("<v:shape ").count() == 1, "{notes}");
+    let drawing = part(&saved, "xl/drawings/drawing1.xml");
+    assert!(drawing.contains("<xdr:from><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>3</xdr:row>"), "{drawing}");
+    let reopened = Workbook::from_bytes(saved).unwrap().read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    assert_eq!(reopened.row_count(), 11);
+}
+
+#[test]
 fn shared_formulas_are_written_on_their_own_when_rows_move() {
     // D2:D4 share B2*2, as Excel writes a formula filled down.
     let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>

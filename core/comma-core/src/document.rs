@@ -225,6 +225,8 @@ pub(crate) struct SheetSource {
     pub formulas_moved: Arc<AtomicBool>,
     /// Rows read from the sheet.
     pub rows: usize,
+    /// Columns read from the sheet; set when the document is made.
+    pub columns: usize,
     /// How values were shown when read, so that saving can tell which ones changed.
     pub locale: crate::xlsx::DisplayLocale,
     /// Shared by the sheets of a workbook: a formula was entered, which may refer to rows of
@@ -354,8 +356,9 @@ impl Document {
 
     /// A sheet of a workbook, one list of fields per row. It has no bytes of its own: every
     /// field holds its value, and each row knows the row of the file it was read from.
-    pub(crate) fn from_sheet(rows: Vec<Vec<Field>>, source: SheetSource) -> Self {
+    pub(crate) fn from_sheet(rows: Vec<Vec<Field>>, mut source: SheetSource) -> Self {
         let mut document = Self::new_empty();
+        source.columns = rows.iter().map(Vec::len).max().unwrap_or(0);
         document.sheet = Some(Arc::new(source));
         if rows.is_empty() {
             // One empty row, standing for the sheet's first row, so an untouched sheet stays so.

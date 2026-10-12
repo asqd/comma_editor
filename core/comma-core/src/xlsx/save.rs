@@ -14,7 +14,7 @@ use quick_xml::events::Event;
 
 use super::refs::MAX_ROWS;
 use super::sheet::{self, Context, cell_attributes};
-use super::{Source, Workbook, xml};
+use super::{Source, Workbook, anchors, xml};
 use crate::document::{Computed, Document, Field};
 use crate::error::{Result, WorkbookError};
 use crate::profile::date_value;
@@ -205,6 +205,27 @@ impl Workbook {
             for table in self.tables().iter().filter(|table| table.sheet == index) {
                 if let Some(text) = package.read_text(&table.part)? {
                     replaced.insert(table.part.to_lowercase(), remap_table(&text, &own, &remap).into_bytes());
+                }
+            }
+        }
+        // Comments and notes go with the contents of their cells, as links do; pictures and
+        // shapes keep to the cells under their corners.
+        for &(index, document) in sheets {
+            let (rows_map, columns_map, sources_map) = (AxisMap::rows(document), AxisMap::columns(document), AxisMap::sources(document));
+            if rows_map.is_identity() && columns_map.is_identity() && sources_map.is_identity() {
+                continue;
+            }
+            let Some(part) = self.sheets.get(index).and_then(|sheet| sheet.part.as_deref()) else { continue };
+            for relationship in package.relationships(part)?.iter().filter(|relationship| !relationship.external) {
+                let remap: fn(&str, &AxisMap, &AxisMap, &AxisMap) -> String = match relationship.kind.as_str() {
+                    "comments" | "threadedComment" => |xml, _, columns, sources| anchors::remap_comments(xml, sources, columns),
+                    "vmlDrawing" => |xml, rows, columns, sources| anchors::remap_vml(xml, rows, columns, (sources, columns)),
+                    "drawing" => |xml, rows, columns, _| anchors::remap_drawing(xml, rows, columns),
+                    _ => continue,
+                };
+                if let Some(text) = package.read_text(&relationship.target)? {
+                    let moved = remap(&text, &rows_map, &columns_map, &sources_map);
+                    replaced.insert(relationship.target.to_lowercase(), moved.into_bytes());
                 }
             }
         }
@@ -478,14 +499,16 @@ impl AxisMap {
 
     /// Where the rows of the file whose contents the rows hold are: as `rows`, unless sorting
     /// brought contents to other places.
-    fn sources(document: &Document) -> Self {
+    pub(crate) fn sources(document: &Document) -> Self {
         let read = document.sheet.as_ref().map_or(0, |sheet| sheet.rows);
         Self::new(document.records.iter().map(|record| record.source()), read)
     }
 
     pub(crate) fn columns(document: &Document) -> Self {
-        let read = document.column_origins.len();
-        Self::new((0..read.max(document.column_count())).map(|column| document.column_origin(column)), read)
+        // Columns inserted among those read lengthen the origins; they were not read.
+        let read = document.sheet.as_ref().map_or(document.column_origins.len(), |sheet| sheet.columns);
+        let shown = document.column_origins.len().max(document.column_count());
+        Self::new((0..shown).map(|column| document.column_origin(column)), read)
     }
 
     fn new(origins: impl Iterator<Item = Option<usize>>, read: usize) -> Self {
@@ -511,11 +534,17 @@ impl AxisMap {
     }
 
     /// Where one row or column went.
-    fn index(&self, old: u32) -> Option<u32> {
+    pub(crate) fn index(&self, old: u32) -> Option<u32> {
         match self.new_of_old.get(old as usize) {
             Some(new) => *new,
             None => u32::try_from(i64::from(old) + self.tail).ok(),
         }
+    }
+
+    /// Where a place on a row or column went: that row, or the next one left if it was deleted.
+    pub(crate) fn point(&self, old: u32) -> u32 {
+        let read = self.new_of_old.len() as u32;
+        (old..read).find_map(|index| self.index(index)).or_else(|| self.index(read.max(old))).unwrap_or(0)
     }
 
     /// Where a range went: from its first row left to its last; `None` if none is left.
@@ -921,7 +950,7 @@ fn open_tag(tag: &str) -> String {
 }
 
 /// The value of an attribute in a start tag, by its name without a prefix.
-fn attribute_value(tag: &str, name: &str) -> Option<String> {
+pub(super) fn attribute_value(tag: &str, name: &str) -> Option<String> {
     attributes(tag).into_iter().find(|attribute| attribute.name == name).map(|attribute| attribute.value.to_owned())
 }
 
@@ -966,7 +995,7 @@ fn attributes(tag: &str) -> Vec<Attribute<'_>> {
 
 /// A start tag with an attribute set to `value`, added at the end if it is not there, or
 /// taken out with `None`.
-fn set_attribute(tag: &str, name: &str, value: Option<&str>) -> String {
+pub(super) fn set_attribute(tag: &str, name: &str, value: Option<&str>) -> String {
     let existing = attributes(tag).into_iter().find(|attribute| attribute.name == name);
     match (existing, value) {
         (Some(attribute), Some(value)) => {
@@ -1211,7 +1240,7 @@ fn compute_on_load(workbook: &str) -> String {
 }
 
 /// Where an element with this local name starts, `<name` or `<prefix:name`.
-fn find_element(xml: &str, name: &str) -> Option<usize> {
+pub(super) fn find_element(xml: &str, name: &str) -> Option<usize> {
     let mut from = 0;
     while let Some(offset) = xml[from..].find('<') {
         let start = from + offset;

@@ -248,12 +248,8 @@ impl Reading {
             "v" if !empty => return Next::Value,
             "is" if !empty => return Next::InlineString,
             "conditionalFormatting" | "dataValidation" | "hyperlink" | "autoFilter" => self.refers_to_rows = true,
-            // Tables follow rows and columns when saved; drawings and comments do not yet.
-            "tablePart" => self.refers_to_rows = true,
-            "drawing" | "legacyDrawing" => {
-                self.refers_to_rows = true;
-                self.locked = true;
-            }
+            // Tables, drawings and comments follow rows and columns when saved.
+            "tablePart" | "drawing" | "legacyDrawing" => self.refers_to_rows = true,
             "f" => {
                 self.refers_to_rows = true;
                 let owned = |name: &str| attribute(element, name).map(|value| value.into_owned());

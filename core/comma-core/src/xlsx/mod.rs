@@ -3,6 +3,7 @@
 //! numbers and dates in the cell's number format, shared and formatted strings as text, and
 //! cells with a formula keeping it along with its last result.
 
+mod anchors;
 mod calc;
 mod numfmt;
 mod package;
@@ -379,6 +380,7 @@ impl Workbook {
                     structure_locked: true,
                     formulas_moved: Arc::default(),
                     rows: rows.len(),
+                    columns: 0,
                     locale: locale.clone(),
                     formulas_entered: Arc::clone(&self.formulas_entered),
                     merged: layout.merged.clone(),
@@ -416,6 +418,7 @@ impl Workbook {
                     structure_locked: content.locked || self.locked,
                     formulas_moved: Arc::default(),
                     rows,
+                    columns: 0,
                     locale: locale.clone(),
                     formulas_entered: Arc::clone(&self.formulas_entered),
                     merged: content.layout.merged.clone(),
