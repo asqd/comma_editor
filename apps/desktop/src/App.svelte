@@ -1,13 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, save as chooseSavePath } from "@tauri-apps/plugin-dialog";
   import { Grid, type TableSource } from "./grid/Grid";
   import { formatBench, runBench } from "./grid/bench";
-  import { call, inTauri, type RangeStats, type Status } from "./lib/api";
+  import { call, inTauri, type RangeStats, type SaveFormat, type Status } from "./lib/api";
   import { Selection, type Cell } from "./grid/selection";
   import { CellEditor, type Move } from "./grid/editor";
   import CellSheet from "./CellSheet.svelte";
+  import Alert, { type Button } from "./Alert.svelte";
+  import SaveSheet from "./SaveSheet.svelte";
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
@@ -18,6 +20,16 @@
   let host: HTMLElement;
   let grid: Grid | null = null;
   let editor: CellEditor | null = null;
+  /** A question or a problem shown over the table, and who waits for the answer. */
+  let alert = $state<{
+    message: string;
+    detail?: string;
+    buttons: Button[];
+    field?: string;
+    answer: (value: string, text: string) => void;
+  } | null>(null);
+  /** The format of a file being saved, asked before the file is chosen. */
+  let saving = $state<{ format: SaveFormat; answer: (format: SaveFormat | null) => void } | null>(null);
   /** A value with line breaks being edited in a window of its own. */
   let sheet = $state<{ cell: Cell; heading: string; value: string } | null>(null);
   /** The status the view shows rows for; the rows reload when it differs in what they show. */
@@ -136,7 +148,7 @@
             { name: "*", extensions: ["*"] },
           ],
         })
-      : prompt(L("Open…"));
+      : await askText(L("Open…"), doc.status?.path ?? "", L("Open"));
     if (path) await show(path);
   }
 
@@ -172,6 +184,76 @@
     } catch (problem) {
       await benchDone(false, `bench failed: ${problem}`);
     }
+  }
+
+  function ask(message: string, detail: string | undefined, buttons: Button[]): Promise<string> {
+    return new Promise((answer) => (alert = { message, detail, buttons, answer }));
+  }
+
+  /** Asks for a line of text; `null` when cancelled. */
+  function askText(message: string, field: string, action: string): Promise<string | null> {
+    const buttons = [
+      { label: L("Cancel"), value: "cancel", cancel: true },
+      { label: action, value: "ok", default: true },
+    ];
+    return new Promise((answer) => (alert = { message, buttons, field, answer: (value, text) => answer(value === "ok" ? text : null) }));
+  }
+
+  function report(error: unknown): Promise<string> {
+    const problem = describe(error);
+    return ask(problem.message, problem.detail, [{ label: L("OK"), value: "ok", default: true, cancel: true }]);
+  }
+
+  /** Saves to the document's file, or asks where to when it has none. */
+  async function save(): Promise<boolean> {
+    const status = doc.status;
+    if (!status) return false;
+    if (!status.path) return saveAs();
+    try {
+      await doc.run("save");
+      return true;
+    } catch (error) {
+      await report(error);
+      return false;
+    }
+  }
+
+  /** Asks for the format and then the file, and saves in that format from now on. */
+  async function saveAs(): Promise<boolean> {
+    if (!doc.status) return false;
+    const current = await call<SaveFormat>("save_format");
+    const format = await new Promise<SaveFormat | null>((answer) => (saving = { format: current, answer }));
+    if (!format) return false;
+    const extension = format.delimiter === "\t" ? "tsv" : "csv";
+    const base = name(doc.status.path).replace(/\.[^.]*$/, "");
+    const path = inTauri
+      ? await chooseSavePath({ defaultPath: `${base}.${extension}`, filters: [{ name: extension.toUpperCase(), extensions: [extension] }] })
+      : await askText(L("Save As…"), doc.status.path ?? `${base}.${extension}`, L("Save"));
+    if (!path) return false;
+    try {
+      await doc.run("save_as", { path, format });
+      return true;
+    } catch (error) {
+      await report(error);
+      return false;
+    }
+  }
+
+  /** Before a window with changes closes: save them, drop them, or keep the window. */
+  async function confirmClose(): Promise<boolean> {
+    const status = doc.status;
+    if (!status?.dirty) return true;
+    const answer = await ask(
+      L("Do you want to save the changes made to the document “%@”?", name(status.path)),
+      L("Your changes will be lost if you don’t save them."),
+      [
+        { label: L("Don’t Save"), value: "discard" },
+        { label: L("Cancel"), value: "cancel", cancel: true },
+        { label: L("Save…"), value: "save", default: true },
+      ],
+    );
+    if (answer === "cancel") return false;
+    return answer === "discard" || (await save());
   }
 
   /** Whether the document can change now; says why not in the status bar. */
@@ -262,6 +344,11 @@
       return;
     }
     const command = mac ? event.metaKey : event.ctrlKey;
+    if (command && !event.altKey && event.code === "KeyS" && doc.open) {
+      event.preventDefault();
+      void (event.shiftKey ? saveAs() : save());
+      return;
+    }
     if (command && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "o") {
       event.preventDefault();
       void choose();
@@ -279,6 +366,16 @@
       selection = selected;
       void measure(selected);
     };
+    if (inTauri) {
+      void getCurrentWindow().onCloseRequested(async (event) => {
+        event.preventDefault();
+        if (await confirmClose()) await getCurrentWindow().destroy();
+      });
+    } else {
+      addEventListener("beforeunload", (event) => {
+        if (doc.status?.dirty) event.preventDefault();
+      });
+    }
     if (inTauri) {
       void import("./lib/bench-launch").then(({ launch }) =>
         launch().then(({ path, bench }) => {
@@ -319,6 +416,31 @@
       {/if}
     {/if}
   </footer>
+  {#if alert}
+    <Alert
+      message={alert.message}
+      detail={alert.detail}
+      buttons={alert.buttons}
+      field={alert.field}
+      choose={(value, text) => {
+        const answer = alert!.answer;
+        alert = null;
+        grid?.focus();
+        answer(value, text);
+      }}
+    />
+  {/if}
+  {#if saving}
+    <SaveSheet
+      format={saving.format}
+      choose={(format) => {
+        const answer = saving!.answer;
+        saving = null;
+        grid?.focus();
+        answer(format);
+      }}
+    />
+  {/if}
   {#if sheet}
     <CellSheet
       heading={sheet.heading}

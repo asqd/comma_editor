@@ -11,12 +11,17 @@ const desktop: Record<string, string> = {
   "Timing…": "Замер…",
   "Copy": "Скопировать",
   "Close": "Закрыть",
+  "Open": "Открыть",
   "Demo in a browser: rows are made up as they are shown": "Демо в браузере: строки придумываются на лету",
   "opened in %@ s": "открытие %@ с",
   "first screen in %@ s": "первый экран %@ с",
   "frame p95 %@ ms": "кадр p95 %@ мс",
   "request p95 %@ ms": "запрос p95 %@ мс",
   "Edited": "Изменён",
+  // What AppKit says for the macOS app.
+  "Do you want to save the changes made to the document “%@”?": "Сохранить изменения в документе «%@»?",
+  "Your changes will be lost if you don’t save them.": "Если не сохранить их, изменения будут потеряны.",
+  "Don’t Save": "Не сохранять",
 };
 
 function parseStrings(text: string): Record<string, string> {
