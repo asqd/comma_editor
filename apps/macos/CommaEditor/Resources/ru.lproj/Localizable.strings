@@ -603,3 +603,12 @@
 "Windows-1253 (Greek)" = "Windows-1253 (греческая)";
 "Windows-1254 (Turkish)" = "Windows-1254 (турецкая)";
 "Windows-1257 (Baltic)" = "Windows-1257 (балтийская)";
+
+/* Accessibility */
+"sorted ascending" = "по возрастанию";
+"sorted descending" = "по убыванию";
+"filtered" = "с фильтром";
+"Previous record" = "Предыдущая запись";
+"Next record" = "Следующая запись";
+"Range" = "Интервал";
+"Distribution from %@ to %@" = "Распределение от %1$@ до %2$@";

@@ -109,9 +109,11 @@ struct RecordCardView: View {
                 Spacer()
                 ControlGroup {
                     Button { model.onPrevious?() } label: { Image(systemName: "chevron.up") }
+                        .accessibilityLabel(L("Previous record"))
                         .disabled(!model.canGoBack)
                         .help(L("Previous record (⌘[)"))
                     Button { model.onNext?() } label: { Image(systemName: "chevron.down") }
+                        .accessibilityLabel(L("Next record"))
                         .disabled(!model.canGoForward)
                         .help(L("Next record (⌘])"))
                 }

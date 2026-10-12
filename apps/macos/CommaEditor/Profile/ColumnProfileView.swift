@@ -83,18 +83,20 @@ struct ColumnProfileView: View {
             Text(label).foregroundStyle(.secondary)
             Text(value).monospacedDigit().textSelection(.enabled)
         }
+        .accessibilityElement(children: .combine)
     }
 
     private func histogram(_ profile: ColumnProfile) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(L("Distribution")).font(.subheadline.weight(.semibold))
             Chart(Array(profile.histogram.enumerated()), id: \.offset) { bin in
-                BarMark(x: .value("Bin", bin.offset), y: .value("Count", bin.element))
+                BarMark(x: .value(L("Range"), bin.offset + 1), y: .value(L("Rows"), bin.element))
                     .foregroundStyle(Color.accentColor.opacity(0.75))
             }
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
             .frame(height: 64)
+            .accessibilityLabel(L("Distribution from %@ to %@", profile.min ?? "", profile.max ?? ""))
             HStack {
                 Text(profile.min ?? "")
                 Spacer()

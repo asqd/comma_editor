@@ -14,7 +14,7 @@ extension GridViewController {
 
     func configureProblemsButton() {
         problemsButton.isBordered = false
-        problemsButton.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: nil)
+        problemsButton.image = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: L("Problems"))
         problemsButton.contentTintColor = .systemOrange
         problemsButton.imagePosition = .imageLeading
         problemsButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)

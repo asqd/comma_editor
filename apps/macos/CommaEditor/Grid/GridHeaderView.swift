@@ -77,6 +77,20 @@ final class GridHeaderCell: NSTableHeaderCell {
     private static let iconWidth: CGFloat = 16
     private static let gap: CGFloat = 3
 
+    /// VoiceOver reads the column with its sort and filter, which the icons only show.
+    override func accessibilityLabel() -> String? {
+        var parts = [stringValue]
+        switch sort {
+        case .ascending: parts.append(L("sorted ascending"))
+        case .descending: parts.append(L("sorted descending"))
+        case .none: break
+        }
+        if isFiltered {
+            parts.append(L("filtered"))
+        }
+        return parts.joined(separator: ", ")
+    }
+
     static func sortRect(in frame: NSRect) -> NSRect {
         NSRect(x: frame.maxX - iconWidth - 5, y: frame.minY, width: iconWidth, height: frame.height)
     }

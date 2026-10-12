@@ -7,8 +7,13 @@ import AppKit
 // under them, so a row is the same visible row in all four.
 
 /// A scroll view that does not scroll itself: wheel and trackpad go to the table under it.
+/// VoiceOver reads the rows in the table under it, so it is left out for VoiceOver.
 final class ForwardingScrollView: NSScrollView {
     weak var target: NSScrollView?
+
+    override func isAccessibilityElement() -> Bool { false }
+
+    override func accessibilityChildren() -> [Any]? { [] }
 
     override func scrollWheel(with event: NSEvent) {
         if let target {
