@@ -2,6 +2,9 @@
 
 export const mac = navigator.userAgent.includes("Mac");
 
+/** The app's name: CommaEditor W on a Mac, to tell it from the native CommaEditor there. */
+export const appName = mac ? "CommaEditor W" : "CommaEditor";
+
 export interface Shortcut {
   /** `KeyboardEvent.key` for named keys (ArrowUp, Backspace), the letter for letters. */
   key: string;

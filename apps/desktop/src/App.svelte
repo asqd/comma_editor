@@ -36,7 +36,7 @@
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
   import { readClipboard, writeClipboard, writeClipboardHtml } from "./lib/clipboard";
-  import { shortcutLabel } from "./lib/keys";
+  import { appName, shortcutLabel } from "./lib/keys";
   import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
   import Toolbar, { type ToolbarItem } from "./Toolbar.svelte";
   import { Commands, fieldFocused, labelOf, type Command } from "./lib/commands";
@@ -1514,7 +1514,7 @@
       ),
       {
         id: "quit",
-        label: L("Quit %@", "CommaEditor"),
+        label: L("Quit %@", appName),
         shortcut: { key: "q", command: true },
         inFields: true,
         enabled: () => inTauri,
@@ -1921,13 +1921,13 @@
     ];
     if (!mac) file.push("-", "quit");
     const app = {
-      title: "CommaEditor",
+      title: appName,
       entries: [
-        { about: "CommaEditor Desktop", version: __APP_VERSION__, text: L("About %@", "CommaEditor") },
+        { about: appName, version: __APP_VERSION__, text: L("About %@", appName) },
         "-",
         { native: "Services", text: L("Services") },
         "-",
-        { native: "Hide", text: L("Hide %@", "CommaEditor") },
+        { native: "Hide", text: L("Hide %@", appName) },
         { native: "HideOthers", text: L("Hide Others") },
         { native: "ShowAll", text: L("Show All") },
         "-",

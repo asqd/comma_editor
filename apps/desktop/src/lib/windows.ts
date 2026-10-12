@@ -4,6 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { call, inTauri } from "./api";
+import { appName } from "./keys";
 
 /**
  * Opens a window for the file at `path`, for a new document, for a draft of the last session,
@@ -24,7 +25,7 @@ export function newWindow(path: string | null, draft?: string, made?: number): v
   }
   new WebviewWindow(`document-${crypto.randomUUID()}`, {
     url: `index.html${query}`,
-    title: "CommaEditor",
+    title: appName,
     width: 1100,
     height: 720,
     minWidth: 480,

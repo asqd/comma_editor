@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "CommaEditor Desktop",
+  "productName": "CommaEditor",
   "mainBinaryName": "commaeditor",
   "identifier": "app.commaeditor.Desktop",
   "build": {

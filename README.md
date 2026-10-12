@@ -34,7 +34,7 @@ samples/                 примеры файлов
 make test     # тесты ядра
 make run      # собрать ядро, сгенерировать Xcode-проект, собрать и запустить приложение
 make release  # универсальная Release-сборка и DMG (подпись и нотаризация — docs/RELEASE.md)
-make icon     # перерисовать иконку из design/make-icon.swift
+make icon     # перерисовать иконки из design/make-icon.swift (и с буквой W для Tauri-версии)
 ```
 
 Для универсальной сборки нужен ещё Rust-таргет для Intel: `rustup target add x86_64-apple-darwin`.
@@ -42,7 +42,8 @@ make icon     # перерисовать иконку из design/make-icon.swif
 После `make xcodeproj` проект можно открыть в Xcode: `apps/macos/CommaEditor.xcodeproj`.
 При каждой сборке Xcode сам пересобирает ядро.
 
-Приложение на Tauri (`apps/desktop`) собирается на Windows, Linux и macOS. Нужны Rust, Node 22
+Приложение на Tauri (`apps/desktop`) собирается на Windows, Linux и macOS; на macOS оно
+называется «CommaEditor W», чтобы стоять рядом с нативным. Нужны Rust, Node 22
 (`apps/desktop/.nvmrc`) и, на Linux, WebKitGTK 4.1 (`libwebkit2gtk-4.1-dev`):
 
 ```bash
