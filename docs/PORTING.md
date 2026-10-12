@@ -42,15 +42,15 @@
 
 ### 0. Ядро на трёх ОС
 
-- [ ] `.gitattributes`: `-text` для `samples/**`, `qa/files/**`, `core/comma-core/tests/fixtures/**`
-      и `*.csv`/`*.tsv`. Иначе Git на Windows с `core.autocrlf=true` заменит переводы строк, и
-      побайтовые round-trip-тесты упадут на checkout, а не на коде.
-- [ ] CI (GitHub Actions): `cargo test --workspace` и `cargo clippy` на `ubuntu-latest`,
-      `windows-latest`, `macos-latest`. Закрывает и пункт «CI» из раздела «Инфраструктура».
-- [ ] Прогнать `tests/large_files.rs::saves_over_a_file_mapped_from_disk` на Windows: это
-      главный риск ядра (см. ниже). При ошибке — сохранение для Windows через переименование
-      старого файла в сторону.
-- [ ] `comma bench` на Windows и Linux — замерить, что скорость ядра та же.
+- [x] `.gitattributes`: таблицы, книги Excel и `tests/fixtures` Git не трогает. Без него Git
+      на Windows с `core.autocrlf=true` менял переводы строк в образцах ещё до тестов; CI
+      проверяет, что checkout сохранил их как в коммите.
+- [x] CI (`.github/workflows/ci.yml`): clippy, `cargo test --workspace` и `comma check
+      samples/*.csv` на `ubuntu-latest`, `windows-latest`, `macos-latest`. Закрывает и пункт
+      «CI» из раздела «Инфраструктура», кроме сборки приложения.
+- [x] `tests/large_files.rs::saves_over_a_file_mapped_from_disk` проходит на Windows:
+      `std::fs::rename` заменяет файл с активным отображением.
+- [ ] `comma bench` на Windows и Linux — ручной workflow `.github/workflows/bench.yml`.
 
 **Готово, когда** CI зелёный на трёх ОС.
 
@@ -140,13 +140,11 @@
 
 ## Риски
 
-- **Сохранение поверх файла, открытого через mmap (≥ 64 МБ), на Windows.** Ядро пишет
-  временный файл и переименовывает его поверх исходного, а документ продолжает читать старые
-  байты из отображения. На Unix это штатно. На Windows замена файла с активным отображением
-  может завершиться отказом в доступе. Проверяется тестом
-  `saves_over_a_file_mapped_from_disk` на этапе 0. Запасной вариант: переименовать исходный
-  файл в сторону (это разрешено, `File::open` в Rust открывает с `FILE_SHARE_DELETE`),
-  поставить новый на место, а старый удалить при закрытии документа.
+- ~~Сохранение поверх файла, открытого через mmap (≥ 64 МБ), на Windows.~~ Снят на этапе 0:
+  тест `saves_over_a_file_mapped_from_disk` проходит в CI на `windows-latest`. Ядро пишет
+  временный файл и переименовывает его поверх исходного, документ продолжает читать старые
+  байты из отображения. Проверить ещё на сетевой папке и на FAT32/exFAT-флешке — там
+  семантика переименования другая.
 - **Файл, занятый другой программой** (например, открыт в Excel): на Windows нельзя ни
   перезаписать, ни переименовать. Нужно понятное сообщение и «Сохранить как…».
 - **Производительность WebKitGTK** на Linux — проверяется на этапе 1.
