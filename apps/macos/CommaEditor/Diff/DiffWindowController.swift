@@ -119,6 +119,7 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
         options.spacing = 10
 
         filter.segmentStyle = .rounded
+        filter.setAccessibilityLabel(L("Show"))
         filter.trackingMode = .selectOne
         filter.segmentCount = filters.count
         filter.selectedSegment = 0
@@ -431,6 +432,7 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
         }
         let status = NSTableColumn(identifier: Self.statusColumn)
         status.title = ""
+        status.headerCell.setAccessibilityLabel(L("Difference"))
         status.width = 22
         status.resizingMask = []
         tableView.addTableColumn(status)
@@ -551,9 +553,12 @@ extension DiffWindowController: NSTableViewDataSource, NSTableViewDelegate {
                 return label
             }()
         label.toolTip = nil
+        label.setAccessibilityLabel(nil)
         switch identifier {
         case Self.statusColumn:
             let (mark, color) = Self.mark(row.status)
+            // VoiceOver says what the mark means.
+            label.setAccessibilityLabel(Self.statusName(row.status))
             label.attributedStringValue = NSAttributedString(string: mark, attributes: [
                 .foregroundColor: color, .font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize),
             ])
@@ -570,6 +575,7 @@ extension DiffWindowController: NSTableViewDataSource, NSTableViewDelegate {
             label.attributedStringValue = Self.text(row.cells[column], status: row.status)
             if row.cells[column].changed {
                 label.toolTip = (row.cells[column].left ?? "") + " → " + (row.cells[column].right ?? "")
+                label.setAccessibilityLabel(L("Was %@, now %@", row.cells[column].left ?? "", row.cells[column].right ?? ""))
             }
         }
         return label
@@ -581,6 +587,15 @@ extension DiffWindowController: NSTableViewDataSource, NSTableViewDelegate {
         case .onlyLeft: rowView.backgroundColor = NSColor.systemRed.withAlphaComponent(0.08)
         case .onlyRight: rowView.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.08)
         case .changed, .same: rowView.backgroundColor = .clear
+        }
+    }
+
+    private static func statusName(_ status: DiffStatus) -> String {
+        switch status {
+        case .onlyLeft: L("Only in the first file")
+        case .onlyRight: L("Only in the second file")
+        case .changed: L("Changed row")
+        case .same: L("Same row")
         }
     }
 

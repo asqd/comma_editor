@@ -619,3 +619,13 @@
 "Condition" = "Условие";
 "Search in" = "Где искать";
 "Sheet view" = "Вид листа";
+"Sheets" = "Листы";
+"Row number" = "Номер строки";
+"Difference" = "Различие";
+"Was %@, now %@" = "Было %1$@, стало %2$@";
+"Only in the first file" = "Только в первом файле";
+"Only in the second file" = "Только во втором файле";
+"Changed row" = "Изменена";
+"Same row" = "Совпадает";
+"Column name" = "Имя колонки";
+"Formula" = "Формула";

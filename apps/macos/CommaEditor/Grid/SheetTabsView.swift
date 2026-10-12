@@ -21,6 +21,8 @@ final class SheetTabsView: NSView {
         documentView.addSubview(stack)
         scrollView.documentView = documentView
         scrollView.drawsBackground = false
+        scrollView.setAccessibilityRole(.radioGroup)
+        scrollView.setAccessibilityLabel(L("Sheets"))
         scrollView.hasHorizontalScroller = false
         scrollView.hasVerticalScroller = false
         scrollView.horizontalScrollElasticity = .allowed
@@ -78,6 +80,8 @@ final class SheetTabsView: NSView {
         button.controlSize = .small
         button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         button.tag = index
+        // VoiceOver reads the tabs as a choice of one sheet, not as checkboxes.
+        button.setAccessibilityRole(.radioButton)
         button.isEnabled = sheet.isTable
         if !sheet.isTable {
             button.toolTip = L("A chart sheet: it has no cells to show")

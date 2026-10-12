@@ -79,11 +79,13 @@ struct ColumnProfileView: View {
     }
 
     private func row(_ label: String, _ value: String) -> some View {
+        // VoiceOver reads each value with its name.
         GridRow {
-            Text(label).foregroundStyle(.secondary)
+            Text(label).foregroundStyle(.secondary).accessibilityHidden(true)
             Text(value).monospacedDigit().textSelection(.enabled)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label + ": " + value)
         }
-        .accessibilityElement(children: .combine)
     }
 
     private func histogram(_ profile: ColumnProfile) -> some View {
@@ -96,6 +98,7 @@ struct ColumnProfileView: View {
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
             .frame(height: 64)
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel(L("Distribution from %@ to %@", profile.min ?? "", profile.max ?? ""))
             HStack {
                 Text(profile.min ?? "")

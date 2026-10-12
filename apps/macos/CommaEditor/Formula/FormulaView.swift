@@ -83,11 +83,13 @@ struct FormulaView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .accessibilityLabel(L("Result"))
             if model.target == .newColumn {
                 HStack {
                     Text(L("Name:"))
                     TextField("", text: $model.name)
                         .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel(L("Column name"))
                 }
                 Text(L("The column is added to the right of “%@”.", model.activeColumnName))
                     .font(.caption)
@@ -114,6 +116,7 @@ struct FormulaView: View {
     private var formulaField: some View {
         VStack(alignment: .leading, spacing: 6) {
             TextField("{price} * {qty}", text: $model.formula, axis: .vertical)
+                .accessibilityLabel(L("Formula"))
                 .focused($editingFormula)
                 .font(.system(.body, design: .monospaced))
                 .textFieldStyle(.roundedBorder)

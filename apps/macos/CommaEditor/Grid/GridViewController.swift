@@ -426,6 +426,7 @@ final class GridViewController: NSViewController {
         numbers.isEditable = false
         numbers.resizingMask = []
         numbers.headerToolTip = L("Row number in the file")
+        numbers.headerCell.setAccessibilityLabel(L("Row number"))
         numbers.width = numberWidth ?? 40
         frozenTable.addTableColumn(numbers)
 

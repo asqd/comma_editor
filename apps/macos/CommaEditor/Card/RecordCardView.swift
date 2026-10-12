@@ -181,6 +181,7 @@ private struct RecordFieldRow: View {
             .buttonStyle(.plain)
             .help(field.name)
             TextField(L("(empty)"), text: $draft, axis: .vertical)
+                .accessibilityLabel(field.name)
                 .textFieldStyle(.plain)
                 .lineLimit(1...8)
                 .focused($focused)
