@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Конфиденциальность — CommaEditor</title>
+  <meta name="description" content="CommaEditor не собирает данных и не ходит в сеть: файлы остаются на вашем Mac.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" type="image/png" href="assets/favicon-64.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap top-in">
+    <a class="brand" href="index.html">
+      <img src="assets/icon-256.png" width="32" height="32" alt="">
+      <span>CommaEditor</span>
+    </a>
+    <nav>
+      <a href="index.html#features">Возможности</a>
+      <a href="index.html#install">Установка</a>
+      <a data-repo="" href="#">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="block wrap privacy">
+    <div class="label mono">§</div>
+    <div class="content">
+      <h2>Конфиденциальность</h2>
+      <p class="sub">Коротко: CommaEditor ничего о вас не собирает и никуда ничего не отправляет.</p>
+      <h3>Какие данные собираются</h3>
+      <p>Никакие. В приложении нет аналитики, отчётов о сбоях, рекламы, учётных записей и проверки
+        обновлений. Оно не обращается к сети: в песочнице macOS у него нет на это разрешения.</p>
+      <h3>Ваши файлы</h3>
+      <p>Приложение открывает только те файлы, которые вы выбрали сами: в окне открытия, перетаскиванием
+        или двойным щелчком в Finder. Они читаются и сохраняются на вашем Mac и больше никуда не попадают.
+        Предпросмотр в Finder (Quick Look) работает так же — локально, только с файлом, который вы
+        выделили.</p>
+      <h3>Что хранится на Mac</h3>
+      <p>Настройки окна и вида, список недавних файлов и рецепты, которые вы записали, лежат в
+        контейнере приложения в вашей папке пользователя
+        (<code>~/Library/Containers/app.commaeditor.CommaEditor</code>). Удалите приложение и эту
+        папку — и от него ничего не останется.</p>
+      <h3>Сайт</h3>
+      <p>Этот сайт не ставит cookie и не считает посещения. Шрифты загружаются с Google Fonts, поэтому
+        Google видит запрос шрифта, как при любом сайте с этими шрифтами. Файлы приложения скачиваются
+        с GitHub — на это распространяются правила GitHub.</p>
+      <h3>Вопросы</h3>
+      <p>Напишите в <a data-repo="/issues" href="#">обсуждениях на GitHub</a>.
+        Если политика изменится, новая версия появится на этой странице с датой.</p>
+      <p class="note">Действует с 12 октября 2026 года.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap foot">
+  <span><img src="assets/favicon-64.png" width="16" height="16" alt=""> CommaEditor</span>
+  <span class="mono">Rust · Swift · AppKit</span>
+  <span class="links"><a href="index.html">На главную</a> <a data-repo="" href="#">GitHub</a></span>
+</footer>
+
+<script src="demo.js"></script>
+</body>
+</html>

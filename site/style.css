@@ -289,6 +289,24 @@ kbd {
   .code .c { color: var(--ink-3); }
 }
 
+/* Screenshots */
+
+.shots-tabs { display: inline-flex; margin-bottom: 20px; }
+.shot { margin: 0; }
+.shot img { display: block; width: 100%; height: auto; }
+.shot figcaption { color: var(--ink-2); font-size: 15px; margin-top: 6px; max-width: 46em; }
+
+/* Install */
+
+.steps { margin: 0 0 28px; padding: 0; list-style: none; counter-reset: step; max-width: 46em; }
+.steps li { counter-increment: step; position: relative; padding: 0 0 18px 44px; }
+.steps li::before {
+  content: counter(step); position: absolute; left: 0; top: 1px;
+  width: 28px; height: 24px; display: grid; place-items: center;
+  font: 13px var(--mono); color: var(--indigo); background: var(--indigo-soft); border-radius: 4px;
+}
+.sub.after { margin: 0 0 12px; }
+
 /* Footer */
 
 .foot {
@@ -298,6 +316,7 @@ kbd {
 }
 .foot span:first-child { display: flex; align-items: center; gap: 8px; }
 .foot .mono { font-size: 12px; color: var(--ink-3); }
+.foot .links { display: flex; gap: 20px; }
 
 /* Narrow */
 
@@ -325,3 +344,10 @@ kbd {
 
 .bench sup, .footnote sup { color: var(--comma); font-size: .75em; margin-left: 1px; }
 .footnote { color: var(--ink-3); max-width: 46em; margin: 14px 0 0; font-size: 13.5px; }
+
+/* Privacy */
+
+.privacy h3 { font: 600 17px/1.4 var(--sans); margin: 28px 0 6px; }
+.privacy p { max-width: 46em; margin: 0; }
+.privacy code { overflow-wrap: anywhere; }
+.privacy .sub { margin: -12px 0 8px; }

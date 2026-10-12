@@ -27,8 +27,8 @@
     <nav>
       <a href="#features">Возможности</a>
       <a href="#speed">Скорость</a>
-      <a href="#how">Как устроено</a>
-      <a href="#build">Сборка</a>
+      <a href="#screens">Как выглядит</a>
+      <a href="#install">Установка</a>
       <a data-repo="" href="#">GitHub</a>
     </nav>
   </div>
@@ -47,7 +47,8 @@
     <div class="actions">
       <a class="btn primary" data-repo="/releases/latest" href="#">Скачать для macOS</a>
       <a class="btn" data-repo="" href="#">Исходный код</a>
-      <span class="fine mono">Apple Silicon и Intel · DMG ≈ 4 МБ</span>
+      <a class="btn" href="#install">Как установить</a>
+      <span class="fine mono">Apple Silicon и Intel · macOS 14+ · DMG ≈ 14 МБ · бесплатно</span>
     </div>
   </section>
 
@@ -85,7 +86,7 @@
         <tbody>
           <tr>
             <td>1</td><td>Кодировки и разделители</td>
-            <td>UTF-8 с BOM и без, UTF-16, Windows-1251, KOI8-R, Windows-1252; запятая, точка с запятой, табуляция, черта. Если определение не уверено — спросит с предпросмотром. Находит и чинит кракозябры вроде «РџСЂРёРІРµС‚».</td>
+            <td>UTF-8 с BOM и без, UTF-16, Windows-1251, KOI8-R, KOI8-U, DOS 866, Windows-1250, 1252, 1253, 1254, 1257; запятая, точка с запятой, табуляция, черта. Если определение не уверено — спросит с предпросмотром. Находит и чинит кракозябры вроде «РџСЂРёРІРµС‚».</td>
             <td class="k"></td>
           </tr>
           <tr>
@@ -125,7 +126,7 @@
           </tr>
           <tr>
             <td>9</td><td>Книги Excel</td>
-            <td><code>.xlsx</code> и <code>.xlsm</code> — правка, формулы с пересчётом (можно по-русски: <code>=СУММ(B2:B5)</code>), вставка строк и колонок со сдвигом ссылок. <code>.xls</code> — просмотр.</td>
+            <td><code>.xlsx</code> и <code>.xlsm</code> — правка, при которой остальное в книге не трогается. Формулы пересчитываются сразу, в том числе с именами и ссылками на таблицы (можно по-русски: <code>=СУММ(B2:B5)</code>). Строки вставляются, удаляются, перемещаются и сортируются, а за ними идут ссылки, таблицы, примечания, рисунки, диаграммы и сводные. <code>.xls</code> — просмотр.</td>
             <td class="k"></td>
           </tr>
           <tr>
@@ -148,8 +149,41 @@
     </div>
   </section>
 
-  <section class="block wrap" id="speed">
+  <section class="block wrap" id="screens">
     <div class="label mono">B</div>
+    <div class="content">
+      <h2>Как выглядит</h2>
+      <div class="seg shots-tabs" role="tablist" aria-label="Скриншоты">
+        <button role="tab" aria-selected="true" aria-controls="shot-orders" id="tab-orders">Профиль колонки</button>
+        <button role="tab" aria-selected="false" aria-controls="shot-repair" id="tab-repair">Ремонт файла</button>
+        <button role="tab" aria-selected="false" aria-controls="shot-excel" id="tab-excel">Книга Excel</button>
+      </div>
+      <figure class="shot" id="shot-orders" role="tabpanel" aria-labelledby="tab-orders">
+        <picture>
+          <source srcset="assets/shots/orders-dark.webp" media="(prefers-color-scheme: dark)">
+          <img src="assets/shots/orders-light.webp" width="1600" height="834" alt="Окно CommaEditor: выгрузка заказов в Windows-1251 с разделителем «;», справа профиль колонки «Сумма» с распределением, частыми значениями и пятью значениями, которые не числа">
+        </picture>
+        <figcaption>Выгрузка в Windows-1251 с «;» открылась сама, без вопросов. Профиль колонки нашёл пять «н/д» среди сумм.</figcaption>
+      </figure>
+      <figure class="shot" id="shot-repair" role="tabpanel" aria-labelledby="tab-repair" hidden>
+        <picture>
+          <source srcset="assets/shots/repair-dark.webp" media="(prefers-color-scheme: dark)">
+          <img src="assets/shots/repair-light.webp" width="1600" height="834" alt="Окно CommaEditor: файл с лишним полем в строке 12 и обрезанной строкой 20, справа панель ремонта с вариантами исправления и их превью" loading="lazy">
+        </picture>
+        <figcaption>Строка с лишним полем и обрезанная строка подсвечены. Для каждой — варианты исправления с превью.</figcaption>
+      </figure>
+      <figure class="shot" id="shot-excel" role="tabpanel" aria-labelledby="tab-excel" hidden>
+        <picture>
+          <source srcset="assets/shots/excel-dark.webp" media="(prefers-color-scheme: dark)">
+          <img src="assets/shots/excel-light.webp" width="1600" height="834" alt="Окно CommaEditor: книга Excel с таблицей продаж, формулы выручки и доли, внизу вкладки листов и формула выбранной ячейки" loading="lazy">
+        </picture>
+        <figcaption>Книга Excel: таблица с вычисляемыми колонками и итогами, вкладки листов, формула ячейки внизу.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="block wrap" id="speed">
+    <div class="label mono">C</div>
     <div class="content">
       <h2>Скорость</h2>
       <p class="sub">Секунды. Таблица листается, пока идёт работа в фоне.</p>
@@ -175,13 +209,15 @@
       </p>
       <p class="note">
         Индекс строк — 16 байт на строку. Прокрутка 12 млн строк — 120 кадров в секунду на
-        экране 120 Гц. Приложение весит около 8 МБ.
+        экране 120 Гц. Книга Excel на 1 млн строк читается на всех ядрах и готова через 0,2 с;
+        правка ячейки с пересчётом формул на 100 тыс. строк — десятые доли секунды.
+        Приложение весит около 28 МБ.
       </p>
     </div>
   </section>
 
   <section class="block wrap" id="how">
-    <div class="label mono">C</div>
+    <div class="label mono">D</div>
     <div class="content">
       <h2>Как устроено сохранение без лишнего диффа</h2>
       <div class="cols">
@@ -222,8 +258,39 @@
     </div>
   </section>
 
+  <section class="block wrap" id="install">
+    <div class="label mono">E</div>
+    <div class="content">
+      <h2>Установка</h2>
+      <ol class="steps">
+        <li>
+          <b>Скачайте</b> DMG <a data-repo="/releases/latest" href="#">со страницы выпуска</a>,
+          откройте его и перетащите CommaEditor в «Программы».
+        </li>
+        <li>
+          <b>Запустите.</b> macOS скажет: «Apple не удалось подтвердить, что файл „CommaEditor“
+          не содержит вредоносного ПО». Так она встречает приложения без подписи Apple Developer,
+          а CommaEditor пока распространяется без неё. Нажмите «Готово».
+        </li>
+        <li>
+          <b>Разрешите один раз.</b> На macOS 15 и новее: «Системные настройки ▸
+          Конфиденциальность и безопасность», внизу «Все равно открыть», затем пароль.
+          На macOS 14: правый щелчок по CommaEditor в «Программах» ▸ «Открыть» ▸ «Открыть».
+        </li>
+      </ol>
+      <p class="sub after">Или одной командой в Терминале — снять отметку «скачано из интернета»:</p>
+<pre class="code">xattr -dr com.apple.quarantine /Applications/CommaEditor.app</pre>
+      <p class="note">
+        Сверить, что файл тот самый: <code>shasum -a 256 ~/Downloads/CommaEditor-*.dmg</code>
+        и сравнить с суммой на странице выпуска. Приложение работает в песочнице macOS, не ходит
+        в сеть и ничего о вас не собирает — <a href="privacy.html">подробнее о конфиденциальности</a>.
+        Нужна macOS 14 или новее, Apple Silicon или Intel.
+      </p>
+    </div>
+  </section>
+
   <section class="block wrap" id="build">
-    <div class="label mono">D</div>
+    <div class="label mono">F</div>
     <div class="content">
       <h2>Сборка из исходников</h2>
       <p class="sub">Нужны Rust 1.88+, Xcode 16+ и XcodeGen.</p>
@@ -245,7 +312,7 @@ cargo run -p comma-cli -- check ~/Downloads/*.csv</pre>
 <footer class="wrap foot">
   <span><img src="assets/favicon-64.png" width="16" height="16" alt=""> CommaEditor</span>
   <span class="mono">Rust · Swift · AppKit</span>
-  <a data-repo="" href="#">GitHub</a>
+  <span class="links"><a href="privacy.html">Конфиденциальность</a> <a data-repo="" href="#">GitHub</a></span>
 </footer>
 
 <script src="demo.js"></script>

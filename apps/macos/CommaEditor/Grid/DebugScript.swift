@@ -248,6 +248,9 @@ enum DebugScript {
                     return
                 }
                 NSLog("COMMA window: no document \(argument)")
+            case "appearance":
+                // appearance=dark|light: the app's look, whatever the system's, for screenshots.
+                NSApp.appearance = NSAppearance(named: argument == "dark" ? .darkAqua : .aqua)
             case "exportexcel":
                 grid.document.exportForExcel(nil)
             default:

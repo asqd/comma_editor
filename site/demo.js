@@ -180,19 +180,36 @@ function edit(td) {
   });
 }
 
-sheet.addEventListener("click", (e) => edit(e.target.closest("td.cell")));
+// Демо есть только на главной странице.
+if (sheet) {
+  sheet.addEventListener("click", (e) => edit(e.target.closest("td.cell")));
 
-for (const b of document.querySelectorAll(".seg button")) {
-  b.addEventListener("click", () => {
-    mode = b.dataset.mode;
-    for (const o of document.querySelectorAll(".seg button")) o.setAttribute("aria-selected", o === b);
-    renderRaw();
+  for (const b of document.querySelectorAll(".disk .seg button")) {
+    b.addEventListener("click", () => {
+      mode = b.dataset.mode;
+      for (const o of document.querySelectorAll(".disk .seg button")) o.setAttribute("aria-selected", o === b);
+      renderRaw();
+    });
+  }
+
+  resetBtn.addEventListener("click", () => {
+    values = original.map((r) => r.fields.map((f) => f.value));
+    render();
   });
+
+  render();
 }
 
-resetBtn.addEventListener("click", () => {
-  values = original.map((r) => r.fields.map((f) => f.value));
-  render();
-});
-
-render();
+// Скриншоты: вкладки.
+(function shots() {
+  const tabs = [...document.querySelectorAll(".shots-tabs [role=tab]")];
+  for (const tab of tabs) {
+    tab.addEventListener("click", () => {
+      for (const other of tabs) {
+        const selected = other === tab;
+        other.setAttribute("aria-selected", String(selected));
+        document.getElementById(other.getAttribute("aria-controls")).hidden = !selected;
+      }
+    });
+  }
+})();
