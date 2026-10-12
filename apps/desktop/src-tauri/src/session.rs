@@ -10,12 +10,12 @@
 //! and the interface follows it through `status`.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use comma_ffi::{
-    CellPosition, CellRange, ColumnProfile, CoreDocument, CoreError, DiffColumnInfo, DiffJob, DiffOptions, DiffResult, DiffRow,
+    CellPosition, CellRange, ColumnProfile, CoreDocument, CoreError, CoreRecipe, DiffColumnInfo, DiffJob, DiffOptions, DiffResult, DiffRow,
     DiffStatus, EditJob, EditRequest, ExportFormat, FilePreview, Issue,
     LineEnding, ProblemKind, RangeStats, RepairFix, RepairOption, RepairReport, ValueKind,
     SaveFormat, SearchQuery, TextEncoding, ViewJob, ViewSpec,
@@ -81,6 +81,8 @@ pub struct Status {
     indexing: Option<f64>,
     /// Work running in the background.
     job: Option<JobStatus>,
+    /// Steps recorded so far while a recipe is recorded.
+    recording: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -114,6 +116,8 @@ struct State {
     restored: bool,
     /// Rows of the file the last repair check found broken, to mark their numbers.
     problem_rows: HashSet<u64>,
+    /// A recipe just recorded, waiting for its name.
+    recorded: Option<Arc<CoreRecipe>>,
     /// Counts jobs, so that a cancelled job ending late leaves the next one alone.
     job_number: u64,
     /// How the last job ended, until the interface takes it with `job_result`.
@@ -158,6 +162,7 @@ impl Session {
                 Job::View(_) => JobStatus { kind: "view", fraction: None },
                 Job::Edit(job) => JobStatus { kind: "edit", fraction: Some(job.fraction()) },
             }),
+            recording: document.recorded_step_count(),
         }
     }
 
@@ -257,6 +262,8 @@ pub struct Sessions {
     /// Documents made for a window that has yet to open, as Open as Table makes them.
     waiting: Mutex<HashMap<u64, Arc<CoreDocument>>>,
     next: AtomicU64,
+    /// Where recipes are kept, one JSON file each, as the macOS app keeps them.
+    recipes: Mutex<Option<PathBuf>>,
 }
 
 fn same(range: &CellRange) -> CellRange {
@@ -286,6 +293,37 @@ struct Preview {
     encoding: Option<TextEncoding>,
     delimiter: Option<String>,
     rows: u64,
+}
+
+#[derive(Deserialize)]
+struct RecipeFile {
+    file: String,
+}
+
+#[derive(Deserialize)]
+struct RecipeTitle {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RecipeName {
+    file: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RecipeStep {
+    file: String,
+    index: u64,
+}
+
+#[derive(Deserialize)]
+struct RecipePandas {
+    file: String,
+    input: String,
+    output: String,
+    delimiter: String,
+    path: String,
 }
 
 #[derive(Deserialize)]
@@ -640,6 +678,63 @@ impl Sessions {
         }
     }
 
+    /// Keeps recipes in `folder` from now on.
+    pub fn set_recipe_folder(&self, folder: PathBuf) {
+        *self.recipes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(folder);
+    }
+
+    fn recipe_folder(&self) -> Outcome<PathBuf> {
+        let folder = self.recipes.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        folder.ok_or_else(|| Failure::message("no folder for recipes"))
+    }
+
+    /// The file of a recipe, which must be a plain name in the recipes' folder.
+    fn recipe_file(&self, file: &str) -> Outcome<PathBuf> {
+        if file.is_empty() || file.contains(['/', '\\']) || file.starts_with('.') || !file.ends_with(".json") {
+            return Err(Failure::message("not a recipe file"));
+        }
+        Ok(self.recipe_folder()?.join(file))
+    }
+
+    fn read_recipe(&self, file: &str) -> Outcome<Arc<CoreRecipe>> {
+        let json = std::fs::read_to_string(self.recipe_file(file)?).map_err(Failure::message)?;
+        Ok(CoreRecipe::from_json(json)?)
+    }
+
+    fn write_recipe(&self, file: &str, recipe: &CoreRecipe) -> Outcome<()> {
+        let path = self.recipe_file(file)?;
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder).map_err(Failure::message)?;
+        }
+        std::fs::write(path, recipe.to_json()).map_err(Failure::message)
+    }
+
+    /// The saved recipes, by name; files that cannot be read are left out.
+    fn list_recipes(&self) -> Outcome<Value> {
+        let folder = self.recipe_folder()?;
+        let mut recipes: Vec<(String, String, Arc<CoreRecipe>)> = std::fs::read_dir(&folder)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|entry| {
+                        let file = entry.file_name().to_string_lossy().into_owned();
+                        if !file.ends_with(".json") {
+                            return None;
+                        }
+                        let recipe = CoreRecipe::from_json(std::fs::read_to_string(entry.path()).ok()?).ok()?;
+                        Some((recipe.name(), file, recipe))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        recipes.sort_by_key(|(name, _, _)| name.to_lowercase());
+        let list: Vec<Value> = recipes
+            .into_iter()
+            .map(|(name, file, recipe)| json!({ "file": file, "name": name, "steps": recipe.steps() }))
+            .collect();
+        Ok(Value::Array(list))
+    }
+
     /// The window showing the file at `path`, if one does.
     pub fn window_for(&self, path: &str) -> Option<String> {
         let same = |a: &str| match (std::fs::canonicalize(a), std::fs::canonicalize(path)) {
@@ -725,6 +820,33 @@ impl Sessions {
                 session.state().restored = true;
                 self.set(window, Some(session.clone()));
                 return reply(session.status());
+            }
+            "recipes" => return self.list_recipes(),
+            "recipe_rename" => {
+                let RecipeName { file, name } = args(args_)?;
+                let recipe = self.read_recipe(&file)?;
+                recipe.set_name(name);
+                self.write_recipe(&file, &recipe)?;
+                return Ok(Value::Null);
+            }
+            "recipe_remove_step" => {
+                let RecipeStep { file, index } = args(args_)?;
+                let recipe = self.read_recipe(&file)?;
+                recipe.remove_step(index);
+                self.write_recipe(&file, &recipe)?;
+                return Ok(Value::Null);
+            }
+            "recipe_delete" => {
+                let RecipeFile { file } = args(args_)?;
+                std::fs::remove_file(self.recipe_file(&file)?).map_err(Failure::message)?;
+                return Ok(Value::Null);
+            }
+            "recipe_pandas" => {
+                // The recipe as a pandas script, written where the user chose.
+                let RecipePandas { file, input, output, delimiter, path } = args(args_)?;
+                let script = self.read_recipe(&file)?.to_pandas(input, output, delimiter);
+                std::fs::write(path, script).map_err(Failure::message)?;
+                return Ok(Value::Null);
             }
             "window_for_path" => {
                 let FilePath { path } = args(args_)?;
@@ -968,6 +1090,33 @@ impl Sessions {
                 let bytes = document.export(format, range, name, true)?;
                 reply(String::from_utf8_lossy(&bytes))
             }
+            // Recipes.
+            "start_recording" => {
+                document.start_recording();
+                status(&session)
+            }
+            "stop_recording" => {
+                // The steps recorded; the recipe waits for a name to be saved under.
+                let recipe = document.stop_recording();
+                let steps = recipe.as_ref().map_or(0, |recipe| recipe.steps().len());
+                session.state().recorded = recipe.filter(|_| steps > 0);
+                Ok(json!({ "status": session.status(), "steps": steps }))
+            }
+            "save_recorded" => {
+                let RecipeTitle { name } = args(args_)?;
+                let recipe = session.state().recorded.take().ok_or_else(|| Failure::message("no recipe recorded"))?;
+                recipe.set_name(name);
+                let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_nanos());
+                let file = format!("{stamp:x}-{:x}.json", self.next.fetch_add(1, Ordering::Relaxed));
+                self.write_recipe(&file, &recipe)?;
+                reply(json!({ "file": file }))
+            }
+            "apply_recipe" => {
+                let RecipeFile { file } = args(args_)?;
+                let recipe = self.read_recipe(&file)?;
+                edit(&session, EditRequest::ApplyRecipe { recipe })
+            }
+
             // Comparing with another file.
             "diff_start" => {
                 let FilePath { path } = args(args_)?;
@@ -1202,6 +1351,42 @@ mod tests {
         assert_eq!(opened["rows"], 3);
         assert_eq!(opened["dirty"], true, "a made table has changes until saved");
         sessions.dispatch("main", "diff_close", json!({ "id": id })).unwrap();
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[test]
+    fn records_a_recipe_saves_it_and_applies_it_to_another_file() {
+        let folder = std::env::temp_dir().join(format!("comma-session-recipe-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let first = folder.join("first.csv");
+        let second = folder.join("second.csv");
+        std::fs::write(&first, "id,name\n1,  Anna \n2,Boris\n").unwrap();
+        std::fs::write(&second, "name,id\n Vera ,3\n").unwrap();
+        let sessions = Sessions::default();
+        sessions.set_recipe_folder(folder.join("Recipes"));
+        sessions.dispatch("main", "open", json!({ "path": first })).unwrap();
+        sessions.dispatch("main", "start_recording", Value::Null).unwrap();
+        let range = json!({ "top": 0, "left": 1, "bottom": 1, "right": 1 });
+        sessions.dispatch("main", "edit", json!({ "request": { "transform": { "range": range, "transform": "trim" } } })).unwrap();
+        assert_eq!(status(&sessions, "main")["recording"], 1);
+        let stopped = sessions.dispatch("main", "stop_recording", Value::Null).unwrap();
+        assert_eq!(stopped["steps"], 1);
+        let saved = sessions.dispatch("main", "save_recorded", json!({ "name": "Clean names" })).unwrap();
+        let file = saved["file"].as_str().unwrap().to_owned();
+
+        let recipes = sessions.dispatch("main", "recipes", Value::Null).unwrap();
+        assert_eq!(recipes[0]["name"], "Clean names");
+        assert_eq!(recipes[0]["steps"][0]["kind"], "trim");
+
+        // Columns are found by name, wherever they are in the other file.
+        sessions.dispatch("other", "open", json!({ "path": second })).unwrap();
+        sessions.dispatch("other", "apply_recipe", json!({ "file": file })).unwrap();
+        let rows = sessions.dispatch("other", "rows", json!({ "start": 0, "count": 1 })).unwrap();
+        assert_eq!(rows["rows"][0][0], "Vera");
+
+        assert!(sessions.dispatch("main", "recipe_delete", json!({ "file": "../first.csv" })).is_err(), "only recipe files go");
+        sessions.dispatch("main", "recipe_delete", json!({ "file": file })).unwrap();
+        assert_eq!(sessions.dispatch("main", "recipes", Value::Null).unwrap(), json!([]));
         std::fs::remove_dir_all(folder).unwrap();
     }
 

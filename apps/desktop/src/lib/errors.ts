@@ -46,6 +46,21 @@ export function describe(error: unknown): Problem {
       };
     case "invalidPattern":
       return { message: L("The regular expression is not valid."), detail: text("message") };
+    case "recipe": {
+      const column = (fields as Record<string, unknown>).column;
+      return {
+        message: L("Step %lld of the recipe failed. The table did not change.", number("step") + 1),
+        detail:
+          typeof column === "string"
+            ? L(
+                "This file has no column “%@”. Recipes find columns by their names; rename the column or remove the step in Recipes ▸ Manage Recipes.",
+                column,
+              )
+            : text("message"),
+      };
+    }
+    case "invalidRecipe":
+      return { message: L("The recipe file cannot be read."), detail: text("message") };
     case "export":
       return { message: L("The table cannot be exported."), detail: text("message") };
     case "excelRowLimit":

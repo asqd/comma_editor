@@ -142,6 +142,8 @@ export interface Status {
   /** Share of a large file read so far, while it is read. */
   indexing: number | null;
   job: { kind: "view" | "edit"; fraction: number | null } | null;
+  /** Steps recorded so far while a recipe is recorded. */
+  recording: number | null;
 }
 
 export interface RangeStats {

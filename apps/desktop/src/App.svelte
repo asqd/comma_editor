@@ -28,6 +28,8 @@
   import RepairPanel from "./RepairPanel.svelte";
   import RecordCard, { type Field } from "./RecordCard.svelte";
   import FormulaSheet from "./FormulaSheet.svelte";
+  import RecipesSheet from "./RecipesSheet.svelte";
+  import type { Recipe } from "./lib/recipes";
   import { describeFormula, type FormulaReport } from "./lib/formula";
   import { delimiterName, delimiters, encodingName, encodings, kindName } from "./lib/formats";
   import { Document } from "./lib/document.svelte";
@@ -76,6 +78,9 @@
   let profiling = $state(false);
   let profiledColumn = $state<number | null>(null);
   let profiledName = $state("");
+  /** The saved recipes, and whether their window is open. */
+  let recipes = $state.raw<Recipe[]>([]);
+  let managing = $state(false);
   /** The computed column window, for the active column. */
   let computing = $state<{ column: number; name: string; columns: string[] } | null>(null);
   /** What the background change in progress does, for the status bar. */
@@ -238,6 +243,7 @@
     const status = doc.status;
     if (!status) return "";
     const parts: string[] = [];
+    if (status.recording !== null) parts.push(`● ${L("Recording a recipe: %@ steps", count(status.recording))}`);
     if (selection && !selection.single) {
       parts.push(L("Selected: %@ × %@", count(selection.rowCount), count(selection.columnCount)));
       if (stats && stats.numbers > 0) {
@@ -861,6 +867,78 @@
         details = `${L("First: row %@, %@.", count(number), describeFormula(report.firstError))} ${details}`;
       }
       await inform(L("The formula failed in %@ of %@ rows.", count(report.errors), count(report.rows)), details);
+    }
+  }
+
+  // Recipes (GridViewController+Recipes.swift).
+
+  async function loadRecipes() {
+    recipes = await call<Recipe[]>("recipes").catch(() => []);
+    void installMenu();
+  }
+
+  async function toggleRecording() {
+    const status = doc.status;
+    if (!status || status.indexing !== null) return;
+    if (status.recording === null) {
+      await doc.attempt(() => doc.run("start_recording"));
+      return;
+    }
+    const { steps } = await doc.runWith<{ status: Status; steps: number }>("stop_recording");
+    if (steps === 0) {
+      await inform(
+        L("Nothing was recorded"),
+        L(
+          "Recipes record changes to whole columns, columns themselves and the rows a filter selects. Edits of single cells or of chosen rows are not repeated on another file.",
+        ),
+      );
+      return;
+    }
+    const base = name(status.path).replace(/\.[^.]*$/, "");
+    const answer = await askForm(L("Save Recipe"), L("Steps recorded: %@. Name the recipe to apply it to the next file from the Recipes menu.", count(steps)), {
+      field: status.path ? base : "",
+      fieldLabel: L("Name:"),
+    });
+    if (!answer) return;
+    try {
+      await call("save_recorded", { name: answer.text.trim() || L("Untitled Recipe") });
+      await loadRecipes();
+    } catch (error) {
+      await report(error);
+    }
+  }
+
+  async function applyRecipe(recipe: Recipe) {
+    managing = false;
+    if (!changeable()) return;
+    editing = L("Applying the recipe…");
+    try {
+      const reply = await doc.runWith<{ status: Status; result: EditResult | null }>("apply_recipe", { file: recipe.file });
+      if (!reply.result) {
+        const ended = await doc.waitForJob();
+        if (ended?.error) throw new CoreFailure(ended.error);
+      }
+    } catch (error) {
+      await report(error);
+    } finally {
+      editing = "";
+    }
+  }
+
+  /** The recipe as a pandas script that reads this file and writes a cleaned copy. */
+  async function exportPython(recipe: Recipe) {
+    const file = name(doc.status?.path ?? null);
+    const input = doc.status?.path ? file : "input.csv";
+    const dot = input.lastIndexOf(".");
+    const output = dot > 0 ? `${input.slice(0, dot)}-clean${input.slice(dot)}` : `${input}-clean.csv`;
+    const path = inTauri
+      ? await chooseSavePath({ defaultPath: `${recipe.name || "recipe"}.py`, filters: [{ name: "Python", extensions: ["py"] }] })
+      : await askText(L("Export for Python…"), `${recipe.name || "recipe"}.py`, L("Save"));
+    if (!path) return;
+    try {
+      await call("recipe_pandas", { file: recipe.file, input, output, delimiter: doc.status?.delimiter ?? ",", path });
+    } catch (error) {
+      await report(error);
     }
   }
 
@@ -1783,6 +1861,26 @@
         run: () => void moveColumn(grid!.selection!.cursor.column, grid!.selection!.cursor.column + 1),
       },
       {
+        id: "recording",
+        label: () => (doc.status?.recording !== null && doc.status?.recording !== undefined ? L("Stop Recording…") : L("Start Recording")),
+        enabled: () => !!doc.status && doc.status.indexing === null,
+        run: () => void toggleRecording(),
+      },
+      { id: "noRecipes", label: L("No Saved Recipes"), enabled: () => false, run: () => {} },
+      {
+        id: "manageRecipes",
+        label: L("Manage Recipes…"),
+        run: () => void loadRecipes().then(() => (managing = true)),
+      },
+      ...recipes.map(
+        (recipe): Command => ({
+          id: `recipe:${recipe.file}`,
+          label: recipe.name || L("Untitled Recipe"),
+          enabled: idle,
+          run: () => void applyRecipe(recipe),
+        }),
+      ),
+      {
         id: "bench",
         label: "Scroll Bench",
         shortcut: { key: "b", command: true, shift: true, alt: true },
@@ -1899,6 +1997,16 @@
         "-",
         "fixGarbled",
         "removeDuplicates",
+      ] as Entry[],
+    });
+    menus.push({
+      title: L("Recipes"),
+      entries: [
+        "recording",
+        "-",
+        ...(recipes.length ? recipes.map((recipe) => `recipe:${recipe.file}`) : ["noRecipes"]),
+        "-",
+        "manageRecipes",
       ] as Entry[],
     });
     menus.push({
@@ -2131,6 +2239,7 @@
       void refreshCard();
     };
     const parameters = new URLSearchParams(location.search);
+    void loadRecipes();
     if (inTauri) {
       const window = getCurrentWindow();
       void window.onCloseRequested(async (event) => {
@@ -2283,6 +2392,21 @@
       items={menu.items}
       close={() => {
         menu = null;
+        grid?.focus();
+      }}
+    />
+  {/if}
+  {#if managing}
+    <RecipesSheet
+      {recipes}
+      canApply={idle()}
+      rename={(file, name) => call("recipe_rename", { file, name }).then(loadRecipes)}
+      removeStep={(file, index) => call("recipe_remove_step", { file, index }).then(loadRecipes)}
+      remove={(file) => call("recipe_delete", { file }).then(loadRecipes)}
+      exportPython={(recipe) => void exportPython(recipe)}
+      apply={(recipe) => void applyRecipe(recipe)}
+      close={() => {
+        managing = false;
         grid?.focus();
       }}
     />

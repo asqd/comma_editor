@@ -31,6 +31,8 @@ fn main() {
     let server = Server::http(ADDRESS).expect("the bridge could not listen");
     eprintln!("comma-bridge on http://{ADDRESS}, for {ORIGIN}");
     let sessions = std::sync::Arc::new(Sessions::default());
+    // Recipes of the bridge stay apart from the app's.
+    sessions.set_recipe_folder(std::env::temp_dir().join("comma-bridge-recipes"));
     for mut request in server.incoming_requests() {
         let host_ok = header(&request, "Host").is_some_and(|host| host == "localhost:1430" || host == ADDRESS);
         let origin_ok = header(&request, "Origin").is_none_or(|origin| origin == ORIGIN);

@@ -291,6 +291,10 @@ pub fn run() {
         .setup(|app| {
             let drafts = Drafts::new(app.handle());
             app.manage(drafts);
+            // Recipes where the macOS app keeps them, so that both apps share them there.
+            if let Ok(data) = app.path().data_dir() {
+                app.state::<Arc<Sessions>>().set_recipe_folder(data.join("CommaEditor").join("Recipes"));
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
