@@ -11,10 +11,12 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use comma_ffi::{
-    CellPosition, CellRange, ColumnProfile, CoreDocument, CoreError, EditJob, EditRequest, ExportFormat, FilePreview, Issue,
+    CellPosition, CellRange, ColumnProfile, CoreDocument, CoreError, DiffColumnInfo, DiffJob, DiffOptions, DiffResult, DiffRow,
+    DiffStatus, EditJob, EditRequest, ExportFormat, FilePreview, Issue,
     LineEnding, ProblemKind, RangeStats, RepairFix, RepairOption, RepairReport, ValueKind,
     SaveFormat, SearchQuery, TextEncoding, ViewJob, ViewSpec,
 };
@@ -221,10 +223,40 @@ impl Session {
     }
 }
 
-/// The open documents, by window.
+/// A comparison of a window's table with another file (DiffWindowController in the macOS app):
+/// the other file is read whole in the background, then compared as often as the options change.
+struct Diff {
+    left: Arc<CoreDocument>,
+    state: Mutex<DiffState>,
+}
+
+#[derive(Default)]
+struct DiffState {
+    right: Option<Arc<CoreDocument>>,
+    reading: bool,
+    job: Option<Arc<DiffJob>>,
+    /// Counts comparisons, so that a cancelled one ending late leaves the next one alone.
+    number: u64,
+    result: Option<Arc<DiffResult>>,
+    /// Why reading or comparing failed, as the interface words errors.
+    failure: Option<Value>,
+    cancelled: bool,
+}
+
+impl Diff {
+    fn state(&self) -> MutexGuard<'_, DiffState> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// The open documents, by window, and the comparisons between them and other files.
 #[derive(Default)]
 pub struct Sessions {
     windows: Mutex<HashMap<String, Arc<Session>>>,
+    diffs: Mutex<HashMap<u64, Arc<Diff>>>,
+    /// Documents made for a window that has yet to open, as Open as Table makes them.
+    waiting: Mutex<HashMap<u64, Arc<CoreDocument>>>,
+    next: AtomicU64,
 }
 
 fn same(range: &CellRange) -> CellRange {
@@ -254,6 +286,41 @@ struct Preview {
     encoding: Option<TextEncoding>,
     delimiter: Option<String>,
     rows: u64,
+}
+
+#[derive(Deserialize)]
+struct Id {
+    id: u64,
+}
+
+#[derive(Deserialize)]
+struct Token {
+    token: u64,
+}
+
+#[derive(Deserialize)]
+struct DiffRun {
+    options: DiffOptions,
+}
+
+#[derive(Deserialize)]
+struct Statuses {
+    statuses: Vec<DiffStatus>,
+}
+
+#[derive(Deserialize)]
+struct DiffRows {
+    statuses: Vec<DiffStatus>,
+    start: u64,
+    count: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiffOpen {
+    statuses: Vec<DiffStatus>,
+    names: Vec<String>,
+    status_title: String,
 }
 
 #[derive(Deserialize)]
@@ -474,6 +541,105 @@ impl Sessions {
         };
     }
 
+    fn diff(&self, id: u64) -> Outcome<Arc<Diff>> {
+        let diffs = self.diffs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        diffs.get(&id).cloned().ok_or_else(|| Failure::message("the comparison is gone"))
+    }
+
+    fn diff_command(&self, command: &str, args_: Value) -> Outcome<Value> {
+        let Id { id } = serde_json::from_value(args_.clone()).map_err(Failure::message)?;
+        let diff = self.diff(id)?;
+        match command {
+            "diff_state" => {
+                // How far reading and comparing are, the columns, and the result's counts.
+                let state = diff.state();
+                let comparing = state.job.as_ref().map(|job| job.fraction());
+                let (columns, suggested): (Vec<DiffColumnInfo>, Vec<u64>) = match (&state.result, &state.right) {
+                    (Some(result), Some(right)) => (result.columns(), diff.left.suggest_diff_key(right.clone())),
+                    (None, Some(right)) => (diff.left.diff_columns(right.clone()), diff.left.suggest_diff_key(right.clone())),
+                    _ => (Vec::new(), Vec::new()),
+                };
+                let offset = |document: &CoreDocument| u64::from(document.info().has_header);
+                Ok(json!({
+                    "reading": state.reading,
+                    "ready": state.right.is_some(),
+                    "comparing": comparing,
+                    "cancelled": state.cancelled,
+                    "failure": state.failure,
+                    "columns": columns,
+                    "suggested": suggested,
+                    "summary": state.result.as_ref().map(|result| result.summary()),
+                    "leftOffset": offset(&diff.left),
+                    "rightOffset": state.right.as_ref().map(|right| offset(right)).unwrap_or(0),
+                }))
+            }
+            "diff_run" => {
+                // Compares again with these options; a comparison still running is cancelled.
+                let DiffRun { options } = args(args_)?;
+                let mut state = diff.state();
+                let right = state.right.clone().ok_or_else(|| Failure::message("the other file is not read yet"))?;
+                if let Some(job) = state.job.take() {
+                    job.cancel();
+                }
+                let job = diff.left.begin_diff(right, options)?;
+                state.number += 1;
+                state.job = Some(job.clone());
+                state.failure = None;
+                state.cancelled = false;
+                let number = state.number;
+                let diff = diff.clone();
+                std::thread::spawn(move || {
+                    let outcome = job.run();
+                    let mut state = diff.state();
+                    if state.number != number {
+                        return;
+                    }
+                    state.job = None;
+                    match outcome {
+                        Ok(Some(result)) => state.result = Some(result),
+                        Ok(None) => state.cancelled = true,
+                        Err(error) => state.failure = serde_json::to_value(Failure::from(error)).ok(),
+                    }
+                });
+                Ok(Value::Null)
+            }
+            "diff_cancel" => {
+                if let Some(job) = &diff.state().job {
+                    job.cancel();
+                }
+                Ok(Value::Null)
+            }
+            "diff_count" => {
+                let Statuses { statuses } = args(args_)?;
+                let result = diff.state().result.clone().ok_or_else(|| Failure::message("nothing compared yet"))?;
+                reply(result.count(statuses))
+            }
+            "diff_rows" => {
+                let DiffRows { statuses, start, count } = args(args_)?;
+                let result = diff.state().result.clone().ok_or_else(|| Failure::message("nothing compared yet"))?;
+                let rows: Vec<DiffRow> = result.rows(statuses, start, count);
+                reply(rows)
+            }
+            "diff_open" => {
+                // The rows shown, as a table of its own for a new window to adopt.
+                let DiffOpen { statuses, names, status_title } = args(args_)?;
+                let result = diff.state().result.clone().ok_or_else(|| Failure::message("nothing compared yet"))?;
+                let document = CoreDocument::from_bytes(result.to_csv(statuses, names, status_title));
+                let token = self.next.fetch_add(1, Ordering::Relaxed);
+                self.waiting.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(token, document);
+                reply(json!({ "token": token }))
+            }
+            "diff_close" => {
+                if let Some(job) = &diff.state().job {
+                    job.cancel();
+                }
+                self.diffs.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
+                Ok(Value::Null)
+            }
+            _ => Err(Failure::message(format!("unknown command {command}"))),
+        }
+    }
+
     /// The window showing the file at `path`, if one does.
     pub fn window_for(&self, path: &str) -> Option<String> {
         let same = |a: &str| match (std::fs::canonicalize(a), std::fs::canonicalize(path)) {
@@ -545,6 +711,20 @@ impl Sessions {
             "close" => {
                 self.set(window, None);
                 return Ok(Value::Null);
+            }
+            "diff_state" | "diff_run" | "diff_cancel" | "diff_count" | "diff_rows" | "diff_open" | "diff_close" => {
+                return self.diff_command(command, args_);
+            }
+            "adopt" => {
+                // A document made for this window, such as a comparison opened as a table.
+                let Token { token } = args(args_)?;
+                let waiting = self.waiting.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&token);
+                let document = waiting.ok_or_else(|| Failure::message("the document is gone"))?;
+                let session = Session::new(document, None);
+                // Made, not opened: it has changes until saved.
+                session.state().restored = true;
+                self.set(window, Some(session.clone()));
+                return reply(session.status());
             }
             "window_for_path" => {
                 let FilePath { path } = args(args_)?;
@@ -788,6 +968,34 @@ impl Sessions {
                 let bytes = document.export(format, range, name, true)?;
                 reply(String::from_utf8_lossy(&bytes))
             }
+            // Comparing with another file.
+            "diff_start" => {
+                let FilePath { path } = args(args_)?;
+                if document.is_indexing() {
+                    return Err(Failure::Core(CoreError::Busy));
+                }
+                let id = self.next.fetch_add(1, Ordering::Relaxed);
+                let diff = Arc::new(Diff { left: document.clone(), state: Mutex::new(DiffState { reading: true, ..DiffState::default() }) });
+                self.diffs.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(id, diff.clone());
+                let has_header = document.info().has_header;
+                std::thread::spawn(move || {
+                    // The other file is read whole, its encoding and delimiter detected.
+                    let read = CoreDocument::open_with(path, None, None).inspect(|right| {
+                        while right.is_indexing() {
+                            right.continue_indexing(INDEXING_STEP);
+                        }
+                        right.set_has_header(has_header);
+                    });
+                    let mut state = diff.state();
+                    state.reading = false;
+                    match read {
+                        Ok(right) => state.right = Some(right),
+                        Err(error) => state.failure = serde_json::to_value(Failure::from(error)).ok(),
+                    }
+                });
+                reply(json!({ "id": id }))
+            }
+
             // Computed columns.
             "preview_formula" => {
                 // The formula on the first shown rows, with their numbers in the file.
@@ -948,6 +1156,52 @@ mod tests {
         let sessions = Sessions::default();
         sessions.dispatch("main", "open", json!({ "path": path })).unwrap();
         assert!(sessions.write_draft("main", &folder.join("main.draft"), u64::MAX).unwrap().is_none());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// Asks for the comparison's state until `done` says it is there.
+    fn wait(sessions: &Sessions, id: u64, done: impl Fn(&Value) -> bool) -> Value {
+        for _ in 0..500 {
+            let state = sessions.dispatch("main", "diff_state", json!({ "id": id })).unwrap();
+            if done(&state) {
+                return state;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the comparison did not finish");
+    }
+
+    #[test]
+    fn compares_with_another_file_by_a_key_and_opens_the_result() {
+        let folder = std::env::temp_dir().join(format!("comma-session-diff-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let left = folder.join("left.csv");
+        let right = folder.join("right.csv");
+        std::fs::write(&left, "id,name\n1,Anna\n2,Boris\n3,Vera\n").unwrap();
+        std::fs::write(&right, "id,name\n1,Anna\n2,Borya\n4,Gleb\n").unwrap();
+        let sessions = Sessions::default();
+        sessions.dispatch("main", "open", json!({ "path": left })).unwrap();
+        let id = sessions.dispatch("main", "diff_start", json!({ "path": right })).unwrap()["id"].as_u64().unwrap();
+
+        let ready = wait(&sessions, id, |state| state["ready"] == true);
+        assert_eq!(ready["suggested"], json!([0]), "the id column is the key");
+        sessions.dispatch("main", "diff_run", json!({ "id": id, "options": { "key": [0], "ignoreCase": false, "trim": false } })).unwrap();
+        let done = wait(&sessions, id, |state| !state["summary"].is_null());
+        assert_eq!(done["summary"]["onlyLeft"], 1);
+        assert_eq!(done["summary"]["onlyRight"], 1);
+        assert_eq!(done["summary"]["changed"], 1);
+
+        let statuses = json!(["onlyLeft", "onlyRight", "changed"]);
+        assert_eq!(sessions.dispatch("main", "diff_count", json!({ "id": id, "statuses": statuses })).unwrap(), 3);
+        let rows = sessions.dispatch("main", "diff_rows", json!({ "id": id, "statuses": ["changed"], "start": 0, "count": 10 })).unwrap();
+        assert_eq!(rows[0]["cells"][1], json!({ "left": "Boris", "right": "Borya", "changed": true }));
+
+        let names = ["only left", "only right", "changed", "same"];
+        let token = sessions.dispatch("main", "diff_open", json!({ "id": id, "statuses": statuses, "names": names, "statusTitle": "Comparison" })).unwrap();
+        let opened = sessions.dispatch("window-2", "adopt", json!({ "token": token["token"] })).unwrap();
+        assert_eq!(opened["rows"], 3);
+        assert_eq!(opened["dirty"], true, "a made table has changes until saved");
+        sessions.dispatch("main", "diff_close", json!({ "id": id })).unwrap();
         std::fs::remove_dir_all(folder).unwrap();
     }
 

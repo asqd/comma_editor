@@ -40,7 +40,7 @@
   import { Commands, fieldFocused, labelOf, type Command } from "./lib/commands";
   import { NativeMenu, type Entry } from "./lib/menu";
   import { addRecent, clearRecent, recentFiles } from "./lib/recent";
-  import { focusWindowFor, newWindow, quit } from "./lib/windows";
+  import { diffWindow, focusWindowFor, newWindow, quit } from "./lib/windows";
   import { invoke } from "@tauri-apps/api/core";
   import type { CellRange } from "./lib/api";
 
@@ -353,6 +353,34 @@
       if (answer !== "reopen") return;
     }
     await show(status.path, { encoding, delimiter });
+  }
+
+  /** This window's name, by which a comparison shows rows in it. */
+  const windowName = () => (inTauri ? getCurrentWindow().label : (sessionStorage.getItem("comma-window") ?? ""));
+
+  /** File ▸ Compare with File: chooses the other file and opens the comparison's window. */
+  async function compareWithFile() {
+    const status = doc.status;
+    if (!status || status.indexing !== null) return;
+    const message = L("Choose a file to compare with “%@”.", name(status.path));
+    const path = inTauri
+      ? await open({ multiple: false, directory: false, title: message, defaultPath: status.path?.replace(/[^\\/]*$/, "") })
+      : await askText(message, status.path?.replace(/[^\\/]*$/, "") ?? "", L("Compare"));
+    if (!path) return;
+    try {
+      const { id } = await call<{ id: number }>("diff_start", { path });
+      diffWindow(id, windowName(), name(status.path), name(path), L("%@ and %@", name(status.path), name(path)));
+    } catch (error) {
+      await report(error);
+    }
+  }
+
+  /** Selects a row of the file a comparison points at, if it shows. */
+  async function revealRow(record: number) {
+    const row = await call<number | null>("visible_index", { row: record });
+    if (row === null || !grid) return;
+    grid.select(Selection.at({ row, column: grid.selection?.cursor.column ?? 0 }));
+    grid.focus();
   }
 
   /** A new document: in this window while it has none, in a new one otherwise. */
@@ -1361,6 +1389,14 @@
         ] as const
       ).map(([kind, label]): Command => ({ id: `copyAs:${kind}`, label, enabled: hasSelection, run: () => void copyAs(kind) })),
       {
+        id: "compare",
+        label: L("Compare with File…"),
+        shortcut: { key: "d", command: true, alt: true },
+        inFields: true,
+        enabled: () => !!doc.status && doc.status.indexing === null,
+        run: () => void compareWithFile(),
+      },
+      {
         id: "checkEncoding",
         label: L("Check Encoding and Delimiter…"),
         enabled: () => !!status()?.path,
@@ -1782,6 +1818,8 @@
       { title: L("Reopen with Encoding"), entries: ["reopenEncoding:auto", "-", ...encodings.map((encoding) => `reopenEncoding:${encoding}`)] },
       { title: L("Reopen with Delimiter"), entries: ["reopenDelimiter:auto", "-", ...delimiters.map((delimiter) => `reopenDelimiter:${delimiter}`)] },
       "checkEncoding",
+      "-",
+      "compare",
     ];
     if (!mac) file.push("-", "quit");
     const app = {
@@ -2105,6 +2143,7 @@
         if (focused) void installMenu();
       });
       void window.listen<string[]>("open-files", (event) => void openPaths(event.payload));
+      void window.listen<number>("reveal-row", (event) => void revealRow(event.payload));
       void getCurrentWebview().onDragDropEvent((event) => {
         if (event.payload.type === "drop") void openPaths(event.payload.paths);
       });
@@ -2112,10 +2151,16 @@
       addEventListener("beforeunload", (event) => {
         if (doc.status?.dirty) event.preventDefault();
       });
+      new BroadcastChannel("comma-reveal").onmessage = (event: MessageEvent<{ window: string; row: number }>) => {
+        if (event.data.window === windowName()) void revealRow(event.data.row);
+      };
       // A browser has no menu bar: tests and the console run the menus' commands by name.
       (window as unknown as { commaCommand: (id: string) => void }).commaCommand = (id) => commands.menu(id);
     }
-    if (parameters.has("draft")) void restoreDraft(parameters.get("draft")!);
+    if (parameters.has("adopt")) {
+      fresh = true;
+      void call<Status>("adopt", { token: Number(parameters.get("adopt")) }).then((status) => doc.show(status), (error) => (failure = describe(error)));
+    } else if (parameters.has("draft")) void restoreDraft(parameters.get("draft")!);
     else if (parameters.has("open")) void show(parameters.get("open")!);
     else if (parameters.has("new")) void newDocument();
     else if (inTauri) {
