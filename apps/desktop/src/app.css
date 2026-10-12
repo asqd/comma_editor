@@ -101,3 +101,18 @@ button.small {
   border: 2px solid var(--accent);
   outline: none;
 }
+
+/* The grid's keys go to this field; it is there, at the active cell, but not seen. */
+.grid-keys {
+  position: absolute;
+  width: 2px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  caret-color: transparent;
+}

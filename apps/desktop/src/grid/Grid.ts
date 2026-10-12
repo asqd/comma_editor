@@ -75,8 +75,22 @@ export class Grid {
   onHeader: ((column: number, shift: boolean) => void) | null = null;
   /** Run after every frame, e.g. to keep an editor over its cell. */
   readonly afterDraw: (() => void)[] = [];
+  /** Text typed into the grid, composed by an input method or not: it starts editing. */
+  onType: ((text: string) => void) | null = null;
+  /** Copy or cut from the menu or the keyboard. */
+  onCopy: ((cut: boolean) => void) | null = null;
+  /** Text pasted into the grid. */
+  onPaste: ((text: string) => void) | null = null;
+  /** A right click on a cell or a column's title, where the pointer is. */
+  onMenu: ((target: { area: "cell"; cell: Cell } | { area: "header"; column: number }, x: number, y: number) => void) | null = null;
 
   private readonly scroller: HTMLDivElement;
+  /**
+   * Where the grid's keys go: a field out of sight at the active cell. Being editable, it gets
+   * copy, cut and paste in every WebView, from the keyboard and the menu, and text from input
+   * methods, which a canvas cannot.
+   */
+  private readonly keys: HTMLTextAreaElement;
   private readonly spacer: HTMLDivElement;
   private readonly canvas: HTMLCanvasElement;
   private readonly context: CanvasRenderingContext2D;
@@ -114,14 +128,19 @@ export class Grid {
   constructor(private readonly host: HTMLElement) {
     this.scroller = document.createElement("div");
     this.scroller.className = "grid-scroller";
-    this.scroller.tabIndex = 0;
+    this.keys = document.createElement("textarea");
+    this.keys.className = "grid-keys";
+    this.keys.autocomplete = "off";
+    this.keys.spellcheck = false;
+    this.keys.setAttribute("autocorrect", "off");
+    this.keys.setAttribute("autocapitalize", "off");
     this.spacer = document.createElement("div");
     this.spacer.className = "grid-spacer";
     this.scroller.append(this.spacer);
     this.canvas = document.createElement("canvas");
     this.canvas.className = "grid-canvas";
     // The scroller lies over the canvas, transparent, so that overlay scrollbars stay visible.
-    host.append(this.canvas, this.scroller);
+    host.append(this.canvas, this.scroller, this.keys);
     const context = this.canvas.getContext("2d", { alpha: false });
     if (!context) throw new Error("no 2D canvas");
     this.context = context;
@@ -129,11 +148,24 @@ export class Grid {
 
     this.scroller.addEventListener("scroll", () => this.scrolled());
     this.scroller.addEventListener("wheel", (event) => this.wheel(event), { passive: false });
-    this.scroller.addEventListener("keydown", (event) => this.key(event));
+    this.keys.addEventListener("keydown", (event) => this.key(event));
+    this.keys.addEventListener("input", (event) => {
+      if (!(event as InputEvent).isComposing) this.typed();
+    });
+    this.keys.addEventListener("compositionend", () => this.typed());
+    this.keys.addEventListener("focus", () => this.arm());
+    this.keys.addEventListener("copy", (event) => this.clipboard(event, false));
+    this.keys.addEventListener("cut", (event) => this.clipboard(event, true));
+    this.keys.addEventListener("paste", (event) => {
+      event.preventDefault();
+      this.arm();
+      this.onPaste?.(event.clipboardData?.getData("text/plain") ?? "");
+    });
     this.scroller.addEventListener("pointerdown", (event) => this.pointerDown(event));
     this.scroller.addEventListener("pointermove", (event) => this.pointerMove(event));
     this.scroller.addEventListener("pointerup", (event) => this.pointerUp(event));
     this.scroller.addEventListener("dblclick", (event) => this.doubleClick(event));
+    this.scroller.addEventListener("contextmenu", (event) => this.contextMenu(event));
     new ResizeObserver(() => this.resize()).observe(this.scroller);
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
       this.colors = this.readColors();
@@ -159,7 +191,7 @@ export class Grid {
     );
     this.layout();
     this.invalidate();
-    this.scroller.focus();
+    this.focus();
   }
 
   /** The rows changed: an edit, undo, sort or filter. Keeps the place and the column widths. */
@@ -231,12 +263,40 @@ export class Grid {
   }
 
   focus(): void {
-    this.scroller.focus();
+    this.keys.focus({ preventScroll: true });
   }
 
   /** Whether a key went to the grid itself, rather than to an editor or a field. */
   owns(target: EventTarget | null): boolean {
-    return target === this.scroller;
+    return target === this.keys;
+  }
+
+  /**
+   * Puts a selected space in the field: engines copy and cut only a selection, and typing
+   * replaces it with what was typed.
+   */
+  private arm(): void {
+    this.keys.value = " ";
+    this.keys.select();
+  }
+
+  private typed(): void {
+    const text = this.keys.value;
+    this.arm();
+    if (text) this.onType?.(text);
+  }
+
+  private clipboard(event: ClipboardEvent, cut: boolean): void {
+    event.preventDefault();
+    this.onCopy?.(cut);
+  }
+
+  /** Keeps the field for keys at the active cell, where input methods show their candidates. */
+  private placeKeys(): void {
+    const cursor = this.selected?.cursor;
+    const rect = cursor ? this.cellRect(cursor) : { x: 0, y: 0, height: ROW_HEIGHT };
+    this.keys.style.left = `${Math.max(0, Math.min(this.width - 2, rect.x))}px`;
+    this.keys.style.top = `${Math.max(0, Math.min(this.height - rect.height, rect.y))}px`;
   }
 
   get maxTop(): number {
@@ -451,7 +511,7 @@ export class Grid {
     const hit = this.hit(event.clientX, event.clientY);
     if (hit.area === "none" || hit.area === "corner") return;
     event.preventDefault();
-    this.scroller.focus();
+    this.focus();
     const columns = this.widths.length;
     if (hit.area === "header") {
       this.onHeader?.(hit.column, event.shiftKey);
@@ -510,6 +570,26 @@ export class Grid {
     this.scrollTo(this.top + dy, this.left + dx);
     this.extendDrag();
     this.drag.frame = requestAnimationFrame(() => this.autoscroll());
+  }
+
+  /**
+   * A cell outside the selection becomes the selection; a column's title moves the cursor to
+   * that column in the active row, as the macOS app's menus do.
+   */
+  private contextMenu(event: MouseEvent): void {
+    const hit = this.hit(event.clientX, event.clientY);
+    if (hit.area !== "cell" && hit.area !== "header") return;
+    event.preventDefault();
+    this.focus();
+    if (hit.area === "cell") {
+      const cell = { row: hit.row, column: hit.column };
+      if (!this.selected?.contains(cell.row, cell.column)) this.select(Selection.at(cell), false);
+      this.onMenu?.({ area: "cell", cell }, event.clientX, event.clientY);
+    } else {
+      const row = this.selected?.cursor.row ?? 0;
+      if ((this.source?.rows ?? 0) > 0) this.select(Selection.at({ row, column: hit.column }), false);
+      this.onMenu?.({ area: "header", column: hit.column }, event.clientX, event.clientY);
+    }
   }
 
   private doubleClick(event: MouseEvent): void {
@@ -787,6 +867,7 @@ export class Grid {
     g.stroke();
 
     this.stats.draw(performance.now() - started);
+    this.placeKeys();
     for (const listener of this.afterDraw) listener();
     this.onFrame?.(complete);
     return complete;

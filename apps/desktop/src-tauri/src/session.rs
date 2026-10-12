@@ -282,8 +282,9 @@ struct InsertRows {
 }
 
 #[derive(Deserialize)]
-struct Rows {
-    rows: Vec<u64>,
+struct RowRange {
+    top: u64,
+    bottom: u64,
 }
 
 #[derive(Deserialize)]
@@ -440,8 +441,9 @@ impl Sessions {
                 status(&session)
             }
             "delete_rows" => {
-                let Rows { rows } = args(args_)?;
-                let records = rows.into_iter().filter_map(|row| document.visible_record(row)).collect();
+                // Visible rows `top..=bottom`: a range, as a whole table may be selected.
+                let RowRange { top, bottom } = args(args_)?;
+                let records = (top..=bottom).filter_map(|row| document.visible_record(row)).collect();
                 document.delete_rows(records)?;
                 status(&session)
             }

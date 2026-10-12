@@ -65,6 +65,7 @@ fn bench_done(app: AppHandle, ok: bool, report: String) {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Sessions::default()))
         .on_window_event(|window, event| {

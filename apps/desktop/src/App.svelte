@@ -13,6 +13,10 @@
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
+  import { readClipboard, writeClipboard } from "./lib/clipboard";
+  import { shortcutLabel, type Shortcut } from "./lib/keys";
+  import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
+  import type { CellRange } from "./lib/api";
 
   const mac = navigator.userAgent.includes("Mac");
   const openShortcut = mac ? "⌘O" : "Ctrl+O";
@@ -30,6 +34,8 @@
   } | null>(null);
   /** The format of a file being saved, asked before the file is chosen. */
   let saving = $state<{ format: SaveFormat; answer: (format: SaveFormat | null) => void } | null>(null);
+  /** A menu open at the pointer. */
+  let menu = $state<{ x: number; y: number; items: (MenuItem | null)[] } | null>(null);
   /** A value with line breaks being edited in a window of its own. */
   let sheet = $state<{ cell: Cell; heading: string; value: string } | null>(null);
   /** The status the view shows rows for; the rows reload when it differs in what they show. */
@@ -312,6 +318,147 @@
     await doc.attempt(() => doc.run(redo ? "redo" : "undo"));
   }
 
+  const sortedOrFiltered = () => (doc.status ? doc.status.view.sort.length > 0 || doc.status.view.filters.length > 0 : false);
+
+  /** Inserts a row above or below the selection, or at the end; not while sorted or filtered. */
+  async function insertRow(below: boolean) {
+    const status = doc.status;
+    if (!status || !grid || sortedOrFiltered() || !changeable()) return;
+    const range = grid.selection?.range;
+    const at = range ? (below ? range.bottom + 1 : range.top) : status.rows;
+    const column = grid.selection?.cursor.column ?? 0;
+    if (await doc.attempt(() => doc.run("insert_rows", { at, count: 1 }))) grid.select(Selection.at({ row: at, column }));
+  }
+
+  /** Deletes every row the selection touches. */
+  async function deleteRows() {
+    const range = grid?.selection?.range;
+    if (!grid || !range || !changeable()) return;
+    const column = grid.selection!.cursor.column;
+    if (await doc.attempt(() => doc.run("delete_rows", { top: range.top, bottom: range.bottom }))) {
+      const rows = doc.status?.rows ?? 0;
+      grid.select(rows > 0 ? Selection.at({ row: Math.min(range.top, rows - 1), column }) : null);
+    }
+  }
+
+  async function insertColumn(right: boolean) {
+    if (!grid || !doc.status || !changeable()) return;
+    const cursor = grid.selection?.cursor ?? { row: 0, column: doc.status.columns - 1 };
+    const at = cursor.column + (right ? 1 : 0);
+    if (await doc.attempt(() => doc.run("insert_column", { at }))) grid.select(Selection.at({ row: cursor.row, column: at }));
+  }
+
+  async function deleteColumn() {
+    const cursor = grid?.selection?.cursor;
+    if (!grid || !cursor || (doc.status?.columns ?? 0) < 2 || !changeable()) return;
+    await doc.attempt(() => doc.run("delete_column", { at: cursor.column }));
+  }
+
+  /** Renames a column, which the header row names; files without one have no names to change. */
+  async function renameColumn(column: number) {
+    const status = doc.status;
+    if (!status?.hasHeader || !changeable()) return;
+    const name = await askText(L("Rename Column"), status.header[column] ?? "", L("Rename"));
+    if (name !== null && name !== status.header[column]) await doc.attempt(() => doc.run("rename_column", { column, name }));
+  }
+
+  /**
+   * Runs work that moves rows about, keeping the active row of the file selected (as
+   * GridViewController.reselect): it may now show elsewhere, or not at all.
+   */
+  async function keepingRow(work: () => Promise<unknown>) {
+    const cursor = grid?.selection?.cursor;
+    const record = cursor ? await call<number | null>("record", { row: cursor.row }) : null;
+    await doc.attempt(work);
+    if (!grid || !cursor) return;
+    const row = record === null ? null : await call<number | null>("visible_index", { row: record });
+    grid.select(row === null ? null : Selection.at({ row, column: cursor.column }));
+  }
+
+  async function toggleHeader() {
+    const status = doc.status;
+    if (!status || !changeable()) return;
+    await keepingRow(() => doc.run("set_has_header", { hasHeader: !status.hasHeader }));
+  }
+
+  /** Copies the selection as tab-separated text, which spreadsheets paste as cells; or cuts it. */
+  async function copy(cut: boolean) {
+    const range = grid?.selection?.range;
+    if (!range || (cut && !changeable())) return;
+    try {
+      await writeClipboard(await call<string>("copy", { range }));
+      if (cut) await doc.attempt(() => doc.run("fill", { range, value: "" }));
+    } catch (error) {
+      doc.problem = describe(error).message;
+    }
+  }
+
+  /** Pastes from the selection's top left, or fills it with a single value; or appends rows. */
+  async function paste(text: string) {
+    const status = doc.status;
+    if (!grid || !status || !text || !changeable()) return;
+    const range = grid.selection?.range ?? { top: status.rows, left: 0, bottom: status.rows, right: 0 };
+    await doc.attempt(async () => {
+      const reply = await doc.runWith<{ status: Status; range: CellRange | null }>("paste", { range, text });
+      const written = reply.range;
+      if (written) grid!.select(new Selection({ row: written.bottom, column: written.right }, { row: written.top, column: written.left }));
+    });
+  }
+
+  /** Copies the first row of the selection down it; a single row takes the row above. */
+  async function fillDown() {
+    const range = grid?.selection?.range;
+    if (!range || !changeable()) return;
+    const rows = range.top === range.bottom ? { ...range, top: range.top - 1 } : range;
+    if (rows.top < 0) return;
+    await doc.attempt(() => doc.run("fill_down", { range: rows }));
+  }
+
+  const keys = (shortcut: Shortcut) => shortcutLabel(shortcut);
+
+  /** The menus of a cell and of a column's title (GridViewController+View.swift). */
+  function openMenu(target: { area: "cell"; cell: Cell } | { area: "header"; column: number }, x: number, y: number) {
+    const status = doc.status;
+    if (!status) return;
+    const busy = status.indexing !== null || status.job !== null;
+    if (target.area === "header") {
+      const column = target.column;
+      menu = {
+        x,
+        y,
+        items: [
+          { label: L("Rename Column…"), disabled: busy || !status.hasHeader, run: () => void renameColumn(column) },
+          null,
+          { label: L("Insert Column Left"), shortcut: keys({ key: "ArrowLeft", command: true, alt: true }), disabled: busy, run: () => void insertColumn(false) },
+          { label: L("Insert Column Right"), shortcut: keys({ key: "ArrowRight", command: true, alt: true }), disabled: busy, run: () => void insertColumn(true) },
+          { label: L("Delete Column"), shortcut: keys({ key: "Backspace", command: true, alt: true }), disabled: busy || status.columns < 2, run: () => void deleteColumn() },
+          null,
+          { label: L("First Row Is Header"), checked: status.hasHeader, disabled: busy, run: () => void toggleHeader() },
+        ],
+      };
+      return;
+    }
+    const cell = target.cell;
+    const view = sortedOrFiltered();
+    menu = {
+      x,
+      y,
+      items: [
+        { label: L("Edit Cell"), disabled: busy, run: () => void edit(cell) },
+        { label: L("Edit Cell in Window…"), shortcut: keys({ key: "e", command: true, alt: true }), disabled: busy, run: () => void edit(cell, undefined, true) },
+        null,
+        { label: L("Cut"), shortcut: keys({ key: "x", command: true }), disabled: busy, run: () => void copy(true) },
+        { label: L("Copy"), shortcut: keys({ key: "c", command: true }), run: () => void copy(false) },
+        { label: L("Paste"), shortcut: keys({ key: "v", command: true }), disabled: busy, run: () => void readClipboard().then(paste) },
+        { label: L("Fill Down"), shortcut: keys({ key: "d", command: true }), disabled: busy, run: () => void fillDown() },
+        null,
+        { label: L("Insert Row Above"), shortcut: keys({ key: "ArrowUp", command: true, alt: true }), disabled: busy || view, run: () => void insertRow(false) },
+        { label: L("Insert Row Below"), shortcut: keys({ key: "ArrowDown", command: true, alt: true }), disabled: busy || view, run: () => void insertRow(true) },
+        { label: L("Delete Rows"), shortcut: keys({ key: "Backspace", command: true }), disabled: busy, run: () => void deleteRows() },
+      ],
+    };
+  }
+
   /** Keys that reach the grid itself and are not moves of the cursor. */
   function gridKey(event: KeyboardEvent): boolean {
     const command = mac ? event.metaKey : event.ctrlKey;
@@ -323,15 +470,22 @@
       void undo(true);
     } else if (command && event.altKey && event.code === "KeyE") {
       if (cursor) void edit(cursor, undefined, true);
+    } else if (command && event.altKey && (key === "ArrowUp" || key === "ArrowDown")) {
+      void insertRow(key === "ArrowDown");
+    } else if (command && event.altKey && (key === "ArrowLeft" || key === "ArrowRight")) {
+      void insertColumn(key === "ArrowRight");
+    } else if (command && event.altKey && key === "Backspace") {
+      void deleteColumn();
+    } else if (command && !event.altKey && !event.shiftKey && key === "Backspace") {
+      void deleteRows();
+    } else if (command && !event.altKey && !event.shiftKey && event.code === "KeyD") {
+      void fillDown();
     } else if (!cursor) {
       return false;
     } else if (key === "Enter" && !command && !event.altKey && !event.shiftKey) {
       void edit(cursor);
     } else if ((key === "Delete" || key === "Backspace") && !command && !event.altKey) {
       void clear();
-    } else if (key.length === 1 && !command && !event.altKey && !(mac && event.ctrlKey)) {
-      // Typing replaces the value, as in the macOS app.
-      void edit(cursor, key);
     } else {
       return false;
     }
@@ -362,6 +516,14 @@
     grid = new Grid(host);
     editor = new CellEditor(grid, host, (cell, value, move) => void write(cell, value, move));
     grid.onActivate = (cell) => void edit(cell);
+    // Typing replaces the value, as in the macOS app.
+    grid.onType = (text) => {
+      const cursor = grid?.selection?.cursor;
+      if (cursor) void edit(cursor, text);
+    };
+    grid.onCopy = (cut) => void copy(cut);
+    grid.onPaste = (text) => void paste(text);
+    grid.onMenu = openMenu;
     grid.onSelect = (selected) => {
       selection = selected;
       void measure(selected);
@@ -416,6 +578,17 @@
       {/if}
     {/if}
   </footer>
+  {#if menu}
+    <ContextMenu
+      x={menu.x}
+      y={menu.y}
+      items={menu.items}
+      close={() => {
+        menu = null;
+        grid?.focus();
+      }}
+    />
+  {/if}
   {#if alert}
     <Alert
       message={alert.message}
