@@ -2242,6 +2242,26 @@ impl CoreWorkbook {
         self.restructure(sheets, index, axis, at, count, false)
     }
 
+    /// Moves rows (records) of sheet `index` to stand before row `to`, references following
+    /// in every sheet given, as cutting and inserting rows does in Excel; returns the sheets
+    /// changed, each with one undoable step.
+    pub fn move_rows(&self, sheets: Vec<SheetToSave>, index: u64, rows: Vec<u64>, to: u64) -> Result<Vec<u64>, CoreError> {
+        let mut documents = sheets.iter().map(|sheet| sheet.document.edit()).collect::<Result<Vec<_>, _>>()?;
+        let mut edited: Vec<(usize, &mut core::Document)> =
+            sheets.iter().zip(documents.iter_mut()).map(|(sheet, document)| (sheet.index as usize, &mut **document)).collect();
+        let rows: Vec<usize> = rows.into_iter().map(|row| row as usize).collect();
+        let changed = self.inner.move_rows(&mut edited, index as usize, &rows, to as usize)?;
+        Ok(changed.into_iter().map(|sheet| sheet as u64).collect())
+    }
+
+    /// Puts the rows of sheet `index` in the order its view sorts them, as Excel sorts:
+    /// formulas move with their rows, references from elsewhere and formats stay. `false`
+    /// when nothing moved.
+    pub fn sort_rows(&self, document: Arc<CoreDocument>, index: u64) -> Result<bool, CoreError> {
+        let mut edited = document.edit()?;
+        Ok(self.inner.sort_rows(&mut edited, index as usize)?)
+    }
+
     /// Reads a sheet; call off the main thread for large ones. `None` if `job` was cancelled.
     pub fn read_sheet(&self, index: u64, locale: DisplayLocale, job: Arc<SheetJob>) -> Result<Option<LoadedSheet>, CoreError> {
         let sheet = self.inner.read_sheet_with_progress(index as usize, &locale.into(), &job.progress)?;

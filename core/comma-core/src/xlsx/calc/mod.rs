@@ -305,6 +305,21 @@ impl Workbook {
         formats.get(style as usize).unwrap_or(&formats[0])
     }
 
+    /// What the file holds in the cells of a sheet, to keep exact values when rows move.
+    pub(crate) fn file_values(&self, index: usize, locale: &DisplayLocale) -> Option<FileValues> {
+        let Source::Xlsx { styles, .. } = &self.source else { return None };
+        let mut state = self.calc.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let raw = match state.raw.get(&index) {
+            Some(raw) => Arc::clone(raw),
+            None => {
+                let raw = Arc::new(self.read_raw(index, locale).ok()?);
+                state.raw.insert(index, Arc::clone(&raw));
+                raw
+            }
+        };
+        Some(FileValues { raw, formats: styles.formats(locale), locale: locale.clone(), date1904: self.date1904 })
+    }
+
     /// The values a sheet stores, with the style of each cell.
     fn read_raw(&self, index: usize, locale: &DisplayLocale) -> Result<RawSheet> {
         let Source::Xlsx { package, strings, styles } = &self.source else {
@@ -320,6 +335,34 @@ impl Workbook {
         let context = super::sheet::Context { strings, formats: &formats, locale, date1904: self.date1904 };
         let content = super::sheet::read_sheet(&mut super::xml::reader(&text), text.len() as u64, part, &context, None, true)?;
         Ok(content.and_then(|content| content.raw).unwrap_or_default())
+    }
+}
+
+/// What the file holds in the cells of a sheet.
+pub(crate) struct FileValues {
+    raw: Arc<RawSheet>,
+    formats: Vec<Arc<NumberFormat>>,
+    locale: DisplayLocale,
+    date1904: bool,
+}
+
+impl FileValues {
+    /// The file's exact value of a cell that shows `shown` as the file has it, as text read
+    /// back exactly: a plain number, TRUE or FALSE, or the text. `None` when it shows
+    /// something else or holds an error.
+    pub(crate) fn exact(&self, row: usize, column: usize, shown: &str) -> Option<String> {
+        let cell = self.raw.get(row, column)?;
+        let value = raw_value(Some(cell), &self.raw);
+        let format = self.formats.get(cell.style as usize).unwrap_or(&self.formats[0]);
+        if show(&value, format, &self.locale, self.date1904).0 != shown {
+            return None;
+        }
+        match value {
+            Value::Number(number) => Some(format!("{number}")),
+            Value::Bool(truth) => Some((if truth { "TRUE" } else { "FALSE" }).to_owned()),
+            Value::Text(text) => Some(text),
+            Value::Error(_) | Value::Empty => None,
+        }
     }
 }
 
@@ -459,6 +502,13 @@ impl Cells for Model<'_> {
         }
         let text = match field {
             Some(Field::Text(text)) => text.as_str(),
+            Some(Field::Entered(cell)) if cell.exact => {
+                return Ok(match super::save::entered_value(cell, &NumberFormat::general(), self.locale, self.workbook.date1904) {
+                    super::save::Typed::Number(number) => Value::Number(number),
+                    super::save::Typed::Bool(truth) => Value::Bool(truth),
+                    super::save::Typed::Text(text) => Value::Text(text.to_owned()),
+                });
+            }
             Some(Field::Entered(cell)) => cell.input.as_str(),
             _ => "",
         };

@@ -85,6 +85,177 @@ impl Workbook {
     }
 }
 
+impl Workbook {
+    /// Moves rows of sheet `index` to stand before row `to`, as cutting and inserting them
+    /// does in Excel: references to them follow, in formulas of every sheet here and, when
+    /// saving, in merged cells, formats, validations, links and names. One undoable step per
+    /// document changed; returns the sheets changed.
+    pub fn move_rows(&self, sheets: &mut [(usize, &mut Document)], index: usize, rows: &[usize], to: usize) -> Result<Vec<usize>> {
+        let name = self.sheets.get(index).map(|sheet| sheet.name.to_lowercase()).ok_or(Error::RowOutOfRange { row: index, rows: self.sheets.len() })?;
+        let Some(position) = sheets.iter().position(|(sheet, _)| *sheet == index) else {
+            return Ok(Vec::new());
+        };
+        let document = &sheets[position].1;
+        if document.sheet_structure_locked() {
+            return Err(Error::SheetStructure(SheetStructure::RowsFixed));
+        }
+        let mut rows = rows.to_vec();
+        rows.sort_unstable();
+        rows.dedup();
+        let length = document.row_count();
+        let Some(&last) = rows.last() else { return Ok(Vec::new()) };
+        if last >= length || to > length {
+            return Err(Error::RowOutOfRange { row: last.max(to), rows: length });
+        }
+        // A merged area over several rows moves whole or not at all, as Excel has it.
+        if let Some(sheet) = &document.sheet {
+            let moved: std::collections::HashSet<usize> = rows.iter().filter_map(|&row| document.row_origin(row)).collect();
+            let split = sheet.merged.iter().any(|area| {
+                area.bottom > area.top && {
+                    let inside = (area.top..=area.bottom).filter(|row| moved.contains(row)).count();
+                    inside > 0 && inside < area.bottom - area.top + 1
+                }
+            });
+            if split {
+                return Err(Error::SheetStructure(SheetStructure::RowsFixed));
+            }
+        }
+        // The new order of the rows, and where each old row goes.
+        let target = to - rows.iter().filter(|&&row| row < to).count();
+        let moving: std::collections::HashSet<usize> = rows.iter().copied().collect();
+        let mut order: Vec<usize> = (0..length).filter(|row| !moving.contains(row)).collect();
+        order.splice(target..target, rows.iter().copied());
+        if order.iter().enumerate().all(|(new, &old)| new == old) {
+            return Ok(Vec::new());
+        }
+        let mut new_of_old = vec![0u32; length];
+        for (new, &old) in order.iter().enumerate() {
+            new_of_old[old] = new as u32;
+        }
+        let place = |row: u32| new_of_old.get(row as usize).copied().unwrap_or(row);
+        // A reference follows its rows; a range keeps its ends, or, when rows moved within it
+        // turned them around, covers where its rows went.
+        let moved = |first: u32, last: u32| {
+            let (top, bottom) = (place(first), place(last));
+            if top <= bottom {
+                return Some((top, bottom));
+            }
+            let end = last.min(length as u32 - 1);
+            let (low, high) = (first..=end).map(place).fold((u32::MAX, 0), |(low, high), row| (low.min(row), high.max(row)));
+            Some((low, if last > end { last } else { high }))
+        };
+        let same = |first: u32, last: u32| Some((first, last));
+        let remap = Remap { sheet: &name, rows: &moved, columns: &same };
+
+        let mut changed = Vec::new();
+        for (sheet, document) in sheets.iter_mut() {
+            let own = self.sheets.get(*sheet).map(|entry| entry.name.to_lowercase()).unwrap_or_default();
+            if *sheet != index {
+                if remap_formulas(document, &own, &remap) {
+                    changed.push(*sheet);
+                }
+                continue;
+            }
+            let mut formulas_moved = false;
+            let records: Vec<Record> = order
+                .iter()
+                .map(|&old| {
+                    let record = &document.records[old];
+                    match remapped(&document.fields(record), &own, &remap) {
+                        Some(fields) => {
+                            formulas_moved = true;
+                            record.with_fields(fields)
+                        }
+                        None => record.clone(),
+                    }
+                })
+                .collect();
+            let columns = document.column_count();
+            document.replace_records(records, columns, true);
+            document.refresh_view();
+            if formulas_moved {
+                mark_formulas_moved(document);
+            }
+            changed.push(*sheet);
+        }
+        let mut state = self.calc.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(touched) = state.touched.get_mut(&index) {
+            *touched = touched.iter().map(|&row| place(row)).collect();
+        }
+        Ok(changed)
+    }
+}
+
+impl Workbook {
+    /// Puts the rows of sheet `index` in the order its view sorts them, as Excel sorts: rows
+    /// take their values and formulas along, a formula's relative references moving with it as
+    /// when copied, while formats and every reference from elsewhere stay where they are.
+    /// Refused when a merged area lies among the rows that move, as Excel refuses it. One
+    /// undoable step; `false` when nothing moved.
+    pub fn sort_rows(&self, document: &mut Document, index: usize) -> Result<bool> {
+        if document.sheet_structure_locked() {
+            return Err(Error::SheetStructure(SheetStructure::RowsFixed));
+        }
+        let Some(order) = document.sorted_order() else { return Ok(false) };
+        if order.iter().enumerate().all(|(new, &old)| new == old) {
+            document.clear_sort();
+            return Ok(false);
+        }
+        let moving: Vec<usize> = order.iter().enumerate().filter(|(new, old)| new != *old).map(|(new, _)| new).collect();
+        if let Some(sheet) = &document.sheet {
+            let origins: std::collections::HashSet<usize> = moving.iter().filter_map(|&row| document.row_origin(row)).collect();
+            if sheet.merged.iter().any(|area| (area.top..=area.bottom).any(|row| origins.contains(&row))) {
+                return Err(Error::SheetStructure(SheetStructure::RowsFixed));
+            }
+        }
+        let locale = document.sheet.as_ref().map(|sheet| sheet.locale.clone()).unwrap_or_default();
+        let values = self.file_values(index, &locale);
+        let mut records = Vec::with_capacity(order.len());
+        for (new, &old) in order.iter().enumerate() {
+            let record = &document.records[old];
+            if new == old {
+                records.push(record.clone());
+                continue;
+            }
+            let delta = new as i64 - old as i64;
+            let origin = document.row_origin(old);
+            let fields = document
+                .fields(record)
+                .into_iter()
+                .enumerate()
+                .map(|(column, field)| match field {
+                    Field::Formula(cell) => Field::Formula(Box::new(FormulaField {
+                        formula: super::shift_formula(&cell.formula, delta, 0),
+                        array: cell.array.as_deref().map(|range| super::shift_formula(range, delta, 0)),
+                        from_file: false,
+                        ..*cell
+                    })),
+                    // A value of the file keeps its exact value, not the one shown rounded.
+                    Field::Text(text) => {
+                        let exact = origin
+                            .zip(document.column_origin(column))
+                            .and_then(|(row, column)| values.as_ref()?.exact(row, column, &text));
+                        match exact {
+                            Some(input) if input != text => {
+                                Field::Entered(Box::new(crate::document::EnteredField { input, shown: text, exact: true }))
+                            }
+                            _ => Field::Text(text),
+                        }
+                    }
+                    field => field,
+                })
+                .collect();
+            // The row stands at the place of the file's row there, with its formats.
+            records.push(record.at_origin(fields, document.row_origin(new)));
+        }
+        let columns = document.column_count();
+        document.replace_records(records, columns, true);
+        document.clear_sort();
+        mark_formulas_moved(document);
+        Ok(true)
+    }
+}
+
 /// The formulas of a record with references moved; `None` if none changed.
 fn remapped(fields: &[Field], own: &str, remap: &Remap) -> Option<Vec<Field>> {
     let mut changed = false;

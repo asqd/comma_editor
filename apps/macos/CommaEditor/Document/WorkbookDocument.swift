@@ -198,7 +198,56 @@ final class WorkbookDocument: CSVDocument {
     /// references to them in every sheet. Every sheet is read first, so no formula is missed.
     /// The sheets changed take one undo step together.
     private func restructure(_ actionName: String, _ axis: SheetAxis, insert: Bool, runs: [(Int, Int)]) -> Bool {
-        guard !runs.isEmpty, let workbook, !isLegacyFormat else { return false }
+        guard !runs.isEmpty else { return false }
+        return changeWorkbook(actionName) { workbook, sheets, index in
+            var changed: [UInt64] = []
+            for (at, count) in runs {
+                changed += insert
+                    ? try workbook.insert(sheets: sheets, index: index, axis: axis, at: UInt64(at), count: UInt64(count))
+                    : try workbook.delete(sheets: sheets, index: index, axis: axis, at: UInt64(at), count: UInt64(count))
+            }
+            return changed
+        }
+    }
+
+    /// Moves rows of the shown sheet through the workbook, references following them in
+    /// every sheet, as cutting and inserting rows does in Excel.
+    @discardableResult
+    override func moveRows(visibleRows: [Int], beforeVisibleRow target: Int) -> Bool {
+        guard rowsMoveReferences else { return super.moveRows(visibleRows: visibleRows, beforeVisibleRow: target) }
+        let rows = visibleRows.compactMap { core.visibleRecord(visibleRow: UInt64($0)) }
+        let to = core.insertionRow(visibleRow: UInt64(target))
+        return changeWorkbook(L("Row Move")) { workbook, sheets, index in
+            try workbook.moveRows(sheets: sheets, index: index, rows: rows, to: to)
+        }
+    }
+
+    /// Sorts the rows of a sheet into the file as Excel sorts: formulas move with their rows,
+    /// references from elsewhere and formats stay where they are.
+    @discardableResult
+    override func applySort() -> Bool {
+        guard let workbook, rowsMoveReferences, !isLegacyFormat else { return super.applySort() }
+        guard !isBusy else {
+            NSSound.beep()
+            return false
+        }
+        do {
+            guard try workbook.sortRows(document: core, index: UInt64(sheetIndex)) else { return false }
+        } catch {
+            presentEditError(error)
+            return false
+        }
+        registerUndo()
+        undoManager?.setActionName(L("Sorting"))
+        _ = tableDidChange()
+        post(.structure)
+        return true
+    }
+
+    /// Runs a change of the shown sheet that moves references in every sheet: each sheet is
+    /// read first, so no formula is missed; the sheets changed take one undo step together.
+    private func changeWorkbook(_ actionName: String, _ change: (CoreWorkbook, [SheetToSave], UInt64) throws -> [UInt64]) -> Bool {
+        guard let workbook, !isLegacyFormat else { return false }
         guard !isBusy else {
             NSSound.beep()
             return false
@@ -212,12 +261,7 @@ final class WorkbookDocument: CSVDocument {
         let sheets = loaded.map { SheetToSave(index: UInt64($0.key), document: $0.value.document) }
         var changed: [UInt64] = []
         do {
-            for (at, count) in runs {
-                let index = UInt64(sheetIndex)
-                changed += insert
-                    ? try workbook.insert(sheets: sheets, index: index, axis: axis, at: UInt64(at), count: UInt64(count))
-                    : try workbook.delete(sheets: sheets, index: index, axis: axis, at: UInt64(at), count: UInt64(count))
-            }
+            changed = try change(workbook, sheets, UInt64(sheetIndex))
         } catch {
             presentEditError(error)
             return false

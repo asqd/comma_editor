@@ -435,6 +435,9 @@ extension GridViewController: NSMenuItemValidation {
                 return false
             case #selector(insertRowAbove(_:)), #selector(insertRowBelow(_:)), #selector(deleteRows(_:)):
                 break
+            // Rows move and sort through the workbook unless something holds them in place.
+            case #selector(moveRowsUp(_:)), #selector(moveRowsDown(_:)), #selector(applySortToFile(_:)) where !locked:
+                break
             case _ where info.sheetRowsFixed && Self.rowActions.contains(action):
                 return false
             default:

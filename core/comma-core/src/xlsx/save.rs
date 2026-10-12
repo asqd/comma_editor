@@ -385,8 +385,16 @@ fn patch_sheet(
                 continue;
             }
             formulas_changed |= had_formula;
-            let text = now.map(input).unwrap_or_default();
-            body.push_str(&write_cell(&prefix, &reference, style.as_deref(), text, format, context.locale, context.date1904));
+            match now {
+                Some(Field::Entered(cell)) if !cell.input.is_empty() => {
+                    let value = entered_value(cell, format, context.locale, context.date1904);
+                    body.push_str(&write_value_cell(&prefix, &reference, style.as_deref(), value));
+                }
+                _ => {
+                    let text = now.map(input).unwrap_or_default();
+                    body.push_str(&write_cell(&prefix, &reference, style.as_deref(), text, format, context.locale, context.date1904));
+                }
+            }
         }
         body.push_str(&format!("</{prefix}row>"));
     }
@@ -411,12 +419,16 @@ fn patch_sheet(
         return Ok(None);
     }
 
-    // References outside the cells move where rows and columns went.
-    let moved = !rows_map.is_identity() || columns_moved;
+    // References outside the cells move where rows and columns went; links go with the
+    // contents of their cells, which sorting moves without the rows.
+    let sources_map = AxisMap::sources(document);
+    let moved = !rows_map.is_identity() || columns_moved || !sources_map.is_identity();
     let rows = |first: u32, last: u32| rows_map.range(first, last);
+    let sources = |first: u32, last: u32| sources_map.range(first, last);
     let columns = |first: u32, last: u32| columns_map.range(first, last);
     let remap = Remap { sheet: own, rows: &rows, columns: &columns };
-    let outside = |text: &str| if moved { remap_parts(text, own, &remap) } else { text.to_owned() };
+    let links = Remap { sheet: own, rows: &sources, columns: &columns };
+    let outside = |text: &str| if moved { remap_parts(text, own, &remap, &links) } else { text.to_owned() };
     let mut out = String::with_capacity(xml.len() + body.len() / 8);
     match spans.dimension {
         Some((start, end)) if end <= data_start => {
@@ -446,6 +458,13 @@ impl AxisMap {
     fn rows(document: &Document) -> Self {
         let read = document.sheet.as_ref().map_or(0, |sheet| sheet.rows);
         Self::new((0..document.row_count()).map(|row| document.row_origin(row)), read)
+    }
+
+    /// Where the rows of the file whose contents the rows hold are: as `rows`, unless sorting
+    /// brought contents to other places.
+    fn sources(document: &Document) -> Self {
+        let read = document.sheet.as_ref().map_or(0, |sheet| sheet.rows);
+        Self::new(document.records.iter().map(|record| record.source()), read)
     }
 
     fn columns(document: &Document) -> Self {
@@ -510,7 +529,16 @@ impl AxisMap {
             }
             index = if index > read { read.max(first) } else { index - 1 };
         }
-        top.zip(bottom).filter(|(top, bottom)| top <= bottom)
+        match top.zip(bottom) {
+            // Rows moved within the range turned its ends around: it covers where they went.
+            Some((top, bottom)) if top > bottom => {
+                let read = self.new_of_old.len() as u32;
+                let mapped = (first..=last.min(read.saturating_sub(1))).filter_map(|index| self.index(index));
+                let (low, high) = mapped.fold((u32::MAX, 0), |(low, high), index| (low.min(index), high.max(index)));
+                (low <= high).then_some((low, high.max(if last >= read { last } else { 0 })))
+            }
+            ends => ends,
+        }
     }
 }
 
@@ -533,7 +561,7 @@ const CELL_ATTRIBUTES: [(&str, &str); 12] = [
 /// XML outside the cells of a sheet with its references moved: merged cells, conditional
 /// formats and their formulas, validations, links, filters, the selection, column widths. An
 /// element whose cells were all deleted goes, as a merged range that is left one cell.
-fn remap_parts(xml: &str, own: &str, remap: &Remap) -> String {
+fn remap_parts(xml: &str, own: &str, remap: &Remap, links: &Remap) -> String {
     let mut out = String::with_capacity(xml.len());
     let mut at = 0;
     while let Some(offset) = xml[at..].find('<') {
@@ -584,6 +612,7 @@ fn remap_parts(xml: &str, own: &str, remap: &Remap) -> String {
                 continue;
             }
             let Some(old) = attribute_value(&tag, attribute) else { continue };
+            let remap = if local == "hyperlink" { links } else { remap };
             let parts: Vec<String> = old
                 .split_whitespace()
                 .map(|range| remap_formula(range, own, remap))
@@ -830,6 +859,11 @@ fn same_cell(was: Option<&Field>, now: Option<&Field>) -> bool {
     {
         return false;
     }
+    // A value typed or moved in is written as it is: showing what the file shows, it may
+    // still be another number.
+    if let Some(Field::Entered(_)) = now {
+        return false;
+    }
     was.map(value).unwrap_or_default() == now.map(value).unwrap_or_default()
 }
 
@@ -1018,11 +1052,29 @@ fn write_cell(
     locale: &DisplayLocale,
     date1904: bool,
 ) -> String {
-    let style = style.map(|style| format!(" s=\"{style}\"")).unwrap_or_default();
     if text.is_empty() {
-        return if style.is_empty() { String::new() } else { format!("<{prefix}c r=\"{reference}\"{style}/>") };
+        // An empty cell keeps its style.
+        return style.map(|style| format!("<{prefix}c r=\"{reference}\" s=\"{style}\"/>")).unwrap_or_default();
     }
-    match typed(text, format, locale, date1904) {
+    write_value_cell(prefix, reference, style, typed(text, format, locale, date1904))
+}
+
+/// What a value typed into a cell, or moved there from the file, holds.
+pub(crate) fn entered_value<'a>(cell: &'a crate::document::EnteredField, format: &NumberFormat, locale: &DisplayLocale, date1904: bool) -> Typed<'a> {
+    if !cell.exact {
+        return typed(&cell.input, format, locale, date1904);
+    }
+    match cell.input.as_str() {
+        "TRUE" => Typed::Bool(true),
+        "FALSE" => Typed::Bool(false),
+        input => input.parse().map_or(Typed::Text(input), Typed::Number),
+    }
+}
+
+/// A cell holding a value.
+fn write_value_cell(prefix: &str, reference: &str, style: Option<&str>, value: Typed) -> String {
+    let style = style.map(|style| format!(" s=\"{style}\"")).unwrap_or_default();
+    match value {
         Typed::Number(number) => format!("<{prefix}c r=\"{reference}\"{style}><{prefix}v>{}</{prefix}v></{prefix}c>", xml_number(number)),
         Typed::Bool(truth) => format!("<{prefix}c r=\"{reference}\"{style} t=\"b\"><{prefix}v>{}</{prefix}v></{prefix}c>", u8::from(truth)),
         Typed::Text(text) => {

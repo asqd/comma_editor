@@ -201,3 +201,110 @@ fn shared_formulas_are_written_on_their_own_when_rows_move() {
     assert_eq!(reopened.formula(4, 3).as_deref(), Some("B5*2"));
     assert_eq!(reopened.cell(4, 1).unwrap(), "3");
 }
+
+#[test]
+fn moved_rows_take_references_with_them() {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sales = workbook.add_worksheet();
+    sales.set_name("Sales").unwrap();
+    sales.write_row(0, 0, ["Item", "Price", "Qty", "Sum"]).unwrap();
+    for (index, (item, price, quantity)) in [("Tea", 10.0, 2.0), ("Coffee", 20.0, 1.0), ("Sugar", 5.0, 4.0)].iter().enumerate() {
+        let row = index as u32 + 1;
+        sales.write_string(row, 0, *item).unwrap();
+        sales.write_number(row, 1, *price).unwrap();
+        sales.write_number(row, 2, *quantity).unwrap();
+        sales.write_formula(row, 3, format!("=B{0}*C{0}", row + 1).as_str()).unwrap();
+    }
+    sales.write_formula(4, 3, "=SUM(D2:D4)").unwrap();
+    let summary = workbook.add_worksheet();
+    summary.set_name("Summary").unwrap();
+    summary.write_formula(0, 0, "=Sales!D2").unwrap();
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    let mut sales = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    let mut summary = workbook.read_sheet(1, &DisplayLocale::default()).unwrap().document;
+    assert!(sales.sheet_rows_fixed());
+    // Tea goes after Sugar.
+    let changed = workbook.move_rows(&mut [(0, &mut sales), (1, &mut summary)], 0, &[1], 4).unwrap();
+    assert_eq!(changed, vec![0, 1]);
+    assert_eq!((1..4).map(|row| sales.cell(row, 0).unwrap()).collect::<Vec<_>>(), ["Coffee", "Sugar", "Tea"]);
+    assert_eq!(sales.formula(3, 3).as_deref(), Some("B4*C4"));
+    // The sum keeps its rows; the summary follows Tea.
+    assert_eq!(sales.formula(4, 3).as_deref(), Some("SUM(D2:D4)"));
+    assert_eq!(summary.formula(0, 0).as_deref(), Some("Sales!D4"));
+    workbook.recalculate(&mut [(0, &mut sales), (1, &mut summary)], 45658.0).unwrap();
+    assert_eq!(summary.cell(0, 0).unwrap(), "20");
+    let saved = workbook.to_bytes(&[(0, &sales), (1, &summary)]).unwrap();
+    let reopened = Workbook::from_bytes(saved).unwrap().read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    assert_eq!(reopened.cell(3, 0).unwrap(), "Tea");
+    assert_eq!(reopened.formula(3, 3).as_deref(), Some("B4*C4"));
+    // One undo puts the rows back.
+    assert!(sales.undo());
+    assert_eq!(sales.cell(1, 0).unwrap(), "Tea");
+}
+
+#[test]
+fn sorting_a_sheet_with_formulas_works_as_excel_sorts() {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let money = rust_xlsxwriter::Format::new().set_num_format("#,##0.00");
+    let sales = workbook.add_worksheet();
+    sales.set_name("Sales").unwrap();
+    sales.write_row(0, 0, ["Item", "Price", "Qty", "Sum"]).unwrap();
+    for (index, (item, price, quantity)) in [("Tea", 10.004, 2.0), ("Coffee", 20.0, 1.0), ("Sugar", 5.0, 4.0)].iter().enumerate() {
+        let row = index as u32 + 1;
+        sales.write_string(row, 0, *item).unwrap();
+        sales.write_number_with_format(row, 1, *price, &money).unwrap();
+        sales.write_number(row, 2, *quantity).unwrap();
+        sales.write_formula(row, 3, format!("=B{0}*C{0}", row + 1).as_str()).unwrap();
+    }
+    sales.write_formula(4, 3, "=SUM(D2:D4)").unwrap();
+    sales.write_formula(5, 3, "=D2").unwrap();
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    let mut sales = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    sales.set_has_header(true);
+    // Sort the three items by name, the total rows outside the sort (they are empty in A).
+    sales.set_view(comma_core::ViewSpec { sort: vec![comma_core::SortKey { column: 0, ascending: true }], filters: vec![] }).unwrap();
+    assert!(workbook.sort_rows(&mut sales, 0).unwrap());
+    let items: Vec<String> = (1..4).map(|row| sales.cell(row, 0).unwrap()).collect();
+    assert_eq!(items, ["Coffee", "Sugar", "Tea"]);
+    // A formula moved with its row reads its row; one outside keeps its cells, as in Excel.
+    assert_eq!(sales.formula(3, 3).as_deref(), Some("B4*C4"));
+    assert_eq!(sales.formula(5, 3).as_deref(), Some("D2"));
+    let saved = workbook.to_bytes(&[(0, &sales)]).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(saved.clone())).unwrap();
+    let mut xml = String::new();
+    archive.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut xml).unwrap();
+    // Tea's price moved exactly, not as the 10,00 shown.
+    assert!(xml.contains("<v>10.004</v>"), "{xml}");
+    let reopened = Workbook::from_bytes(saved).unwrap().read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    assert_eq!(reopened.cell(3, 0).unwrap(), "Tea");
+    assert_eq!(reopened.formula(3, 3).as_deref(), Some("B4*C4"));
+    assert!(sales.undo());
+    assert_eq!(sales.cell(1, 0).unwrap(), "Tea");
+}
+
+#[test]
+fn sorted_rows_take_their_links_along() {
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.write_row(0, 0, ["Item", "Link"]).unwrap();
+    for (index, item) in ["b", "c", "a"].iter().enumerate() {
+        let row = index as u32 + 1;
+        sheet.write_string(row, 0, *item).unwrap();
+        sheet.write_url_with_text(row, 1, format!("https://example.com/{item}").as_str(), *item).unwrap();
+    }
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    let mut document = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    document.set_has_header(true);
+    document.set_view(comma_core::ViewSpec { sort: vec![comma_core::SortKey { column: 0, ascending: true }], filters: vec![] }).unwrap();
+    assert!(workbook.sort_rows(&mut document, 0).unwrap());
+    let saved = workbook.to_bytes(&[(0, &document)]).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(saved)).unwrap();
+    let mut xml = String::new();
+    archive.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut xml).unwrap();
+    let mut rels = String::new();
+    archive.by_name("xl/worksheets/_rels/sheet1.xml.rels").unwrap().read_to_string(&mut rels).unwrap();
+    // "a" was the third row's link: it is on the second row now, with its text.
+    let id_of = |url: &str| rels.split("<Relationship ").find(|item| item.contains(url)).and_then(|item| item.split("Id=\"").nth(1)).map(|rest| rest[..rest.find('"').unwrap()].to_owned()).unwrap();
+    assert!(xml.contains(&format!(r#"<hyperlink ref="B2" r:id="{}""#, id_of("example.com/a"))), "{xml}");
+    assert!(xml.contains(&format!(r#"<hyperlink ref="B4" r:id="{}""#, id_of("example.com/c"))), "{xml}");
+}

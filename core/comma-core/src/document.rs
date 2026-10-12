@@ -41,6 +41,9 @@ pub(crate) struct Modified {
     pub origin: u32,
     /// The fields were changed since the row was read: saving compares them with the file's.
     pub edited: bool,
+    /// For a sheet: the row of the file whose contents the row holds, links included; its own
+    /// row unless sorting brought another row's contents to its place.
+    pub source: u32,
 }
 
 /// A row that is not in the file the document was read from.
@@ -63,6 +66,9 @@ pub(crate) enum Field {
 pub(crate) struct EnteredField {
     pub input: String,
     pub shown: String,
+    /// `input` is the file's own value moved here, a plain number, TRUE or FALSE or text,
+    /// read as it is rather than as a person types into the cell's format.
+    pub exact: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -132,16 +138,35 @@ impl Record {
 
     /// A new record, not read from the file.
     pub(crate) fn modified(fields: Vec<Field>, term: Terminator) -> Self {
-        Self::Modified(Box::new(Modified { fields, term, origin: NO_ORIGIN, edited: true }))
+        Self::Modified(Box::new(Modified { fields, term, origin: NO_ORIGIN, edited: true, source: NO_ORIGIN }))
     }
 
     /// This record with other fields: its line break and where it came from stay.
     pub(crate) fn with_fields(&self, fields: Vec<Field>) -> Self {
-        let origin = match self.get() {
-            RecordRef::Modified(modified) => modified.origin,
+        let (origin, source) = match self.get() {
+            RecordRef::Modified(modified) => (modified.origin, modified.source),
+            RecordRef::Original { .. } => (NO_ORIGIN, NO_ORIGIN),
+        };
+        Self::Modified(Box::new(Modified { fields, term: self.term(), origin, edited: true, source }))
+    }
+
+    /// A row of a sheet with these fields standing at the place of row `origin` of the file,
+    /// whose cells' styles it takes when saved; its contents keep coming from this record's.
+    pub(crate) fn at_origin(&self, fields: Vec<Field>, origin: Option<usize>) -> Self {
+        let origin = origin.map_or(NO_ORIGIN, |origin| origin as u32);
+        let source = match self.get() {
+            RecordRef::Modified(modified) => modified.source,
             RecordRef::Original { .. } => NO_ORIGIN,
         };
-        Self::Modified(Box::new(Modified { fields, term: self.term(), origin, edited: true }))
+        Self::Modified(Box::new(Modified { fields, term: self.term(), origin, edited: true, source }))
+    }
+
+    /// The row of the file whose contents a row of a sheet holds.
+    pub(crate) fn source(&self) -> Option<usize> {
+        match self.get() {
+            RecordRef::Modified(modified) if modified.source != NO_ORIGIN => Some(modified.source as usize),
+            _ => None,
+        }
     }
 
     /// The row of the file a row of a sheet was read from.
@@ -339,6 +364,7 @@ impl Document {
                 term: Terminator::Lf,
                 origin: 0,
                 edited: false,
+                source: 0,
             }))]);
             document.column_count = 1;
             return document;
@@ -349,7 +375,7 @@ impl Document {
             rows.into_iter()
                 .enumerate()
                 .map(|(row, fields)| {
-                    Record::Modified(Box::new(Modified { fields, term: Terminator::Lf, origin: row as u32, edited: false }))
+                    Record::Modified(Box::new(Modified { fields, term: Terminator::Lf, origin: row as u32, edited: false, source: row as u32 }))
                 })
                 .collect(),
         );
@@ -477,7 +503,7 @@ impl Document {
             if let Some(field) = modified.fields.get_mut(column)
                 && let Field::Text(input) = field
             {
-                *field = Field::Entered(Box::new(EnteredField { input: std::mem::take(input), shown: text }));
+                *field = Field::Entered(Box::new(EnteredField { input: std::mem::take(input), shown: text, exact: false }));
             }
         }
         self.generation += 1;
@@ -886,6 +912,23 @@ impl Document {
     /// Makes the current sort order permanent: reorders the rows of the file as one undoable
     /// step and clears the sort. Only without filters, so no row is left out.
     /// Returns `false` if there is nothing to apply.
+    /// The records in the order the view sorts them, the header first, while it is sorted and
+    /// not filtered: what `apply_sort` would make of them.
+    pub(crate) fn sorted_order(&self) -> Option<Vec<usize>> {
+        if self.view.spec.sort.is_empty() || !self.view.spec.filters.is_empty() {
+            return None;
+        }
+        let start = self.header_offset();
+        let rows = self.view.rows.as_ref()?;
+        Some((0..start).chain(rows.iter().copied()).collect())
+    }
+
+    /// Takes the sort out of the view once the file has the rows in its order.
+    pub(crate) fn clear_sort(&mut self) {
+        self.view.spec.sort.clear();
+        self.refresh_view();
+    }
+
     pub fn apply_sort(&mut self) -> Result<bool> {
         if self.view.spec.sort.is_empty() || !self.view.spec.filters.is_empty() {
             return Ok(false);
