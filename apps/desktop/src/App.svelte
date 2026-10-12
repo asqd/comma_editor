@@ -18,7 +18,7 @@
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
-  import { readClipboard, writeClipboard } from "./lib/clipboard";
+  import { readClipboard, writeClipboard, writeClipboardHtml } from "./lib/clipboard";
   import { shortcutLabel } from "./lib/keys";
   import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
   import Toolbar, { type ToolbarItem } from "./Toolbar.svelte";
@@ -49,7 +49,9 @@
   /** What the background change in progress does, for the status bar. */
   let editing = $state("");
   /** The format of a file being saved, asked before the file is chosen. */
-  let saving = $state<{ format: SaveFormat; answer: (format: SaveFormat | null) => void } | null>(null);
+  let saving = $state<{ format: SaveFormat; title?: string; excel?: boolean; answer: (format: SaveFormat | null) => void } | null>(null);
+  /** Exports writing their files, for the status bar. */
+  let exporting = $state(0);
   /** The find bar, with the replace row or not, and the selection it may search in. */
   let finding = $state<{ replacing: boolean; selection: CellRange | null } | null>(null);
   let findBar = $state<ReturnType<typeof FindBar>>();
@@ -193,6 +195,7 @@
     const status = doc.status;
     if (!status) return "";
     if (status.indexing !== null) return L("Reading the file: %@", `${Math.floor(status.indexing * 100)} %`);
+    if (exporting > 0) return L("Exporting…");
     if (status.job?.kind === "view") return L("Sorting and filtering…");
     if (status.job?.kind === "edit") return `${editing || L("Replacing…")} ${Math.floor((status.job.fraction ?? 0) * 100)} %`;
     return "";
@@ -397,6 +400,70 @@
     } catch (error) {
       await report(error);
       return false;
+    }
+  }
+
+  // Export (GridViewController+Export.swift and CSVDocument.saveTo).
+
+  type ExportKind = "json" | "markdown" | "html" | "sql" | "xlsx";
+  const extensions: Record<ExportKind, string> = { json: "json", markdown: "md", html: "html", sql: "sql", xlsx: "xlsx" };
+
+  /** The file's name without its extension: the HTML title, SQL table and sheet of exports. */
+  const exportName = () => (doc.status?.path ? name(doc.status.path).replace(/\.[^.]*$/, "") : "data");
+
+  /** Asks where a file goes; in a browser, in a field. */
+  async function chooseTarget(defaultName: string, extension: string, title?: string): Promise<string | null> {
+    if (inTauri) return chooseSavePath({ title, defaultPath: defaultName, filters: [{ name: extension.toUpperCase(), extensions: [extension] }] });
+    const folder = doc.status?.path?.replace(/[^\\/]*$/, "") ?? "";
+    return askText(title ?? L("Export…"), `${folder}${defaultName}`, L("Save"));
+  }
+
+  /** A copy of the whole file in another format; the document keeps its own. */
+  async function exportCopy(excel: boolean) {
+    if (!doc.status) return;
+    const current = await call<SaveFormat>("save_format");
+    const title = excel ? L("Export for Excel…") : L("Export…");
+    const format = await new Promise<SaveFormat | null>((answer) => (saving = { format: current, title, excel, answer }));
+    if (!format) return;
+    const extension = format.delimiter === "\t" ? "tsv" : "csv";
+    const path = await chooseTarget(`${exportName()}.${extension}`, extension);
+    if (!path) return;
+    exporting += 1;
+    try {
+      await call("save_copy", { path, format });
+    } catch (error) {
+      await report(error);
+    } finally {
+      exporting -= 1;
+    }
+  }
+
+  /** The shown rows, in the order shown, as JSON, Markdown, HTML, SQL or an Excel workbook. */
+  async function exportAs(kind: ExportKind) {
+    const status = doc.status;
+    if (!status) return;
+    const viewed = status.view.sort.length > 0 || status.view.filters.length > 0;
+    const path = await chooseTarget(`${exportName()}.${extensions[kind]}`, extensions[kind], viewed ? L("Only the rows shown are exported, in the order shown.") : undefined);
+    if (!path) return;
+    exporting += 1;
+    try {
+      await call("export_file", { path, format: kind, name: exportName() });
+    } catch (error) {
+      await report(error);
+    } finally {
+      exporting -= 1;
+    }
+  }
+
+  /** The selected cells, or all shown, as text for the clipboard; HTML also as HTML. */
+  async function copyAs(kind: Exclude<ExportKind, "xlsx">) {
+    const selected = grid?.selection;
+    if (!selected) return;
+    try {
+      const text = await call<string>("export_text", { format: kind, range: selected.single ? null : selected.range, name: exportName() });
+      await (kind === "html" ? writeClipboardHtml(text, text) : writeClipboard(text));
+    } catch (error) {
+      await report(error);
     }
   }
 
@@ -846,6 +913,32 @@
         enabled: () => doc.open,
         run: () => void saveAs(),
       },
+      { id: "exportCopy", label: L("Export…"), enabled: () => doc.open, run: () => void exportCopy(false) },
+      {
+        id: "exportExcel",
+        label: L("Export for Excel…"),
+        shortcut: { key: "e", command: true, shift: true },
+        inFields: true,
+        enabled: () => doc.open,
+        run: () => void exportCopy(true),
+      },
+      ...(
+        [
+          ["json", L("JSON…")],
+          ["markdown", L("Markdown…")],
+          ["html", L("HTML…")],
+          ["sql", L("SQL…")],
+          ["xlsx", L("Excel Workbook (XLSX)…")],
+        ] as const
+      ).map(([kind, label]): Command => ({ id: `exportAs:${kind}`, label, enabled: () => (doc.status?.columns ?? 0) > 0, run: () => void exportAs(kind) })),
+      ...(
+        [
+          ["markdown", L("Markdown")],
+          ["json", L("JSON")],
+          ["html", L("HTML")],
+          ["sql", L("SQL")],
+        ] as const
+      ).map(([kind, label]): Command => ({ id: `copyAs:${kind}`, label, enabled: hasSelection, run: () => void copyAs(kind) })),
       {
         id: "checkEncoding",
         label: L("Check Encoding and Delimiter…"),
@@ -1096,6 +1189,9 @@
       "close",
       "save",
       "saveAs",
+      "exportCopy",
+      "exportExcel",
+      { title: L("Export As"), entries: ["exportAs:json", "exportAs:markdown", "exportAs:html", "exportAs:sql", "exportAs:xlsx"] },
       "-",
       { title: L("Reopen with Encoding"), entries: ["reopenEncoding:auto", "-", ...encodings.map((encoding) => `reopenEncoding:${encoding}`)] },
       { title: L("Reopen with Delimiter"), entries: ["reopenDelimiter:auto", "-", ...delimiters.map((delimiter) => `reopenDelimiter:${delimiter}`)] },
@@ -1127,6 +1223,7 @@
           { native: "Cut", text: L("Cut") },
           { native: "Copy", text: L("Copy") },
           { native: "Paste", text: L("Paste") },
+          { title: L("Copy As"), entries: ["copyAs:markdown", "copyAs:json", "copyAs:html", "copyAs:sql"] },
           "clear",
           "selectAll",
           "-",
@@ -1291,6 +1388,14 @@
             "fixGarbled",
             "removeDuplicates",
           ]),
+      },
+      {
+        id: "export",
+        label: L("Export"),
+        tooltip: L("Export for Excel, JSON, Markdown, HTML, SQL"),
+        icon: "export",
+        enabled: doc.open,
+        menu: () => menuOf(["exportExcel", "exportCopy", "-", "exportAs:json", "exportAs:markdown", "exportAs:html", "exportAs:sql", "exportAs:xlsx"]),
       },
     ];
   });
@@ -1468,6 +1573,8 @@
   {#if saving}
     <SaveSheet
       format={saving.format}
+      title={saving.title}
+      excel={saving.excel}
       choose={(format) => {
         const answer = saving!.answer;
         saving = null;

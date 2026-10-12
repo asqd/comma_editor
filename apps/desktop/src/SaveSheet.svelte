@@ -7,10 +7,14 @@
 
   interface Props {
     format: SaveFormat;
+    /** The window's heading: Save As or Export. */
+    title?: string;
+    /** Starts from the For Excel choices, as Export for Excel does. */
+    excel?: boolean;
     choose: (format: SaveFormat | null) => void;
   }
 
-  let { format, choose }: Props = $props();
+  let { format, title = L("Save As…"), excel = false, choose }: Props = $props();
 
   const encodings: [TextEncoding, boolean, string][] = [
     ["utf8", false, "UTF-8"],
@@ -63,7 +67,10 @@
     choose({ encoding: value, bom, delimiter, lineEnding });
   }
 
-  onMount(() => dialog.showModal());
+  onMount(() => {
+    if (excel) forExcel();
+    dialog.showModal();
+  });
 </script>
 
 <dialog
@@ -73,7 +80,7 @@
     choose(null);
   }}
 >
-  <h2>{L("Save As…")}</h2>
+  <h2>{title}</h2>
   <div class="grid">
     <label for="encoding">{L("Encoding:")}</label>
     <select id="encoding" bind:value={encoding}>

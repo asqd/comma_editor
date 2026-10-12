@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use comma_ffi::{
-    CellPosition, CellRange, CoreDocument, CoreError, EditJob, EditRequest, FilePreview, LineEnding, RangeStats,
+    CellPosition, CellRange, CoreDocument, CoreError, EditJob, EditRequest, ExportFormat, FilePreview, LineEnding, RangeStats,
     SaveFormat, SearchQuery, TextEncoding, ViewJob, ViewSpec,
 };
 use serde::de::DeserializeOwned;
@@ -342,6 +342,20 @@ struct ReplaceAll {
 }
 
 #[derive(Deserialize)]
+struct ExportFile {
+    path: String,
+    format: ExportFormat,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct ExportText {
+    format: ExportFormat,
+    range: Option<CellRange>,
+    name: String,
+}
+
+#[derive(Deserialize)]
 struct Edit {
     request: EditRequest,
 }
@@ -666,6 +680,27 @@ impl Sessions {
                 let SaveAs { path, format } = args(args_)?;
                 document.save_with(path, format)?;
                 Ok(Value::Null)
+            }
+            "export_file" => {
+                // The shown rows in the shown order, written beside the target and then moved
+                // over it, so that a failed export leaves no half file.
+                let ExportFile { path, format, name } = args(args_)?;
+                let target = std::path::PathBuf::from(&path);
+                let file = target.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+                let temporary = target.with_file_name(format!(".{file}.{}.exporting", std::process::id()));
+                let written = document.export_to_file(temporary.to_string_lossy().into_owned(), format, name);
+                let moved = written.map_err(Failure::from).and_then(|()| std::fs::rename(&temporary, &target).map_err(Failure::message));
+                if moved.is_err() {
+                    let _ = std::fs::remove_file(&temporary);
+                }
+                moved.map(|()| Value::Null)
+            }
+            "export_text" => {
+                // Cells as Markdown, JSON, HTML or SQL for the clipboard: a fragment, without the
+                // page around HTML or the table SQL creates.
+                let ExportText { format, range, name } = args(args_)?;
+                let bytes = document.export(format, range, name, true)?;
+                reply(String::from_utf8_lossy(&bytes))
             }
             _ => Err(Failure::message(format!("unknown command {command}"))),
         }
