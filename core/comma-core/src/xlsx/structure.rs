@@ -137,19 +137,6 @@ impl Workbook {
         if last >= length || to > length {
             return Err(Error::RowOutOfRange { row: last.max(to), rows: length });
         }
-        // A merged area over several rows moves whole or not at all, as Excel has it.
-        if let Some(sheet) = &document.sheet {
-            let moved: std::collections::HashSet<usize> = rows.iter().filter_map(|&row| document.row_origin(row)).collect();
-            let split = sheet.merged.iter().any(|area| {
-                area.bottom > area.top && {
-                    let inside = (area.top..=area.bottom).filter(|row| moved.contains(row)).count();
-                    inside > 0 && inside < area.bottom - area.top + 1
-                }
-            });
-            if split {
-                return Err(Error::SheetStructure(SheetStructure::MergedArea));
-            }
-        }
         // The new order of the rows, and where each old row goes.
         let target = to - rows.iter().filter(|&&row| row < to).count();
         let moving: std::collections::HashSet<usize> = rows.iter().copied().collect();
@@ -159,6 +146,14 @@ impl Workbook {
             return Ok(Vec::new());
         }
         self.check_table_rows(document, index, &order)?;
+        // A merged area over several rows moves whole or not at all, as Excel has it, and no
+        // row comes in among its rows.
+        if let Some(sheet) = &document.sheet {
+            let spans: Vec<(usize, usize)> = sheet.merged.iter().map(|area| (area.top, area.bottom)).collect();
+            if !keeps_together(&spans, &order, |row| document.row_origin(row)) {
+                return Err(Error::SheetStructure(SheetStructure::MergedArea));
+            }
+        }
         let mut new_of_old = vec![0u32; length];
         for (new, &old) in order.iter().enumerate() {
             new_of_old[old] = new as u32;
@@ -210,6 +205,108 @@ impl Workbook {
             changed.push(*sheet);
         }
         self.calc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).entered.remove(&index);
+        Ok(changed)
+    }
+}
+
+impl Workbook {
+    /// Moves column `from` of sheet `index` to stand at `to` among the columns after it, as
+    /// cutting and inserting a column does in Excel: references to it and to the columns it
+    /// passes follow, in formulas of every sheet here and, when saving, in widths, merged
+    /// cells, formats and names. Refused when it would split a merged area or move columns of
+    /// an Excel table. One undoable step per document changed; returns the sheets changed.
+    pub fn move_column(&self, sheets: &mut [(usize, &mut Document)], index: usize, from: usize, to: usize) -> Result<Vec<usize>> {
+        let name = self.sheets.get(index).map(|sheet| sheet.name.to_lowercase()).ok_or(Error::RowOutOfRange { row: index, rows: self.sheets.len() })?;
+        let Some(position) = sheets.iter().position(|(sheet, _)| *sheet == index) else {
+            return Ok(Vec::new());
+        };
+        let document = &*sheets[position].1;
+        if document.sheet_structure_locked() {
+            return Err(Error::SheetStructure(document.locked_structure(false)));
+        }
+        let length = document.column_count();
+        if from >= length || to >= length {
+            return Err(Error::ColumnOutOfRange { column: from.max(to), columns: length });
+        }
+        if from == to {
+            return Ok(Vec::new());
+        }
+        // The columns that change places: the one moved and those it passes.
+        let (low, high) = (from.min(to), from.max(to));
+        for table in self.tables().iter().filter(|table| table.sheet == index).filter_map(|table| table.current(document)) {
+            if (table.left as usize) <= high && (table.right as usize) >= low {
+                return Err(Error::SheetStructure(SheetStructure::TableColumnsMoved));
+            }
+        }
+        let mut order: Vec<usize> = (0..length).collect();
+        let column = order.remove(from);
+        order.insert(to, column);
+        // A merged area stays together, its columns side by side in their order.
+        if let Some(sheet) = &document.sheet {
+            let spans: Vec<(usize, usize)> = sheet.merged.iter().map(|area| (area.left, area.right)).collect();
+            if !keeps_together(&spans, &order, |column| document.column_origin(column)) {
+                return Err(Error::SheetStructure(SheetStructure::MergedArea));
+            }
+        }
+        let mut new_of_old = vec![0u32; length];
+        for (new, &old) in order.iter().enumerate() {
+            new_of_old[old] = new as u32;
+        }
+        let place = |column: u32| new_of_old.get(column as usize).copied().unwrap_or(column);
+        // A reference follows its columns; a range keeps its ends, or, when columns moved
+        // within it turned them around, covers where its columns went.
+        let moved = |first: u32, last: u32| {
+            let (left, right) = (place(first), place(last));
+            if left <= right {
+                return Some((left, right));
+            }
+            let end = last.min(length as u32 - 1);
+            let (low, high) = (first..=end).map(place).fold((u32::MAX, 0), |(low, high), column| (low.min(column), high.max(column)));
+            Some((low, if last > end { last } else { high }))
+        };
+        let same = |first: u32, last: u32| Some((first, last));
+        let remap = Remap { sheet: &name, rows: &same, columns: &moved };
+
+        let mut changed = Vec::new();
+        for (sheet, document) in sheets.iter_mut() {
+            let own = self.sheets.get(*sheet).map(|entry| entry.name.to_lowercase()).unwrap_or_default();
+            if *sheet != index {
+                if remap_formulas(document, &own, &remap) {
+                    changed.push(*sheet);
+                }
+                continue;
+            }
+            let records: Vec<Record> = document
+                .records
+                .iter()
+                .map(|record| {
+                    let mut fields = document.fields(record);
+                    if let Some(moved) = remapped(&fields, &own, &remap) {
+                        fields = moved;
+                    }
+                    if !record.is_blank() && fields.len() > low {
+                        if fields.len() <= high {
+                            fields.resize(high + 1, Field::Text(String::new()));
+                        }
+                        let field = fields.remove(from);
+                        fields.insert(to, field);
+                    }
+                    record.with_fields(fields)
+                })
+                .collect();
+            let mut origins = (*document.column_origins).clone();
+            if origins.len() <= high {
+                origins.resize(high + 1, NO_ORIGIN);
+            }
+            let origin = origins.remove(from);
+            origins.insert(to, origin);
+            let rows = document.records.len();
+            let splice = Splice::apply(Arc::make_mut(&mut document.records), 0, rows, records);
+            document.commit_moving_columns(vec![splice], length, origins);
+            document.reset_view();
+            mark_formulas_moved(document);
+            changed.push(*sheet);
+        }
         Ok(changed)
     }
 }
@@ -454,6 +551,27 @@ impl Workbook {
         }
         Ok(change)
     }
+}
+
+/// Whether spans of rows or columns of the file, merged areas, stay side by side in their
+/// order once the document's rows or columns stand in `order` (the old place of each new one);
+/// `origin` gives the row or column of the file at an old place.
+fn keeps_together(spans: &[(usize, usize)], order: &[usize], origin: impl Fn(usize) -> Option<usize>) -> bool {
+    let wide: Vec<&(usize, usize)> = spans.iter().filter(|(first, last)| last > first).collect();
+    if wide.is_empty() {
+        return true;
+    }
+    // Where each place of the file stands now.
+    let mut now = std::collections::HashMap::new();
+    for (new, &old) in order.iter().enumerate() {
+        if let Some(origin) = origin(old) {
+            now.insert(origin, new);
+        }
+    }
+    wide.iter().all(|&&(first, last)| {
+        let places: Vec<Option<&usize>> = (first..=last).map(|place| now.get(&place)).collect();
+        places.iter().all(Option::is_some) && places.windows(2).all(|pair| *pair[1].unwrap() == *pair[0].unwrap() + 1)
+    })
 }
 
 /// What tables of a sheet add to rows or columns inserted: the cells of a row inserted among

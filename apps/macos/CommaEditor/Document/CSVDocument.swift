@@ -840,8 +840,11 @@ class CSVDocument: NSDocument {
                 userInfo[NSLocalizedDescriptionKey] = L("Formulas read this column of an Excel table.")
                 userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Change the formulas that name it first, so that they do not lose what they read.")
             case .mergedArea:
-                userInfo[NSLocalizedDescriptionKey] = L("These rows cannot be moved or sorted.")
-                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Some of the rows are part of a merged area, which moves whole or not at all. Unmerge it in Excel, or move all its rows together.")
+                userInfo[NSLocalizedDescriptionKey] = L("This would split merged cells.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("A merged area moves whole, its rows and columns side by side. Unmerge it in Excel, or move all of it together.")
+            case .tableColumnsMoved:
+                userInfo[NSLocalizedDescriptionKey] = L("Columns of an Excel table cannot be moved.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Columns outside tables move, references following them. To reorder a table's columns, do it in Excel.")
             }
         case .MergedCell(let row, let column):
             userInfo[NSLocalizedDescriptionKey] = L("This cell is inside a merged area.")

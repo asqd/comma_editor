@@ -83,6 +83,9 @@ pub enum SheetStructure {
     /// Every column of an Excel table cannot be deleted: the table would go.
     #[error("every column of an Excel table cannot be deleted")]
     TableColumns,
+    /// Columns moved would move columns of an Excel table.
+    #[error("columns of an Excel table cannot be moved")]
+    TableColumnsMoved,
     /// Formulas name a column of an Excel table to delete.
     #[error("formulas name a column of an Excel table to delete")]
     TableColumnInUse,

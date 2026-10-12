@@ -180,6 +180,16 @@ final class WorkbookDocument: CSVDocument {
         return restructure(L("Column Deletion"), .columns, insert: false, runs: [(column, 1)])
     }
 
+    /// Moves a column of the sheet through the workbook, references following it in every
+    /// sheet, as cutting and inserting a column does in Excel.
+    @discardableResult
+    override func moveColumn(_ column: Int, to target: Int) -> Bool {
+        guard workbook != nil, !isLegacyFormat, !core.info().sheetStructureLocked else { return super.moveColumn(column, to: target) }
+        return changeWorkbook(L("Column Move")) { workbook, sheets, index in
+            try workbook.moveColumn(sheets: sheets, index: index, from: UInt64(column), to: UInt64(target))
+        }
+    }
+
     /// Runs of consecutive rows `(first, count)`, the last first, so deleting one leaves the
     /// others where they are.
     private static func runs(of rows: [Int]) -> [(Int, Int)] {

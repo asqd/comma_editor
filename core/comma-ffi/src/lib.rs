@@ -156,6 +156,7 @@ pub enum SheetChange {
     TableEdges,
     TableColumns,
     TableColumnInUse,
+    TableColumnsMoved,
     MergedArea,
 }
 
@@ -169,6 +170,7 @@ impl From<core::SheetStructure> for SheetChange {
             core::SheetStructure::TableEdges => Self::TableEdges,
             core::SheetStructure::TableColumns => Self::TableColumns,
             core::SheetStructure::TableColumnInUse => Self::TableColumnInUse,
+            core::SheetStructure::TableColumnsMoved => Self::TableColumnsMoved,
             core::SheetStructure::MergedArea => Self::MergedArea,
         }
     }
@@ -2286,6 +2288,16 @@ impl CoreWorkbook {
             sheets.iter().zip(documents.iter_mut()).map(|(sheet, document)| (sheet.index as usize, &mut **document)).collect();
         let rows: Vec<usize> = rows.into_iter().map(|row| row as usize).collect();
         let changed = self.inner.move_rows(&mut edited, index as usize, &rows, to as usize)?;
+        Ok(changed.into_iter().map(|sheet| sheet as u64).collect())
+    }
+
+    /// Moves column `from` of sheet `index` to stand at `to`, references following in every
+    /// sheet given, as cutting and inserting a column does in Excel; returns the sheets changed.
+    pub fn move_column(&self, sheets: Vec<SheetToSave>, index: u64, from: u64, to: u64) -> Result<Vec<u64>, CoreError> {
+        let mut documents = sheets.iter().map(|sheet| sheet.document.edit()).collect::<Result<Vec<_>, _>>()?;
+        let mut edited: Vec<(usize, &mut core::Document)> =
+            sheets.iter().zip(documents.iter_mut()).map(|(sheet, document)| (sheet.index as usize, &mut **document)).collect();
+        let changed = self.inner.move_column(&mut edited, index as usize, from as usize, to as usize)?;
         Ok(changed.into_iter().map(|sheet| sheet as u64).collect())
     }
 

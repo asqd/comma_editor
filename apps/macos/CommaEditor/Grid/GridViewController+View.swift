@@ -416,18 +416,20 @@ extension GridViewController: NSMenuItemValidation {
             return false
         }
         if info.isSheet, let action = menuItem.action {
-            // A workbook inserts, deletes, moves and sorts rows, and inserts, deletes, splits and
-            // joins columns, with the references to them moved, unless a pivot table holds them
-            // in place; then only adding at the end is left. Moving columns waits.
+            // A workbook inserts, deletes, moves and sorts rows, and inserts, deletes, moves,
+            // splits and joins columns, with the references to them moved, unless a pivot table
+            // holds them in place; then only adding at the end is left.
             let locked = info.sheetStructureLocked
             switch action {
             case #selector(insertColumnRight(_:)) where locked:
                 return activeColumn == columnCount - 1
             case #selector(insertColumnLeft(_:)) where locked, #selector(deleteColumn(_:)) where locked,
-                 #selector(splitColumn(_:)) where locked, #selector(mergeColumns(_:)) where locked:
+                 #selector(splitColumn(_:)) where locked, #selector(mergeColumns(_:)) where locked,
+                 #selector(moveColumnLeft(_:)) where locked, #selector(moveColumnRight(_:)) where locked:
                 return false
             case #selector(insertColumnLeft(_:)), #selector(insertColumnRight(_:)), #selector(deleteColumn(_:)),
-                 #selector(splitColumn(_:)) where !document.isReadOnly, #selector(mergeColumns(_:)) where !document.isReadOnly:
+                 #selector(splitColumn(_:)), #selector(mergeColumns(_:)), #selector(moveColumnLeft(_:)),
+                 #selector(moveColumnRight(_:)):
                 break
             case _ where Self.columnActions.contains(action):
                 return false

@@ -566,3 +566,28 @@ fn split_and_merged_columns_move_references() {
     assert_eq!(reopened.formula(7, 3).as_deref(), Some("SUM(B2:B6)"));
     assert_eq!(report.formula(0, 0).as_deref(), Some("Data!D8"));
 }
+
+#[test]
+fn moved_columns_take_references_with_them() {
+    let (workbook, mut data, mut report) = open(book());
+    // Double (C) to the front: Item and Price move one right.
+    workbook.move_column(&mut [(0, &mut data), (1, &mut report)], 0, 2, 0).unwrap();
+    assert_eq!((data.cell(0, 0).unwrap(), data.cell(0, 1).unwrap()), ("Double".to_owned(), "Item".to_owned()));
+    assert_eq!(data.formula(2, 0).as_deref(), Some("C3*2"));
+    assert_eq!(report.formula(0, 0).as_deref(), Some("Data!A8"));
+    assert_eq!(report.formula(1, 0).as_deref(), Some("SUM(Data!C2:C6)"));
+    let saved = workbook.to_bytes(&[(0, &data), (1, &report)]).unwrap();
+    let sheet = part(&saved, "xl/worksheets/sheet1.xml");
+    assert!(sheet.contains(r#"<mergeCell ref="B8:C8"/>"#), "{sheet}");
+    assert!(sheet.contains(r#"<col min="1" max="1""#), "{sheet}");
+    assert!(part(&saved, "xl/workbook.xml").contains("Data!$C$2:$C$6"));
+    let (_, reopened, report) = open(saved);
+    assert_eq!(reopened.formula(7, 0).as_deref(), Some("SUM(C2:C6)"));
+    assert_eq!(report.formula(0, 0).as_deref(), Some("Data!A8"));
+    // A column of a merged area moves with all of it or not at all.
+    let (workbook, mut data, mut report) = open(book());
+    assert!(matches!(
+        workbook.move_column(&mut [(0, &mut data), (1, &mut report)], 0, 0, 2),
+        Err(Error::SheetStructure(SheetStructure::MergedArea))
+    ));
+}
