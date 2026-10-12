@@ -342,6 +342,23 @@ struct ReplaceAll {
 }
 
 #[derive(Deserialize)]
+struct Edit {
+    request: EditRequest,
+}
+
+/// Makes a change to many rows: at once in a table of up to `JOB_ROWS` rows, as the macOS app
+/// does, and in a background job in a larger one. `result` is `null` while the job runs.
+fn edit(session: &Arc<Session>, request: EditRequest) -> Outcome<Value> {
+    let document = &session.document;
+    if document.row_count() < JOB_ROWS {
+        let result = document.apply_edit(request)?;
+        return Ok(json!({ "status": session.status(), "result": result }));
+    }
+    session.start(Job::Edit(document.begin_edit(request)?))?;
+    Ok(json!({ "status": session.status(), "result": null }))
+}
+
+#[derive(Deserialize)]
 struct SetView {
     view: ViewSpec,
 }
@@ -577,13 +594,12 @@ impl Sessions {
             }
             "replace_all" => {
                 let ReplaceAll { query, replacement } = args(args_)?;
-                let request = EditRequest::ReplaceAll { query, replacement };
-                if document.info().visible_row_count <= JOB_ROWS {
-                    let result = document.apply_edit(request)?;
-                    return Ok(json!({ "status": session.status(), "result": result }));
-                }
-                session.start(Job::Edit(document.begin_edit(request)?))?;
-                Ok(json!({ "status": session.status(), "result": null }))
+                edit(&session, EditRequest::ReplaceAll { query, replacement })
+            }
+            "edit" => {
+                // A change to many rows: text, empty cells, splitting, merging, duplicates.
+                let Edit { request } = args(args_)?;
+                edit(&session, request)
             }
 
             // Sorting and filtering.

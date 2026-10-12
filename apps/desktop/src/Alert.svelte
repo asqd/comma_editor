@@ -16,10 +16,16 @@
     buttons: Button[];
     /** A text field starting with this text. */
     field?: string;
-    choose: (value: string, text: string) => void;
+    /** Words beside the text field. */
+    fieldLabel?: string;
+    placeholder?: string;
+    /** A checkbox with these words, unchecked at first. */
+    checkbox?: string;
+    choose: (value: string, text: string, checked: boolean) => void;
   }
 
-  let { message, detail, buttons, field, choose }: Props = $props();
+  let { message, detail, buttons, field, fieldLabel, placeholder, checkbox, choose }: Props = $props();
+  let checked = $state(false);
   let dialog: HTMLDialogElement;
   let input = $state<HTMLInputElement>();
   let text = $state(untrack(() => field ?? ""));
@@ -28,7 +34,7 @@
     const fallback = buttons.find((button) => button.default);
     if (event.key === "Enter" && fallback) {
       event.preventDefault();
-      choose(fallback.value, text);
+      choose(fallback.value, text, checked);
     }
   }
 
@@ -44,17 +50,23 @@
   oncancel={(event) => {
     event.preventDefault();
     const cancel = buttons.find((button) => button.cancel);
-    if (cancel) choose(cancel.value, text);
+    if (cancel) choose(cancel.value, text, checked);
   }}
 >
   <p class="message">{message}</p>
   {#if detail}<p class="detail">{detail}</p>{/if}
   {#if field !== undefined}
-    <input bind:this={input} bind:value={text} onkeydown={submit} spellcheck="false" autocomplete="off" />
+    <div class="field">
+      {#if fieldLabel}<label for="alert-field">{fieldLabel}</label>{/if}
+      <input id="alert-field" bind:this={input} bind:value={text} onkeydown={submit} {placeholder} spellcheck="false" autocomplete="off" />
+    </div>
+  {/if}
+  {#if checkbox}
+    <label class="check"><input type="checkbox" bind:checked />{checkbox}</label>
   {/if}
   <footer>
     {#each buttons as button (button.value)}
-      <button class:default={button.default} onclick={() => choose(button.value, text)}>{button.label}</button>
+      <button class:default={button.default} onclick={() => choose(button.value, text, checked)}>{button.label}</button>
     {/each}
   </footer>
 </dialog>
@@ -80,9 +92,22 @@
     color: var(--muted);
   }
 
-  input {
+  .field {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .check {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-top: 10px;
+  }
+
+  .field input {
     box-sizing: border-box;
-    width: 100%;
+    flex: 1;
     margin-top: 4px;
     padding: 4px 6px;
     font: inherit;

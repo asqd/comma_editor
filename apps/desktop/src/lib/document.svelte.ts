@@ -1,7 +1,7 @@
 // The document of a window as the interface sees it: its status, kept current after every
 // command, and while a large file is read or a job runs in the background.
 
-import { call, type Status } from "./api";
+import { call, CoreFailure, type EditResult, type Status } from "./api";
 import { sentence } from "./errors";
 
 /** How often the status is asked for while something runs in the background. */
@@ -48,6 +48,18 @@ export class Document {
       this.problem = sentence(error);
       return false;
     }
+  }
+
+  /**
+   * Makes a change to many rows (`EditRequest` of comma-ffi), waiting for the background job a
+   * large table needs; `null` when it was cancelled.
+   */
+  async edit(request: object): Promise<EditResult | null> {
+    const reply = await this.runWith<{ status: Status; result: EditResult | null }>("edit", { request });
+    if (reply.result) return reply.result;
+    const ended = await this.waitForJob();
+    if (ended?.error) throw new CoreFailure(ended.error);
+    return (ended?.ok as EditResult | null | undefined) ?? null;
   }
 
   /** How the running job ends; `null` at once when none runs. */

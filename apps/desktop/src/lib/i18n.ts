@@ -22,6 +22,7 @@ const desktop: Record<string, string> = {
   "CommaEditor closed before they were saved. Restored changes open in a window; save them to keep them.":
     "CommaEditor закрылся, не сохранив их. Восстановленные изменения откроются в окне; сохраните их, чтобы не потерять.",
   "Restore": "Восстановить",
+  "Nothing to fix": "Исправлять нечего",
   "Discard": "Удалить",
   // What AppKit says for the macOS app.
   "Do you want to save the changes made to the document “%@”?": "Сохранить изменения в документе «%@»?",

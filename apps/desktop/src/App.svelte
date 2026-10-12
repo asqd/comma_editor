@@ -5,7 +5,7 @@
   import { open, save as chooseSavePath } from "@tauri-apps/plugin-dialog";
   import { Grid, type TableSource } from "./grid/Grid";
   import { formatBench, runBench } from "./grid/bench";
-  import { call, CoreFailure, inTauri, type TextEncoding, type FilterRule, type RangeStats, type SaveFormat, type SortKey, type Status, type ViewSpec } from "./lib/api";
+  import { call, CoreFailure, inTauri, type EditResult, type TextEncoding, type FilterRule, type RangeStats, type SaveFormat, type SortKey, type Status, type ViewSpec } from "./lib/api";
   import { Selection, type Cell } from "./grid/selection";
   import { CellEditor, type Move } from "./grid/editor";
   import CellSheet from "./CellSheet.svelte";
@@ -21,7 +21,8 @@
   import { readClipboard, writeClipboard } from "./lib/clipboard";
   import { shortcutLabel } from "./lib/keys";
   import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
-  import { Commands, fieldFocused, type Command } from "./lib/commands";
+  import Toolbar, { type ToolbarItem } from "./Toolbar.svelte";
+  import { Commands, fieldFocused, labelOf, type Command } from "./lib/commands";
   import { NativeMenu, type Entry } from "./lib/menu";
   import { addRecent, clearRecent, recentFiles } from "./lib/recent";
   import { focusWindowFor, newWindow, quit } from "./lib/windows";
@@ -40,8 +41,13 @@
     detail?: string;
     buttons: Button[];
     field?: string;
-    answer: (value: string, text: string) => void;
+    fieldLabel?: string;
+    placeholder?: string;
+    checkbox?: string;
+    answer: (value: string, text: string, checked: boolean) => void;
   } | null>(null);
+  /** What the background change in progress does, for the status bar. */
+  let editing = $state("");
   /** The format of a file being saved, asked before the file is chosen. */
   let saving = $state<{ format: SaveFormat; answer: (format: SaveFormat | null) => void } | null>(null);
   /** The find bar, with the replace row or not, and the selection it may search in. */
@@ -188,7 +194,7 @@
     if (!status) return "";
     if (status.indexing !== null) return L("Reading the file: %@", `${Math.floor(status.indexing * 100)} %`);
     if (status.job?.kind === "view") return L("Sorting and filtering…");
-    if (status.job?.kind === "edit") return `${L("Replacing…")} ${Math.floor((status.job.fraction ?? 0) * 100)} %`;
+    if (status.job?.kind === "edit") return `${editing || L("Replacing…")} ${Math.floor((status.job.fraction ?? 0) * 100)} %`;
     return "";
   });
 
@@ -327,6 +333,29 @@
       { label: action, value: "ok", default: true },
     ];
     return new Promise((answer) => (alert = { message, buttons, field, answer: (value, text) => answer(value === "ok" ? text : null) }));
+  }
+
+  /**
+   * The macOS app's question with a field and a checkbox (GridViewController+Columns.ask):
+   * `null` when cancelled.
+   */
+  function askForm(
+    message: string,
+    detail: string,
+    options: { field?: string; fieldLabel?: string; placeholder?: string; checkbox?: string },
+  ): Promise<{ text: string; checked: boolean } | null> {
+    const buttons = [
+      { label: L("Cancel"), value: "cancel", cancel: true },
+      { label: L("OK"), value: "ok", default: true },
+    ];
+    return new Promise(
+      (answer) =>
+        (alert = { message, detail, buttons, ...options, answer: (value, text, checked) => answer(value === "ok" ? { text, checked } : null) }),
+    );
+  }
+
+  function inform(message: string, detail?: string): Promise<string> {
+    return ask(message, detail, [{ label: L("OK"), value: "ok", default: true, cancel: true }]);
   }
 
   function report(error: unknown): Promise<string> {
@@ -538,6 +567,110 @@
     const rows = range.top === range.bottom ? { ...range, top: range.top - 1 } : range;
     if (rows.top < 0) return;
     await doc.attempt(() => doc.run("fill_down", { range: rows }));
+  }
+
+  // The Data menu (GridViewController+Columns.swift).
+
+  /** The selection, or the active cell's whole column of shown rows. */
+  function operationRange(): CellRange | null {
+    const selected = grid?.selection;
+    const rows = doc.status?.rows ?? 0;
+    if (!selected || rows === 0) return null;
+    if (!selected.single) return selected.range;
+    const column = selected.cursor.column;
+    return { top: 0, left: column, bottom: rows - 1, right: column };
+  }
+
+  /**
+   * Makes a change to many rows, saying what it does while a large table changes in the
+   * background; `null` when cancelled or failed, the failure shown.
+   */
+  async function change(label: string, request: object): Promise<EditResult | null> {
+    if (!changeable()) return null;
+    editing = label;
+    try {
+      return await doc.edit(request);
+    } catch (error) {
+      await report(error);
+      return null;
+    } finally {
+      editing = "";
+    }
+  }
+
+  function transform(kind: "trim" | "collapseSpaces" | "uppercase" | "lowercase" | "capitalize") {
+    const range = operationRange();
+    if (range) void change(L("Changing text…"), { transform: { range, transform: kind } });
+  }
+
+  async function fillEmpty(fromAbove: boolean) {
+    const range = operationRange();
+    if (!range || !changeable()) return;
+    let value = "";
+    if (!fromAbove) {
+      const answer = await askForm(L("Fill Empty Cells"), L("Value for the empty cells of the selection:"), { field: "" });
+      if (!answer) return;
+      value = answer.text;
+    }
+    await change(L("Filling empty cells…"), { fillEmpty: { range, fromAbove, value } });
+  }
+
+  async function splitColumn() {
+    const column = grid?.selection?.cursor.column;
+    if (column === undefined || !changeable()) return;
+    const answer = await askForm(L("Split Column “%@”", grid!.title(column)), L("The parts go to new columns to the right; the column itself stays."), {
+      field: "",
+      fieldLabel: L("Separator:"),
+      placeholder: L("empty: split at spaces"),
+      checkbox: L("Regular expression"),
+    });
+    if (!answer) return;
+    // No separator splits at runs of spaces.
+    const [separator, regex] = answer.text === "" ? ["\\s+", true] : [answer.text, answer.checked];
+    const result = await change(L("Splitting the column…"), { splitColumn: { column, separator, regex } });
+    if (result && result.count === 0) await inform(L("Nothing to split"), L("No value in this column contains the separator."));
+  }
+
+  async function mergeColumns() {
+    const range = grid?.selection?.range;
+    if (!range || range.right === range.left || !changeable()) return;
+    const columns = Array.from({ length: range.right - range.left + 1 }, (_, index) => range.left + index);
+    const titles = columns.map((column) => grid!.title(column)).join(", ");
+    const answer = await askForm(L("Merge Columns"), L("Joins %@ into a new column after them; empty values are skipped.", titles), {
+      field: "",
+      fieldLabel: L("Separator:"),
+      placeholder: L("empty: a space"),
+    });
+    if (answer) await change(L("Merging columns…"), { mergeColumns: { columns, separator: answer.text === "" ? " " : answer.text } });
+  }
+
+  async function removeDuplicates() {
+    const selected = grid?.selection;
+    const total = doc.status?.columns ?? 0;
+    if (!selected || !changeable()) return;
+    const range = selected.range;
+    const width = range.right - range.left + 1;
+    // The selected columns are the key, unless they are all of them.
+    const columns = width > 0 && width < total ? Array.from({ length: width }, (_, index) => range.left + index) : [];
+    const scope = columns.length
+      ? L("Rows count as duplicates when they match in %@.", columns.map((column) => grid!.title(column)).join(", "))
+      : L("Rows count as duplicates when they match in every column.");
+    const answer = await askForm(L("Remove Duplicate Rows"), `${scope} ${L("The first of each set of equal rows stays.")}`, {
+      checkbox: L("Ignore case and surrounding spaces"),
+    });
+    if (!answer) return;
+    const result = await change(L("Removing duplicates…"), { removeDuplicates: { columns, normalize: answer.checked } });
+    if (!result) return;
+    if (result.count === 0) await inform(L("No duplicates found"));
+    else await inform(L("Rows removed: %@", count(result.count)), L("Choose Edit ▸ Undo to bring them back."));
+  }
+
+  /** Mends text read in the wrong encoding: the selection, or the whole file with its header. */
+  async function fixGarbled() {
+    const selected = grid?.selection;
+    const range = selected && !selected.single ? selected.range : null;
+    const result = await change(L("Fixing garbled text…"), { fixGarbled: { range } });
+    if (result && result.count === 0) doc.problem = L("Nothing to fix");
   }
 
   /** Sorting and filtering wait for indexing and for changes to many rows, but replace each other. */
@@ -914,6 +1047,26 @@
         enabled: idle,
         run: () => void toggleHeader(),
       },
+      ...(
+        [
+          ["trim", L("Trim Spaces")],
+          ["collapseSpaces", L("Remove Extra Spaces")],
+          ["uppercase", L("UPPERCASE")],
+          ["lowercase", L("lowercase")],
+          ["capitalize", L("Capitalize Each Word")],
+        ] as const
+      ).map(([kind, label]): Command => ({ id: `text:${kind}`, label, enabled: () => idle() && hasSelection(), run: () => transform(kind) })),
+      { id: "fillFromAbove", label: L("Fill Empty Cells from Above"), enabled: () => idle() && hasSelection(), run: () => void fillEmpty(true) },
+      { id: "fillEmpty", label: L("Fill Empty Cells…"), enabled: () => idle() && hasSelection(), run: () => void fillEmpty(false) },
+      { id: "splitColumn", label: L("Split Column…"), enabled: () => idle() && hasSelection(), run: () => void splitColumn() },
+      {
+        id: "mergeColumns",
+        label: L("Merge Columns…"),
+        enabled: () => idle() && !!grid?.selection && grid.selection.columnCount > 1,
+        run: () => void mergeColumns(),
+      },
+      { id: "fixGarbled", label: L("Fix Garbled Text"), enabled: () => idle(), run: () => void fixGarbled() },
+      { id: "removeDuplicates", label: L("Remove Duplicate Rows…"), enabled: () => idle() && hasSelection(), run: () => void removeDuplicates() },
       {
         id: "bench",
         label: "Scroll Bench",
@@ -1007,6 +1160,21 @@
         ] as Entry[],
       },
     ];
+    menus.push({
+      title: L("Data"),
+      entries: [
+        { title: L("Text"), entries: ["text:trim", "text:collapseSpaces", "-", "text:uppercase", "text:lowercase", "text:capitalize"] },
+        "-",
+        "fillFromAbove",
+        "fillEmpty",
+        "-",
+        "splitColumn",
+        "mergeColumns",
+        "-",
+        "fixGarbled",
+        "removeDuplicates",
+      ] as Entry[],
+    });
     if (mac) {
       menus.unshift(app);
       menus.push({
@@ -1040,6 +1208,93 @@
     const shortcut = commands.get(id)?.shortcut;
     return shortcut ? shortcutLabel(shortcut) : undefined;
   };
+
+  /** A command as an item of a menu at the pointer or under a toolbar button. */
+  function menuItem(id: string): MenuItem | null {
+    const command = commands.get(id);
+    if (!command) return null;
+    return {
+      label: labelOf(command),
+      shortcut: shortcutOf(id),
+      disabled: !(command.enabled?.() ?? true),
+      checked: command.checked?.(),
+      run: () => command.run(),
+    };
+  }
+
+  /** A menu of commands; "-" separates groups. */
+  const menuOf = (ids: string[]) => ids.map((id) => (id === "-" ? null : menuItem(id)));
+
+  /** The tooltip of the macOS app with this system's shortcut in place of the Mac's. */
+  const tip = (text: string, id: string) => {
+    const shortcut = shortcutOf(id);
+    const words = L(text).replace(/\s*\([^)]*\)$/, "");
+    return shortcut ? `${words} (${shortcut})` : words;
+  };
+
+  const toolbar = $derived.by((): (ToolbarItem | null)[] => {
+    void doc.status;
+    void selection;
+    void filtering;
+    const enabled = (id: string) => commands.get(id)?.enabled?.() ?? true;
+    const view = doc.status?.view;
+    return [
+      { id: "insertRow", label: L("Insert Row"), tooltip: tip("Insert a row below (⌥⌘↓)", "insertRowBelow"), icon: "insertRow", enabled: doc.open && enabled("insertRowBelow"), run: () => void insertRow(true) },
+      {
+        id: "insertColumn",
+        label: L("Insert Column"),
+        tooltip: tip("Insert a column to the right (⌥⌘→)", "insertColumnRight"),
+        icon: "insertColumn",
+        enabled: doc.open && enabled("insertColumnRight"),
+        run: () => void insertColumn(true),
+      },
+      { id: "deleteRows", label: L("Delete Rows"), tooltip: tip("Delete the selected rows (⌘⌫)", "deleteRows"), icon: "trash", enabled: enabled("deleteRows"), run: () => void deleteRows() },
+      null,
+      {
+        id: "sort",
+        label: L("Sort"),
+        tooltip: L("Sort by the active column"),
+        icon: "sort",
+        enabled: doc.open,
+        active: (view?.sort.length ?? 0) > 0,
+        menu: () => menuOf(["sortAscending", "sortDescending", "clearSort", "-", "reorderRows"]),
+      },
+      {
+        id: "filter",
+        label: L("Filter"),
+        tooltip: tip("Show or hide the filter (⇧⌘L)", "toggleFilter"),
+        icon: "filter",
+        enabled: doc.open && idleOrView(),
+        active: (view?.filters.length ?? 0) > 0,
+        run: toggleFilter,
+      },
+      {
+        id: "data",
+        label: L("Data"),
+        tooltip: L("Clean up text, fill empty cells, split and merge columns"),
+        icon: "data",
+        enabled: doc.open,
+        menu: () =>
+          menuOf([
+            "text:trim",
+            "text:collapseSpaces",
+            "text:uppercase",
+            "text:lowercase",
+            "text:capitalize",
+            "-",
+            "fillFromAbove",
+            "fillEmpty",
+            "-",
+            "splitColumn",
+            "mergeColumns",
+            "-",
+            "fixGarbled",
+            "removeDuplicates",
+          ]),
+      },
+    ];
+  });
+  const idleOrView = () => !!doc.status && doc.status.indexing === null && doc.status.job?.kind !== "edit";
 
   /** Keys that reach the grid itself and are neither moves of the cursor nor commands. */
   function gridKey(event: KeyboardEvent): boolean {
@@ -1122,6 +1377,7 @@
 <div class="app">
   <header class="toolbar">
     <button onclick={choose} title={openShortcut}>{L("Open…")}</button>
+    <Toolbar items={toolbar} openMenu={(x, y, items) => (menu = { x, y, items })} />
   </header>
   {#if finding && doc.status}
     <FindBar
@@ -1198,11 +1454,14 @@
       detail={alert.detail}
       buttons={alert.buttons}
       field={alert.field}
-      choose={(value, text) => {
+      fieldLabel={alert.fieldLabel}
+      placeholder={alert.placeholder}
+      checkbox={alert.checkbox}
+      choose={(value, text, checked) => {
         const answer = alert!.answer;
         alert = null;
         grid?.focus();
-        answer(value, text);
+        answer(value, text, checked);
       }}
     />
   {/if}
