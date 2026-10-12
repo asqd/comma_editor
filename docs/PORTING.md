@@ -197,18 +197,21 @@
 
 ### 5. Выпуск
 
-- [ ] Windows: установщик NSIS или MSI (сборщик Tauri), x64 и arm64, загрузчик WebView2,
-      привязка `.csv`/`.tsv`/`.xlsx`. Без подписи: SmartScreen покажет «Windows защитила ваш
-      компьютер» — на сайте объяснить «Подробнее ▸ Выполнить в любом случае» и дать SHA-256.
-- [ ] Linux: AppImage и `.deb` (сборщик Tauri), Flatpak — отдельный манифест и Flathub;
-      `.desktop`-файл с MIME-типами.
-- [ ] macOS: универсальный DMG Tauri-версии с подписью ad-hoc, как у нативной;
-      `xattr -dr com.apple.quarantine` из той же инструкции.
-- [ ] Номер версии общий для всех сборок (`workspace.package.version`), в окне «О программе» —
-      ссылка на страницу загрузки.
-- [ ] `docs/RELEASE.md`: чек-лист ручной проверки для Windows, Linux и Tauri-версии на macOS;
-      `site/` — страницы загрузки и объяснение, чем две версии для macOS отличаются.
-- [ ] README и `Makefile`: `make desktop` и `make desktop-release`.
+- [x] Windows: установщик NSIS (сборщик Tauri) для x64 и arm64, для текущего пользователя, на
+      русском и английском, загрузчик WebView2, привязка `.csv`/`.tsv`/`.xlsx`/`.xlsm`/`.xls`.
+      Без подписи: на сайте — «Подробнее ▸ Выполнить в любом случае» и `Get-FileHash`.
+- [x] Linux: AppImage и `.deb` (сборщик Tauri) на Ubuntu 22.04, `.desktop` с MIME-типами;
+      Flatpak из того же `.deb` — манифест и метаданные AppStream в `apps/desktop/packaging`.
+      Подача на Flathub — руками (домен или `io.github`-идентификатор, лицензия, скриншоты).
+- [x] macOS: универсальный DMG CommaEditor W с подписью ad-hoc, как у нативной;
+      `xattr -dr com.apple.quarantine` в той же инструкции.
+- [x] Номер версии общий для всех сборок (`scripts/version.sh`, проверка в CI), в окне
+      «О программе» — ссылка на страницу загрузки (на Windows и Linux — в меню «Справка»).
+- [x] `docs/RELEASE.md`: порядок выпуска одним тегом, чек-лист ручной проверки Tauri-версии;
+      на сайте — раздел для Windows и Linux и чем две версии для macOS отличаются.
+- [x] README и `Makefile`: `make desktop`, `make desktop-release`, `make version`.
+- [ ] Установщики для Linux на ARM: бесплатные ARM-машины GitHub есть только у открытых
+      репозиториев.
 
 ## Чего в Tauri-версии не будет сразу
 

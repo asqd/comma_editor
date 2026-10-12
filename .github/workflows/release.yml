@@ -87,6 +87,18 @@ jobs:
           # linuxdeploy is an AppImage itself; runners have no FUSE to mount it.
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: scripts/desktop-release.sh
+      - name: The Linux launchers pass the files opened with the app
+        if: runner.os == 'Linux'
+        working-directory: build/desktop
+        run: |
+          dpkg-deb --fsys-tarfile commaeditor_*_amd64.deb | tar -xO --wildcards './usr/share/applications/*.desktop' | tee deb.desktop
+          grep -q '^Exec=commaeditor %F$' deb.desktop
+          grep -q '^MimeType=.*text/csv' deb.desktop
+          chmod +x CommaEditor-*.AppImage
+          ./CommaEditor-*.AppImage --appimage-extract '*.desktop' > /dev/null
+          cat squashfs-root/*.desktop
+          grep -q '^Exec=commaeditor %F$' squashfs-root/*.desktop
+          rm -rf deb.desktop squashfs-root
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}

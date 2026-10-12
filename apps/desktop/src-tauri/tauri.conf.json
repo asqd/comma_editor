@@ -122,7 +122,8 @@
     },
     "linux": {
       "deb": {
-        "section": "editors"
+        "section": "editors",
+        "desktopTemplate": "../packaging/linux/commaeditor.desktop"
       }
     },
     "macOS": {

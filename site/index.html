@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CommaEditor — редактор CSV, который не портит файлы</title>
-  <meta name="description" content="Быстрый редактор CSV и книг Excel для macOS. После сохранения файл отличается от исходного только тем, что вы изменили. Ядро на Rust, интерфейс на AppKit.">
+  <meta name="description" content="Быстрый редактор CSV и книг Excel для macOS, Windows и Linux. После сохранения файл отличается от исходного только тем, что вы изменили. Ядро на Rust, интерфейс на AppKit и Tauri.">
   <meta name="color-scheme" content="light dark">
   <meta property="og:title" content="CommaEditor">
   <meta property="og:description" content="Редактор CSV, который не портит файлы.">
@@ -37,7 +37,7 @@
 <main>
 
   <section class="hero wrap">
-    <p class="kicker mono">CSV · TSV · XLSX · XLS &nbsp;/&nbsp; macOS 14+</p>
+    <p class="kicker mono">CSV · TSV · XLSX · XLS &nbsp;/&nbsp; macOS · Windows · Linux</p>
     <h1>Редактор CSV<span class="comma">,</span><br> который <em>не&nbsp;портит</em> файлы</h1>
     <p class="lede">
       После сохранения файл отличается от исходного ровно тем, что вы изменили.
@@ -46,6 +46,7 @@
     </p>
     <div class="actions">
       <a class="btn primary" data-repo="/releases/latest" href="#">Скачать для macOS</a>
+      <a class="btn" href="#desktop">Windows и Linux</a>
       <a class="btn" data-repo="" href="#">Исходный код</a>
       <a class="btn" href="#install">Как установить</a>
       <span class="fine mono">Apple Silicon и Intel · macOS 14+ · DMG ≈ 14 МБ · бесплатно</span>
@@ -290,8 +291,72 @@
     </div>
   </section>
 
-  <section class="block wrap" id="build">
+  <section class="block wrap" id="desktop">
     <div class="label mono">F</div>
+    <div class="content">
+      <h2>Windows, Linux и вторая версия для Mac</h2>
+      <p class="sub">
+        Та же программа на том же ядре, с интерфейсом на Tauri. Установщики лежат на
+        <a data-repo="/releases/latest" href="#">странице выпуска</a> рядом с DMG для macOS.
+        Подписи Microsoft и Apple у них нет, поэтому системы один раз переспрашивают.
+      </p>
+
+      <h3>Windows 10 и 11</h3>
+      <ol class="steps">
+        <li>
+          <b>Скачайте</b> <code>CommaEditor-…-windows-x64-setup.exe</code>, а для ноутбуков на ARM
+          (Snapdragon) — <code>…-windows-arm64-setup.exe</code>.
+        </li>
+        <li>
+          <b>Запустите.</b> Windows покажет «Система Windows защитила ваш компьютер»: так она
+          встречает программы без платного сертификата. Нажмите «Подробнее», затем «Выполнить
+          в любом случае».
+        </li>
+        <li>
+          <b>Установите.</b> Права администратора не нужны: программа ставится только для вас.
+          Если в системе нет WebView2 (в Windows 10 и 11 он обычно есть), установщик скачает его.
+        </li>
+      </ol>
+      <p class="sub after">Сверить, что файл тот самый, в PowerShell — и сравнить с суммой на странице выпуска:</p>
+<pre class="code">Get-FileHash .\CommaEditor-*-setup.exe</pre>
+
+      <h3>Linux</h3>
+      <p class="sub after">AppImage работает без установки, <code>.deb</code> — для Ubuntu и Debian, Flatpak — для остальных:</p>
+<pre class="code"><span class="c"># AppImage</span>
+chmod +x CommaEditor-*-linux-x86_64.AppImage && ./CommaEditor-*-linux-x86_64.AppImage
+<span class="c"># Ubuntu 22.04 и новее, Debian 12</span>
+sudo apt install ./commaeditor_*_amd64.deb
+<span class="c"># Flatpak: среду GNOME он возьмёт с Flathub</span>
+flatpak install --user ./CommaEditor-*-linux-x86_64.flatpak
+<span class="c"># проверка</span>
+sha256sum CommaEditor-* commaeditor_*</pre>
+
+      <h3>Две версии для macOS</h3>
+      <p class="sub after">
+        На Mac есть основная, нативная версия на AppKit, и <b>CommaEditor W</b> — та же, что на
+        Windows и Linux. Они ставятся рядом; у второй на иконке буква W.
+      </p>
+      <ul class="steps plain">
+        <li>
+          <b>CommaEditor</b> — берите её, если работаете только на Mac. Только у неё предпросмотр
+          таблиц по пробелу в Finder, автосохранение с версиями, VoiceOver и песочница macOS.
+        </li>
+        <li>
+          <b>CommaEditor W</b> — если хотите на Mac ту же программу, что у коллег на Windows и
+          Linux. Сохранение явное, после сбоя несохранённые правки восстанавливаются. Снять
+          отметку «скачано из интернета» для неё:
+        </li>
+      </ul>
+<pre class="code">xattr -dr com.apple.quarantine "/Applications/CommaEditor W.app"</pre>
+      <p class="note">
+        Обновляться автоматически ни одна версия не умеет: новая версия — на странице выпуска,
+        ссылка на неё есть в окне «О программе». Рецепты у двух версий на Mac общие.
+      </p>
+    </div>
+  </section>
+
+  <section class="block wrap" id="build">
+    <div class="label mono">G</div>
     <div class="content">
       <h2>Сборка из исходников</h2>
       <p class="sub">Нужны Rust 1.88+, Xcode 16+ и XcodeGen.</p>
@@ -302,8 +367,9 @@ make run
 <span class="c"># проверить побайтовый round-trip своих файлов</span>
 cargo run -p comma-cli -- check ~/Downloads/*.csv</pre>
       <p class="note">
-        Ядро — <code>core/comma-core</code>, приложение — <code>apps/macos</code>.
-        Версии для Windows и Linux планируются на Tauri поверх того же ядра.
+        Ядро — <code>core/comma-core</code>, приложение для macOS — <code>apps/macos</code>,
+        для Windows, Linux и CommaEditor W — <code>apps/desktop</code> на Tauri 2
+        (<code>make desktop</code> запускает его, <code>make desktop-release</code> собирает установщик).
       </p>
     </div>
   </section>

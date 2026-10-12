@@ -1,4 +1,30 @@
-# Выпуск CommaEditor для macOS
+# Выпуск CommaEditor
+
+Один выпуск — один тег `v<версия>` и одна страница на GitHub: на ней DMG нативного приложения
+для macOS и установщики Tauri-версии для Windows, Linux и macOS (CommaEditor W). Номер версии
+общий для всех сборок:
+
+```bash
+scripts/version.sh          # показать версию; ошибка, если файлы расходятся (CI это проверяет)
+scripts/version.sh 1.1.0    # поставить версию ядру, приложению для macOS и Tauri-версии
+```
+
+`scripts/version.sh` меняет `workspace.package.version` в `Cargo.toml`, `MARKETING_VERSION` в
+`apps/macos/project.yml`, версию в `apps/desktop/src-tauri/Cargo.toml` и `package.json` и
+добавляет выпуск в метаданные для Linux. `CURRENT_PROJECT_VERSION` (номер сборки для macOS)
+поднимается руками.
+
+## Порядок выпуска
+
+1. `scripts/version.sh X.Y.Z`, поднять `CURRENT_PROJECT_VERSION`, обновить раздел версии в README.
+2. Пройти ручную проверку: нативное приложение — ниже, Tauri-версия — в её разделе.
+3. Коммит, тег `vX.Y.Z`, `git push --tags`. Процесс **Release** в GitHub Actions соберёт
+   установщики Tauri-версии и положит их с суммами SHA-256 в черновик выпуска этого тега.
+4. `make release` на Mac и `gh release upload vX.Y.Z build/release/CommaEditor-X.Y.Z.dmg*`.
+5. В черновике: описание из README и суммы, затем «Publish release». Кнопки сайта ведут на
+   `/releases/latest`.
+
+# Нативное приложение для macOS
 
 Сборка универсальная (Apple Silicon и Intel), macOS 14 и новее. Приложение работает в песочнице,
 поэтому одна и та же сборка подходит и для прямого скачивания, и для Mac App Store.
@@ -74,7 +100,7 @@ DEVELOPMENT_TEAM=ABCDE12345 NOTARY_PROFILE=commaeditor make release
 
 ## Перед каждым выпуском
 
-- [ ] Поднять `MARKETING_VERSION` и `CURRENT_PROJECT_VERSION` в `apps/macos/project.yml`.
+- [ ] `scripts/version.sh X.Y.Z` и `CURRENT_PROJECT_VERSION` в `apps/macos/project.yml`.
 - [ ] `make test`: все тесты ядра зелёные.
 - [ ] `make release`: архив собрался, `lipo` показывает `x86_64 arm64`.
 - [ ] Пройти ручную проверку ниже на копиях файлов.
@@ -193,3 +219,106 @@ DEVELOPMENT_TEAM=ABCDE12345 NOTARY_PROFILE=commaeditor make release
       показывают ход в строке состояния; таблица листается; «Отменить» в строке состояния
       оставляет файл как был, а ⌘Z после законченной правки возвращает всё одним шагом.
 - [ ] Пока такая правка идёт, другие правки и ⌘Z недоступны, а ⌘S сохраняет файл как был до неё.
+
+# Tauri-версия: Windows, Linux и CommaEditor W для macOS
+
+Приложение `apps/desktop` на Tauri 2. Установщики без платных сертификатов, без автообновления:
+новая версия — по ссылке со страницы выпуска, она же в окне «О программе».
+
+| Система | Файл | Как собирается |
+|---|---|---|
+| Windows 10 и 11, x64 | `CommaEditor-X.Y.Z-windows-x64-setup.exe` | NSIS, для текущего пользователя, без прав администратора; WebView2 скачивается, если его нет |
+| Windows 11 на ARM | `CommaEditor-X.Y.Z-windows-arm64-setup.exe` | то же, собирается на x64 |
+| Linux x86_64 | `CommaEditor-X.Y.Z-linux-x86_64.AppImage` | работает без установки |
+| Ubuntu 22.04+, Debian 12 | `commaeditor_X.Y.Z_amd64.deb` | зависимости — WebKitGTK 4.1 и GTK 3 |
+| Linux, Flatpak | `CommaEditor-X.Y.Z-linux-x86_64.flatpak` | из того же `.deb`, среда GNOME 47 с Flathub |
+| macOS 10.15+, universal | `CommaEditor-W-X.Y.Z-macos-universal.dmg` | подпись ad-hoc, как у нативного DMG |
+
+Рядом с каждым файлом — `.sha256`. Всё собирает процесс **Release**
+(`.github/workflows/release.yml`) по тегу `v*`; при изменении упаковки он собирает установщики
+на любой ветке, без выпуска, чтобы видеть, что они собираются. Под Linux на ARM готовых
+установщиков пока нет: бесплатные ARM-машины GitHub есть только у открытых репозиториев.
+
+## Локальная сборка
+
+```bash
+make desktop-release        # установщики для этой системы в build/desktop, с .sha256
+TARGET=aarch64-pc-windows-msvc scripts/desktop-release.sh   # Windows на ARM, на x64
+```
+
+Нужны Rust, Node 22, на Windows — инструменты сборки Visual Studio (для ARM — компоненты ARM64),
+на Linux — `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev patchelf file`.
+
+## Установка без подписи
+
+- **Windows.** SmartScreen показывает «Система Windows защитила ваш компьютер». «Подробнее» ▸
+  «Выполнить в любом случае». Сумму проверяет `Get-FileHash .\CommaEditor-*-setup.exe` в
+  PowerShell. Убрать предупреждение может только подпись кода (сертификат или сервис вроде
+  Azure Trusted Signing); пока её нет, оно показывается для каждой новой версии.
+- **Linux.** AppImage — `chmod +x` и запуск; `.deb` — `sudo apt install ./commaeditor_*.deb`;
+  Flatpak — `flatpak install --user ./CommaEditor-*.flatpak` (нужен удалённый репозиторий
+  Flathub для среды GNOME). Подписи пакетов не нужны.
+- **macOS, CommaEditor W.** Тот же порядок, что для нативного DMG выше, но
+  `xattr -dr com.apple.quarantine "/Applications/CommaEditor W.app"`.
+
+Всё это есть на сайте в разделе «Windows, Linux и вторая версия для Mac».
+
+## Flathub
+
+Манифест — `apps/desktop/packaging/flatpak/app.commaeditor.Desktop.yml`, метаданные —
+`apps/desktop/packaging/linux/app.commaeditor.Desktop.metainfo.xml`. Чтобы подать заявку на
+Flathub, нужно:
+
+- в манифесте заменить источник `commaeditor.deb` на ссылку на `.deb` со страницы выпуска и его
+  `sha256` (Flathub собирает без доступа к сети, но качает объявленные источники);
+- подтвердить домен `commaeditor.app` для идентификатора `app.commaeditor.Desktop` или взять
+  `io.github.asqd.CommaEditor`;
+- указать лицензию (`project_license`) и скриншоты в метаданных; Flathub требует открытый
+  репозиторий с исходниками или явную лицензию на распространение;
+- открыть запрос в `flathub/flathub` по их инструкции. Это делается руками, с вашего аккаунта.
+
+## Ручная проверка Tauri-версии
+
+Автотесты покрывают ядро и команды сеанса (`cargo test` в `apps/desktop/src-tauri`) на трёх
+системах. Интерфейс проходится руками на Windows, на Linux (GNOME на Wayland и X11) и на
+CommaEditor W на Mac. На копиях файлов.
+
+Установка
+- [ ] Установщик ставится без прав администратора; ярлык в меню «Пуск» или в списке приложений.
+- [ ] `.csv`, `.tsv` и `.xlsx` открываются из Проводника или файлового менеджера через
+      «Открыть с помощью»; второй файл открывается в новом окне того же приложения.
+- [ ] Удаление через «Параметры ▸ Приложения» (Windows) или пакетный менеджер не оставляет
+      привязок к файлам.
+- [ ] На Mac: CommaEditor W стоит рядом с CommaEditor, иконка с W, у обоих свои окна и меню.
+
+Окна и меню
+- [ ] Меню в окне (Windows, Linux): Alt открывает меню, сочетания Ctrl как в подсказках; «Справка
+      ▸ О программе» показывает версию и ссылку на страницу загрузки.
+- [ ] Закрытие окна с несохранёнными правками спрашивает; «Не сохранять» закрывает.
+- [ ] Масштаб 150 % и 200 % (Windows), дробное масштабирование (GNOME): текст сетки чёткий.
+- [ ] Тёмная тема системы: сетка, панели и окна тёмные.
+
+Правка и буфер обмена
+- [ ] Ввод с клавиатуры, F2 и Enter начинают правку; русская раскладка и метод ввода (IME).
+- [ ] Ctrl+C из CommaEditor и Ctrl+V в Excel или LibreOffice Calc и обратно, с переносами строк.
+- [ ] Ctrl+Z и Ctrl+Y; Ctrl+Shift+стрелки расширяют выделение, Ctrl+Alt+Shift+стрелки двигают
+      строки и колонки.
+
+Сохранение
+- [ ] Правка одной ячейки файла в Windows-1251 с `;` и CRLF: `fc /b` или `cmp` показывает
+      изменение только в ней.
+- [ ] Сохранение файла, открытого в Excel (Windows): понятная ошибка, файл не испорчен,
+      «Сохранить как…» работает.
+- [ ] Файл на сетевой папке и на флешке FAT32/exFAT сохраняется поверх себя.
+- [ ] Снять процесс в диспетчере задач с несохранёнными правками: при следующем запуске
+      предложено восстановить, восстановленный файл сохраняется так же.
+
+Книги Excel
+- [ ] `.xlsx` с формулами: правка числа пересчитывает зависимые; сохранённая книга открывается
+      в Excel и LibreOffice без восстановления.
+- [ ] `.xls` открывается только для просмотра, «Экспортировать…» работает.
+
+Большие файлы
+- [ ] Файл на 1 ГБ: первые строки сразу, ход чтения в строке состояния, прокрутка плавная
+      (`commaeditor --bench файл.csv` печатает замер).
+

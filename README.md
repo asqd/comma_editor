@@ -2,7 +2,8 @@
 
 Быстрый редактор CSV, который не портит файлы: после сохранения файл отличается от исходного
 только тем, что изменил пользователь. Ядро написано на Rust. Приложение для macOS — нативное,
-на Swift/AppKit; версии для Windows и Linux планируются на Tauri поверх того же ядра.
+на Swift/AppKit; для Windows, Linux и как вторая версия для macOS (CommaEditor W) — приложение
+на Tauri поверх того же ядра.
 
 ## Структура
 
@@ -17,9 +18,12 @@ core/
 apps/
   macos/                 приложение для macOS (XcodeGen: project.yml)
   macos/QuickLook/       расширение Quick Look: превью таблицей в Finder
-  desktop/               приложение для Windows, Linux и macOS на Tauri 2 (в работе, docs/PORTING.md)
+  desktop/               приложение для Windows, Linux и macOS на Tauri 2 (docs/PORTING.md)
+  desktop/packaging/     метаданные для Linux и манифест Flatpak
 scripts/build-core.sh    сборка статической библиотеки и биндингов для Xcode
 scripts/release.sh       Release-сборка, DMG, подпись и нотаризация
+scripts/desktop-release.sh  установщики Tauri-версии для текущей системы
+scripts/version.sh       общий номер версии всех сборок
 design/                  иконка: скрипт отрисовки и мастер 1024 × 1024
 docs/PLAN.md             план разработки
 docs/RELEASE.md          выпуск и чек-лист ручной проверки
@@ -49,6 +53,7 @@ make icon     # перерисовать иконки из design/make-icon.swif
 ```bash
 make desktop        # запустить с перезагрузкой при правках
 make desktop-build  # Release-сборка: apps/desktop/src-tauri/target/release/commaeditor
+make desktop-release  # установщики для этой системы в build/desktop: DMG, NSIS, AppImage и .deb
 commaeditor --bench table.csv   # замер прокрутки: открыть, прокрутить, вывести время, выйти
 COMMA_LOG=1 commaeditor a.csv   # команды окон в stderr; ошибки интерфейса пишутся туда всегда
 ```
