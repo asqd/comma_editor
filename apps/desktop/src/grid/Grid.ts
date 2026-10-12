@@ -6,6 +6,7 @@
 // lives here, in pixels of the table, and the scroller's range is that position scaled down:
 // wheel and keys move the table by their own pixels, the scrollbar thumb by its share.
 
+import type { ViewSpec } from "../lib/api";
 import { Selection, type Cell } from "./selection";
 import { Stats } from "./stats";
 
@@ -24,6 +25,8 @@ const ROW_HEIGHT = 24;
 const HEADER_HEIGHT = 28;
 const PADDING = 8;
 const MIN_WIDTH = 56;
+/** Room beside a column's title for its sort mark. */
+const MARK_ROOM = 18;
 const MAX_WIDTH = 360;
 const DEFAULT_WIDTH = 120;
 /** Columns measured for their width; the rest keep the default. */
@@ -116,6 +119,9 @@ export class Grid {
   private measured = false;
 
   private selected: Selection | null = null;
+  /** Sorted columns: ascending or not, and their place among several keys. */
+  private sorted = new Map<number, { ascending: boolean; order: number }>();
+  private filtered = new Set<number | null>();
   /** A drag selecting cells or rows, and where the pointer last was. */
   private drag: { rows: boolean; x: number; y: number; frame: number } | null = null;
 
@@ -187,7 +193,7 @@ export class Grid {
     this.measured = false;
     this.selected = null;
     this.widths = Array.from({ length: source?.columns ?? 0 }, (_, column) =>
-      column < MEASURED_COLUMNS ? this.fit(MIN_WIDTH, HEADER_FONT, [this.title(column)]) : DEFAULT_WIDTH,
+      column < MEASURED_COLUMNS ? this.fit(MIN_WIDTH, HEADER_FONT, [this.title(column)]) + MARK_ROOM : DEFAULT_WIDTH,
     );
     this.layout();
     this.invalidate();
@@ -213,6 +219,13 @@ export class Grid {
     this.layout();
     const clamped = this.selected?.clamped(this.source?.rows ?? 0, columns) ?? null;
     if (!(clamped?.equals(this.selected) ?? this.selected === null)) this.select(clamped, false);
+    this.invalidate();
+  }
+
+  /** Shows which columns sort the rows and which are filtered. */
+  setView(view: ViewSpec): void {
+    this.sorted = new Map(view.sort.map((key, order) => [key.column, { ascending: key.ascending, order }]));
+    this.filtered = new Set(view.filters.map((rule) => rule.column));
     this.invalidate();
   }
 
@@ -662,7 +675,7 @@ export class Grid {
     const columns = Math.min(this.widths.length, MEASURED_COLUMNS);
     for (let column = 0; column < columns; column += 1) {
       const values = rows.map((row) => (row[column] ?? "").slice(0, 60));
-      const header = this.fit(MIN_WIDTH, HEADER_FONT, [this.title(column)]);
+      const header = this.fit(MIN_WIDTH, HEADER_FONT, [this.title(column)]) + MARK_ROOM;
       this.widths[column] = this.fit(header, FONT, values);
     }
     this.layout();
@@ -842,12 +855,23 @@ export class Grid {
     for (let column = firstColumn; column <= lastColumn && this.widths.length > 0; column += 1) {
       const x = columnX(column);
       if (x + this.widths[column] < gutter) continue;
+      // A sorted column shows its direction at the right, and its place among several keys.
+      const sort = this.sorted.get(column);
+      const mark = sort ? `${sort.ascending ? "▲" : "▼"}${this.sorted.size > 1 ? sort.order + 1 : ""}` : "";
+      const markWidth = mark ? g.measureText(mark).width + PADDING : 0;
       g.save();
       g.beginPath();
-      g.rect(Math.max(x, gutter), 0, this.widths[column] - PADDING / 2, HEADER_HEIGHT);
+      g.rect(Math.max(x, gutter), 0, this.widths[column] - PADDING / 2 - markWidth, HEADER_HEIGHT);
       g.clip();
+      g.fillStyle = this.filtered.has(column) || this.filtered.has(null) ? colors.cursor : colors.headerText;
       g.fillText(this.title(column), x + PADDING, HEADER_HEIGHT / 2);
       g.restore();
+      if (mark) {
+        g.fillStyle = colors.cursor;
+        g.textAlign = "right";
+        g.fillText(mark, x + this.widths[column] - PADDING, HEADER_HEIGHT / 2);
+        g.textAlign = "left";
+      }
     }
     g.fillStyle = colors.header;
     g.fillRect(0, 0, gutter, HEADER_HEIGHT);

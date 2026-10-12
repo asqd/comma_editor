@@ -1,16 +1,17 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { open, save as chooseSavePath } from "@tauri-apps/plugin-dialog";
   import { Grid, type TableSource } from "./grid/Grid";
   import { formatBench, runBench } from "./grid/bench";
-  import { call, inTauri, type RangeStats, type SaveFormat, type Status } from "./lib/api";
+  import { call, CoreFailure, inTauri, type FilterRule, type RangeStats, type SaveFormat, type SortKey, type Status, type ViewSpec } from "./lib/api";
   import { Selection, type Cell } from "./grid/selection";
   import { CellEditor, type Move } from "./grid/editor";
   import CellSheet from "./CellSheet.svelte";
   import Alert, { type Button } from "./Alert.svelte";
   import SaveSheet from "./SaveSheet.svelte";
   import FindBar from "./FindBar.svelte";
+  import FilterBar from "./FilterBar.svelte";
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
@@ -38,6 +39,10 @@
   /** The find bar, with the replace row or not, and the selection it may search in. */
   let finding = $state<{ replacing: boolean; selection: CellRange | null } | null>(null);
   let findBar = $state<ReturnType<typeof FindBar>>();
+  /** The filter bar, and why its filters cannot apply. */
+  let filtering = $state(false);
+  let filterBar = $state<ReturnType<typeof FilterBar>>();
+  let filterProblem = $state("");
   /** A menu open at the pointer. */
   let menu = $state<{ x: number; y: number; items: (MenuItem | null)[] } | null>(null);
   /** A value with line breaks being edited in a window of its own. */
@@ -53,6 +58,7 @@
     )
       grid.reload();
     else if (previous.rows !== status.rows || previous.columns !== status.columns) grid.update();
+    grid.setView(status.view);
     void showTitle(status);
   });
   const table: TableSource = {
@@ -116,6 +122,10 @@
     const delimiter = status.delimiter === "\t" ? L("Tab") : status.delimiter === " " ? L("Space") : status.delimiter;
     parts.push(L("Delimiter: %@", delimiter));
     parts.push({ lf: "LF", crLf: "CRLF", cr: "CR" }[status.lineEnding]);
+    if (status.view.sort.length > 0) {
+      const keys = status.view.sort.map((key) => `${grid?.title(key.column) ?? key.column} ${key.ascending ? "↑" : "↓"}`);
+      parts.push(L("Sorted by %@", keys.join(", ")));
+    }
     return parts.join("   ·   ");
   });
 
@@ -418,6 +428,86 @@
     await doc.attempt(() => doc.run("fill_down", { range: rows }));
   }
 
+  /** Sorting and filtering wait for indexing and for changes to many rows, but replace each other. */
+  function viewable(): boolean {
+    const status = doc.status;
+    if (!status) return false;
+    if (status.indexing !== null || status.job?.kind === "edit") return changeable();
+    return true;
+  }
+
+  /** Shows the rows as `view` sorts and filters them, keeping the active row of the file. */
+  async function setView(view: ViewSpec) {
+    if (!viewable()) return;
+    filterProblem = "";
+    await keepingRow(async () => {
+      try {
+        const status = await doc.run("set_view", { view });
+        if (status.job) await doc.waitForJob();
+      } catch (error) {
+        const detail = error instanceof CoreFailure ? error.detail : null;
+        if (detail && typeof detail === "object" && "invalidPattern" in detail) filterProblem = L("Invalid regular expression");
+        else throw error;
+      }
+    });
+  }
+
+  const currentView = (): ViewSpec => doc.status?.view ?? { sort: [], filters: [] };
+
+  function sortBy(keys: SortKey[]) {
+    void setView({ ...currentView(), sort: keys });
+  }
+
+  /**
+   * A click on a column's title sorts by it (GridViewController.didClick): ascending, then
+   * descending, then not; with Shift it adds the column to the keys or turns its own.
+   */
+  function headerClick(column: number, extend: boolean) {
+    const keys = currentView().sort.map((key) => ({ ...key }));
+    const index = keys.findIndex((key) => key.column === column);
+    if (index >= 0 && (extend || keys.length === 1)) {
+      if (keys[index].ascending) keys[index].ascending = false;
+      else keys.splice(index, 1);
+    } else if (extend) {
+      keys.push({ column, ascending: true });
+    } else {
+      keys.splice(0, keys.length, { column, ascending: true });
+    }
+    sortBy(keys);
+  }
+
+  function setFilters(filters: FilterRule[]) {
+    void setView({ ...currentView(), filters });
+  }
+
+  /** Shows or hides the filter bar; hiding it shows every row again, as in the macOS app. */
+  function toggleFilter() {
+    if (filtering) {
+      filtering = false;
+      if (currentView().filters.length > 0) setFilters([]);
+      grid?.focus();
+    } else {
+      filtering = true;
+    }
+  }
+
+  /** Adds a condition from a cell's menu: only this value, or all but it. */
+  async function filterBy(cell: Cell, only: boolean) {
+    const value = await cellValue(cell);
+    const rule: FilterRule =
+      value === ""
+        ? { column: cell.column, op: only ? "isEmpty" : "isNotEmpty", value: "", caseSensitive: false }
+        : { column: cell.column, op: only ? "equals" : "notEquals", value, caseSensitive: true };
+    // The bar applies its conditions, the new one among them.
+    filtering = true;
+    await tick();
+    filterBar?.addRule(rule);
+  }
+
+  async function reorderRows() {
+    if (changeable()) await keepingRow(() => doc.run("apply_sort"));
+  }
+
   const keys = (shortcut: Shortcut) => shortcutLabel(shortcut);
 
   /** The menus of a cell and of a column's title (GridViewController+View.swift). */
@@ -431,6 +521,15 @@
         x,
         y,
         items: [
+          { label: L("Sort Ascending"), run: () => sortBy([{ column, ascending: true }]) },
+          { label: L("Sort Descending"), run: () => sortBy([{ column, ascending: false }]) },
+          { label: L("Clear Sort"), disabled: status.view.sort.length === 0, run: () => sortBy([]) },
+          {
+            label: L("Reorder Rows in File"),
+            disabled: busy || status.view.sort.length === 0 || status.view.filters.length > 0,
+            run: () => void reorderRows(),
+          },
+          null,
           { label: L("Rename Column…"), disabled: busy || !status.hasHeader, run: () => void renameColumn(column) },
           null,
           { label: L("Insert Column Left"), shortcut: keys({ key: "ArrowLeft", command: true, alt: true }), disabled: busy, run: () => void insertColumn(false) },
@@ -444,10 +543,15 @@
     }
     const cell = target.cell;
     const view = sortedOrFiltered();
+    const shown = grid?.value(cell);
+    const short = shown && shown.length > 30 ? `${shown.slice(0, 30)}…` : (shown ?? "");
     menu = {
       x,
       y,
       items: [
+        { label: short === "" ? L("Show Only Empty") : L("Show Only “%@”", short), run: () => void filterBy(cell, true) },
+        { label: short === "" ? L("Hide Empty") : L("Hide “%@”", short), run: () => void filterBy(cell, false) },
+        null,
         { label: L("Edit Cell"), disabled: busy, run: () => void edit(cell) },
         { label: L("Edit Cell in Window…"), shortcut: keys({ key: "e", command: true, alt: true }), disabled: busy, run: () => void edit(cell, undefined, true) },
         null,
@@ -509,6 +613,11 @@
       else finding = { replacing, selection: grid?.selection?.range ?? null };
       return;
     }
+    if (command && event.shiftKey && !event.altKey && event.code === "KeyL" && doc.open) {
+      event.preventDefault();
+      toggleFilter();
+      return;
+    }
     if (command && !event.altKey && event.code === "KeyG" && finding) {
       event.preventDefault();
       void findBar?.next(!event.shiftKey);
@@ -540,6 +649,7 @@
     grid.onCopy = (cut) => void copy(cut);
     grid.onPaste = (text) => void paste(text);
     grid.onMenu = openMenu;
+    grid.onHeader = headerClick;
     grid.onSelect = (selected) => {
       selection = selected;
       void measure(selected);
@@ -587,6 +697,16 @@
         finding = null;
         grid?.focus();
       }}
+    />
+  {/if}
+  {#if filtering && doc.status}
+    <FilterBar
+      bind:this={filterBar}
+      filters={doc.status.view.filters}
+      titles={Array.from({ length: doc.status.columns }, (_, column) => grid?.title(column) ?? "")}
+      problem={filterProblem}
+      apply={setFilters}
+      close={toggleFilter}
     />
   {/if}
   <main class="table" bind:this={host}>
