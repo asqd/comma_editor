@@ -95,9 +95,9 @@ jobs:
           grep -q '^Exec=commaeditor %F$' deb.desktop
           grep -q '^MimeType=.*text/csv' deb.desktop
           chmod +x CommaEditor-*.AppImage
-          ./CommaEditor-*.AppImage --appimage-extract '*.desktop' > /dev/null
-          cat squashfs-root/*.desktop
-          grep -q '^Exec=commaeditor %F$' squashfs-root/*.desktop
+          ./CommaEditor-*.AppImage --appimage-extract > /dev/null
+          cat squashfs-root/usr/share/applications/*.desktop
+          grep -q '^Exec=commaeditor %F$' squashfs-root/usr/share/applications/*.desktop
           rm -rf deb.desktop squashfs-root
       - uses: actions/upload-artifact@v4
         with:
