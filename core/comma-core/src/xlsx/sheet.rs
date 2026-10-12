@@ -11,6 +11,7 @@ use super::numfmt::{DisplayLocale, NumberFormat};
 use super::refs::{self, MAX_COLUMNS, MAX_ROWS};
 use super::xml::{self, EventSource, attribute, flag};
 use super::{ColumnLayout, SheetLayout, SheetRange};
+use crate::cell_text::CellText;
 use crate::document::{Computed, Field, FormulaField};
 use crate::edit::Progress;
 use crate::error::Result;
@@ -518,7 +519,7 @@ fn read_in_runs(input: &mut impl Read, size: u64, part: &str, context: &Context,
                         }
                         None => {
                             let value = std::mem::take(&mut cell.value);
-                            reading.rows[row as usize][column as usize] = Field::Text(value);
+                            reading.rows[row as usize][column as usize] = Field::Text(value.into());
                         }
                     }
                 }
@@ -761,7 +762,7 @@ fn place(rows: &mut Vec<Vec<Field>>, base: u32, cell: &mut Cell, context: &Conte
             };
             Field::Formula(Box::new(FormulaField { formula, value, array: cell.array.take(), computed, from_file: true, date_format: None }))
         }
-        None => Field::Text(value),
+        None => Field::Text(value.into()),
     };
     let (row, column) = ((cell.row - base) as usize, cell.column as usize);
     if rows.len() <= row {
@@ -772,7 +773,7 @@ fn place(rows: &mut Vec<Vec<Field>>, base: u32, cell: &mut Cell, context: &Conte
     }
     let fields = &mut rows[row];
     if fields.len() <= column {
-        fields.resize(column + 1, Field::Text(String::new()));
+        fields.resize(column + 1, Field::Text(CellText::new()));
     }
     fields[column] = field;
 }

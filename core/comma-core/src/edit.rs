@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use rayon::prelude::*;
 
+use crate::cell_text::CellText;
 use crate::columns::TextTransform;
 use crate::document::{Document, Field, Record};
 use crate::error::Result;
@@ -319,9 +320,9 @@ impl Document {
             }
             let fields = fields.get_or_insert_with(|| self.fields(&self.records[row]));
             if fields.len() <= column {
-                fields.resize(column + 1, Field::Text(String::new()));
+                fields.resize(column + 1, Field::Text(CellText::new()));
             }
-            fields[column] = Field::Text(new_value);
+            fields[column] = Field::Text(new_value.into());
             width = width.max(column + 1);
             changed += 1;
         }

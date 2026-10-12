@@ -7,6 +7,7 @@
 //! Sheets of Excel workbooks open as documents too; see `Workbook`.
 
 mod bytes;
+mod cell_text;
 mod columns;
 mod dialect;
 mod diff;

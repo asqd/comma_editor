@@ -9,6 +9,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+use crate::cell_text::CellText;
 use crate::document::{Document, Field};
 use crate::edit::{Change, Edit, EditOutcome, Prepared, Progress, map_rows};
 use crate::error::{Error, Result};
@@ -826,9 +827,9 @@ impl Document {
             };
             let mut fields = self.fields(record);
             if fields.len() < at {
-                fields.resize(at, Field::Text(String::new()));
+                fields.resize(at, Field::Text(CellText::new()));
             }
-            fields.insert(at, Field::Text(value));
+            fields.insert(at, Field::Text(value.into()));
             Some((record.with_fields(fields), error))
         }) else {
             return Ok(None);

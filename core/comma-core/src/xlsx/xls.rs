@@ -17,6 +17,7 @@ use super::package::Shared;
 use super::sheet::Context;
 use super::styles::Styles;
 use super::{ColumnLayout, SheetEntry, SheetKind, SheetLayout, SheetRange, SheetVisibility};
+use crate::cell_text::CellText;
 use crate::bytes::Bytes;
 use crate::document::Field;
 use crate::error::{Result, WorkbookError};
@@ -140,7 +141,7 @@ fn put(rows: &mut Vec<Vec<Field>>, row: usize, column: usize, field: Field) {
     }
     let fields = &mut rows[row];
     if fields.len() <= column {
-        fields.resize(column + 1, Field::Text(String::new()));
+        fields.resize(column + 1, Field::Text(CellText::new()));
     }
     fields[column] = field;
 }
@@ -172,7 +173,7 @@ impl XlsBook {
                 Data::Empty => continue,
             };
             if !value.is_empty() {
-                put(&mut rows, row as usize, column as usize, Field::Text(value));
+                put(&mut rows, row as usize, column as usize, Field::Text(value.into()));
             }
         }
         Ok((rows, layout))

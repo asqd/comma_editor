@@ -9,6 +9,7 @@ use crate::bytes::{self, Bytes};
 
 use crate::dialect::{self, Dialect};
 use crate::encoding::{self, Prepared, TextEncoding};
+use crate::cell_text::CellText;
 use crate::error::{Error, Result, SheetStructure};
 use crate::history::{History, Splice, Transaction};
 use crate::parser::{self, Terminator};
@@ -53,7 +54,7 @@ pub(crate) const NO_ORIGIN: u32 = u32::MAX;
 pub(crate) enum Field {
     /// Untouched field: raw bytes of the original file, quotes included.
     Raw { start: usize, end: usize },
-    Text(String),
+    Text(CellText),
     /// A cell of a workbook computed by a formula.
     Formula(Box<FormulaField>),
     /// A value typed into a cell of a workbook, shown in the cell's number format.
@@ -334,7 +335,7 @@ impl Document {
             dialect: Dialect::default(),
             trailing_newline: true,
             records: Arc::new(vec![Record::modified(
-                vec![Field::Text(String::new()); columns],
+                vec![Field::Text(CellText::new()); columns],
                 Terminator::Lf,
             )]),
             has_header: false,
@@ -552,7 +553,7 @@ impl Document {
             if let Some(field) = modified.fields.get_mut(column)
                 && let Field::Text(input) = field
             {
-                *field = Field::Entered(Box::new(EnteredField { input: std::mem::take(input), shown: text, exact: false }));
+                *field = Field::Entered(Box::new(EnteredField { input: std::mem::take(input).into(), shown: text, exact: false }));
             }
         }
         self.generation += 1;
@@ -1092,7 +1093,7 @@ impl Document {
         let record = &self.records[row];
         let mut fields = self.fields(record);
         if fields.len() <= column {
-            fields.resize(column + 1, Field::Text(String::new()));
+            fields.resize(column + 1, Field::Text(CellText::new()));
         }
         fields[column] = match formula {
             Some(formula) => Field::Formula(Box::new(FormulaField {
@@ -1103,7 +1104,7 @@ impl Document {
                 from_file: false,
                 date_format: None,
             })),
-            None => Field::Text(value.to_owned()),
+            None => Field::Text(value.into()),
         };
         let updated = record.with_fields(fields);
         let splice = Splice::apply(Arc::make_mut(&mut self.records), row, 1, vec![updated]);
@@ -1128,7 +1129,7 @@ impl Document {
         let columns = self.column_count.max(1);
         let term = self.dialect.line_ending.terminator();
         let rows = (0..count)
-            .map(|_| Record::modified(vec![Field::Text(String::new()); columns], term))
+            .map(|_| Record::modified(vec![Field::Text(CellText::new()); columns], term))
             .collect();
         let splice = Splice::apply(Arc::make_mut(&mut self.records), at, 0, rows);
         self.commit(vec![splice], columns, true);
@@ -1199,7 +1200,7 @@ impl Document {
                 if record.is_blank() || !affected {
                     return record.clone();
                 }
-                fields.insert(at, Field::Text(String::new()));
+                fields.insert(at, Field::Text(CellText::new()));
                 record.with_fields(fields)
             })
             .collect();
@@ -1287,7 +1288,7 @@ impl Document {
                     return record.clone();
                 }
                 if fields.len() <= reach {
-                    fields.resize(reach + 1, Field::Text(String::new()));
+                    fields.resize(reach + 1, Field::Text(CellText::new()));
                 }
                 let field = fields.remove(from);
                 fields.insert(to, field);

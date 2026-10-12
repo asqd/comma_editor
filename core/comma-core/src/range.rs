@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
+use crate::cell_text::CellText;
 use crate::document::{Document, Field, Record};
 use crate::edit::Progress;
 use crate::error::{Error, Result};
@@ -168,7 +169,7 @@ impl Document {
             let columns = self.column_count().max(1);
             let term = self.dialect.line_ending.terminator();
             let rows = (visible..top + height)
-                .map(|_| Record::modified(vec![Field::Text(String::new()); columns], term))
+                .map(|_| Record::modified(vec![Field::Text(CellText::new()); columns], term))
                 .collect();
             let at = self.records.len();
             splices.push(Splice::apply(Arc::make_mut(&mut self.records), at, 0, rows));
@@ -247,11 +248,11 @@ impl Document {
                     Some(cell) if self.formula(record, column).as_deref() == Some(cell.formula.as_str()) => continue,
                     Some(cell) => Field::Formula(Box::new(cell)),
                     None if unchanged && self.formula(record, column).is_none() => continue,
-                    None => Field::Text(new_value),
+                    None => Field::Text(new_value.into()),
                 };
                 let fields = fields.get_or_insert_with(|| self.fields(&self.records[record]));
                 if fields.len() <= column {
-                    fields.resize(column + 1, Field::Text(String::new()));
+                    fields.resize(column + 1, Field::Text(CellText::new()));
                 }
                 fields[column] = field;
                 columns_after = columns_after.max(column + 1);

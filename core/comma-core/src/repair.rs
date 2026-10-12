@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use memchr::memchr_iter;
 use rayon::prelude::*;
 
+use crate::cell_text::CellText;
 use crate::document::{Document, Field, Record, RecordRef};
 use crate::error::Result;
 use crate::history::Splice;
@@ -394,7 +395,7 @@ impl Document {
             Fix::QuoteAsText | Fix::RemoveQuote => self.split_at_quote(survey, row, fix == Fix::RemoveQuote),
             Fix::PadFields => {
                 let mut fields = self.fields(record);
-                fields.resize(expected.max(fields.len()), Field::Text(String::new()));
+                fields.resize(expected.max(fields.len()), Field::Text(CellText::new()));
                 modified(fields)
             }
             Fix::JoinNext => {
@@ -408,7 +409,7 @@ impl Document {
                     term => term,
                 };
                 let line_break = std::str::from_utf8(line_break.bytes()).unwrap_or("\n");
-                fields.push(Field::Text(format!("{last}{line_break}{first}")));
+                fields.push(Field::Text(format!("{last}{line_break}{first}").into()));
                 fields.extend(rest);
                 (2, vec![Record::modified(fields, next.term())], trailing)
             }
@@ -420,7 +421,7 @@ impl Document {
                     .drain(column..=column + extra)
                     .map(|field| self.field_value(&field).into_owned())
                     .collect();
-                fields.insert(column, Field::Text(merged.join(&delimiter)));
+                fields.insert(column, Field::Text(merged.join(&delimiter).into()));
                 modified(fields)
             }
             Fix::DropEmptyFields => {
@@ -480,7 +481,7 @@ impl Document {
                         } else {
                             encoding.decode(&self.buf[s..e]).into_owned()
                         };
-                        Field::Text(text)
+                        Field::Text(text.into())
                     })
                     .collect();
                 Record::modified(fields, span_term)

@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use regex::Regex;
 
+use crate::cell_text::CellText;
 use crate::document::{Document, Field};
 use crate::edit::{BLOCK, Change, Edit, EditOutcome, Prepared, Progress, drop_later, map_rows};
 use crate::error::{Error, Result, SheetStructure};
@@ -167,7 +168,7 @@ impl Document {
                 return Some(record.clone());
             }
             let values = parts[row].as_ref().unwrap_or(&names);
-            let new = (0..count).map(|n| Field::Text(values.get(n).cloned().unwrap_or_default()));
+            let new = (0..count).map(|n| Field::Text(values.get(n).map(CellText::from).unwrap_or_default()));
             fields.splice(column + 1..column + 1, new);
             Some(record.with_fields(fields))
         });
@@ -209,8 +210,8 @@ impl Document {
             .into_iter()
             .enumerate()
             .map(|(row, parts)| match (parts, &header) {
-                (Some(parts), _) => parts.into_iter().map(Field::Text).collect(),
-                (None, Some(name)) if row == 0 => (1..=count).map(|n| Field::Text(format!("{name} {n}"))).collect(),
+                (Some(parts), _) => parts.into_iter().map(|part| Field::Text(part.into())).collect(),
+                (None, Some(name)) if row == 0 => (1..=count).map(|n| Field::Text(format!("{name} {n}").into())).collect(),
                 _ => Vec::new(),
             })
             .collect();
@@ -231,7 +232,7 @@ impl Document {
                 let parts: Vec<String> =
                     columns.iter().map(|&column| self.value_at(row, column).into_owned()).filter(|value| !value.is_empty()).collect();
                 let joiner = if row < header_rows && separator.trim().is_empty() { " " } else { separator };
-                vec![Field::Text(parts.join(joiner))]
+                vec![Field::Text(parts.join(joiner).into())]
             })
             .collect();
         Ok(Some((last + 1, values)))
@@ -269,9 +270,9 @@ impl Document {
                 return Some(record.clone());
             }
             if fields.len() < at {
-                fields.resize(at, Field::Text(String::new()));
+                fields.resize(at, Field::Text(CellText::new()));
             }
-            fields.insert(at, Field::Text(merged));
+            fields.insert(at, Field::Text(merged.into()));
             Some(record.with_fields(fields))
         }) else {
             return Ok(None);

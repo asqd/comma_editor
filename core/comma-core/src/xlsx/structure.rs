@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 
 use super::Workbook;
 use super::refs::{Remap, remap_formula};
+use crate::cell_text::CellText;
 use crate::document::{Document, Field, FormulaField, NO_ORIGIN, Record};
 use crate::error::{Error, Result, SheetStructure};
 use crate::history::Splice;
@@ -286,7 +287,7 @@ impl Workbook {
                     }
                     if !record.is_blank() && fields.len() > low {
                         if fields.len() <= high {
-                            fields.resize(high + 1, Field::Text(String::new()));
+                            fields.resize(high + 1, Field::Text(CellText::new()));
                         }
                         let field = fields.remove(from);
                         fields.insert(to, field);
@@ -363,7 +364,7 @@ impl Workbook {
                             .and_then(|(row, column)| values.as_ref()?.exact(row, column, &text));
                         match exact {
                             Some(input) if input != text => {
-                                Field::Entered(Box::new(crate::document::EnteredField { input, shown: text, exact: true }))
+                                Field::Entered(Box::new(crate::document::EnteredField { input, shown: text.into(), exact: true }))
                             }
                             _ => Field::Text(text),
                         }
@@ -534,7 +535,7 @@ impl Workbook {
                         let Some(formula) = formula else { continue };
                         let column = left + offset;
                         if fields.len() <= column {
-                            fields.resize(column + 1, Field::Text(String::new()));
+                            fields.resize(column + 1, Field::Text(CellText::new()));
                         }
                         fields[column] = Field::Formula(Box::new(FormulaField {
                             formula: formula.clone(),
@@ -620,11 +621,11 @@ fn restructure_sheet(
                 let filled = fill.and_then(|fill| fill.get(row)).filter(|fields| fields.iter().any(|field| !super::save::value(field).is_empty()));
                 if insert && let Some(filled) = filled {
                     if fields.len() < at {
-                        fields.resize(at, Field::Text(String::new()));
+                        fields.resize(at, Field::Text(CellText::new()));
                     }
-                    fields.splice(at..at, (0..count).map(|offset| filled.get(offset).cloned().unwrap_or_else(|| Field::Text(String::new()))));
+                    fields.splice(at..at, (0..count).map(|offset| filled.get(offset).cloned().unwrap_or_else(|| Field::Text(CellText::new()))));
                 } else if insert && fields.len() > at {
-                    fields.splice(at..at, std::iter::repeat_n(Field::Text(String::new()), count));
+                    fields.splice(at..at, std::iter::repeat_n(Field::Text(CellText::new()), count));
                 } else if !insert && fields.len() > at {
                     fields.drain(at..(at + count).min(fields.len()));
                 }
@@ -638,7 +639,7 @@ fn restructure_sheet(
             if insert {
                 let width = columns.max(1);
                 let new = (0..count).map(|_| {
-                    let mut fields = vec![Field::Text(String::new()); width];
+                    let mut fields = vec![Field::Text(CellText::new()); width];
                     for (column, field) in template.unwrap_or_default().iter().enumerate().take(width) {
                         fields[column] = field.clone();
                     }
@@ -670,10 +671,10 @@ fn restructure_sheet(
                 if let Some(record) = records.get_mut(*row) {
                     let mut fields = document.fields(record);
                     if fields.len() <= *column {
-                        fields.resize(column + 1, Field::Text(String::new()));
+                        fields.resize(column + 1, Field::Text(CellText::new()));
                     }
                     if super::save::value(&fields[*column]).is_empty() {
-                        fields[*column] = Field::Text(name.clone());
+                        fields[*column] = Field::Text(name.into());
                         *record = record.with_fields(fields);
                     }
                 }
