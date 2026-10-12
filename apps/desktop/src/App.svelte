@@ -5,7 +5,7 @@
   import { open, save as chooseSavePath } from "@tauri-apps/plugin-dialog";
   import { Grid, type TableSource } from "./grid/Grid";
   import { formatBench, runBench } from "./grid/bench";
-  import { call, CoreFailure, inTauri, type FilterRule, type RangeStats, type SaveFormat, type SortKey, type Status, type ViewSpec } from "./lib/api";
+  import { call, CoreFailure, inTauri, type TextEncoding, type FilterRule, type RangeStats, type SaveFormat, type SortKey, type Status, type ViewSpec } from "./lib/api";
   import { Selection, type Cell } from "./grid/selection";
   import { CellEditor, type Move } from "./grid/editor";
   import CellSheet from "./CellSheet.svelte";
@@ -13,6 +13,8 @@
   import SaveSheet from "./SaveSheet.svelte";
   import FindBar from "./FindBar.svelte";
   import FilterBar from "./FilterBar.svelte";
+  import OpenOptions from "./OpenOptions.svelte";
+  import { delimiterName, delimiters, encodingName, encodings } from "./lib/formats";
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
@@ -55,7 +57,10 @@
   /** The status the view shows rows for; the rows reload when it differs in what they show. */
   const doc = new Document((status, previous) => {
     if (!grid) return;
-    if (!previous || previous.path !== status.path) grid.setSource(table);
+    if (!previous || previous.path !== status.path || fresh) {
+      fresh = false;
+      grid.setSource(table);
+    }
     else if (
       previous.change !== status.change ||
       previous.hasHeader !== status.hasHeader ||
@@ -79,6 +84,13 @@
     fetch: (start, count) => call<string[][]>("rows", { start, count }),
   };
 
+  /** A file was just opened, perhaps again: the grid starts over. */
+  let fresh = false;
+  /** How the file was last opened: chosen encoding and delimiter, `null` detected. */
+  let reading = $state.raw<{ encoding: TextEncoding | null; delimiter: string | null }>({ encoding: null, delimiter: null });
+  /** The encoding and delimiter window, and whether it opened by itself. */
+  let checking = $state<{ uncertain: boolean } | null>(null);
+  let askedAboutDetection = false;
   let failure = $state<{ message: string; detail?: string } | null>(null);
   let openSeconds = 0;
   let firstScreen: number | null = null;
@@ -143,9 +155,13 @@
     return "";
   });
 
-  /** Opens a file in this window; the time to the first screen goes to the bench. */
-  async function show(path: string): Promise<boolean> {
+  /**
+   * Opens a file in this window, with an encoding and a delimiter or detecting them; the time
+   * to the first screen goes to the bench.
+   */
+  async function show(path: string, options = { encoding: null as TextEncoding | null, delimiter: null as string | null }): Promise<boolean> {
     failure = null;
+    fresh = true;
     firstScreen = null;
     const started = performance.now();
     if (grid) {
@@ -154,10 +170,16 @@
       };
     }
     try {
-      await doc.run("open", { path });
+      const status = await doc.run("open", { path, ...options });
       openSeconds = (performance.now() - started) / 1000;
+      reading = options;
       addRecent(path);
       void installMenu();
+      // Once per window, as in the macOS app: a guessed encoding or delimiter is shown to check.
+      if (!status.detectionConfident && !askedAboutDetection && !benching) {
+        askedAboutDetection = true;
+        checking = { uncertain: true };
+      }
       return true;
     } catch (error) {
       failure = describe(error);
@@ -197,6 +219,24 @@
   }
   let opening = false;
 
+  /** Reads the file again with another encoding or delimiter, losing changes once asked. */
+  async function reopen(encoding: TextEncoding | null, delimiter: string | null) {
+    const status = doc.status;
+    if (!status?.path) return;
+    if (status.dirty) {
+      const answer = await ask(
+        L("Reopen the file and lose unsaved changes?"),
+        L("The file is read again from disk; changes made since the last save are lost."),
+        [
+          { label: L("Cancel"), value: "cancel", cancel: true },
+          { label: L("Reopen"), value: "reopen", default: true },
+        ],
+      );
+      if (answer !== "reopen") return;
+    }
+    await show(status.path, { encoding, delimiter });
+  }
+
   /** A new document: in this window while it has none, in a new one otherwise. */
   async function newDocument() {
     if (doc.open) newWindow(null);
@@ -220,7 +260,9 @@
   }
 
   /** `--bench FILE`: opens the file, waits for it to be read whole, times scrolling and quits. */
+  let benching = false;
   async function benchAndQuit(path: string) {
+    benching = true;
     const { benchDone, benchStep } = await import("./lib/bench-launch");
     void benchStep(`opening ${path}`);
     if (!(await show(path))) {
@@ -635,6 +677,44 @@
         run: () => void saveAs(),
       },
       {
+        id: "checkEncoding",
+        label: L("Check Encoding and Delimiter…"),
+        enabled: () => !!status()?.path,
+        run: () => (checking = { uncertain: false }),
+      },
+      {
+        id: "reopenEncoding:auto",
+        label: L("Detect Automatically"),
+        enabled: () => !!status()?.path,
+        checked: () => reading.encoding === null,
+        run: () => void reopen(null, reading.delimiter),
+      },
+      ...encodings.map(
+        (encoding): Command => ({
+          id: `reopenEncoding:${encoding}`,
+          label: encodingName(encoding),
+          enabled: () => !!status()?.path,
+          checked: () => reading.encoding === encoding,
+          run: () => void reopen(encoding, reading.delimiter),
+        }),
+      ),
+      {
+        id: "reopenDelimiter:auto",
+        label: L("Detect Automatically"),
+        enabled: () => !!status()?.path,
+        checked: () => reading.delimiter === null,
+        run: () => void reopen(reading.encoding, null),
+      },
+      ...delimiters.map(
+        (delimiter): Command => ({
+          id: `reopenDelimiter:${delimiter}`,
+          label: delimiterName(delimiter),
+          enabled: () => !!status()?.path,
+          checked: () => reading.delimiter === delimiter,
+          run: () => void reopen(reading.encoding, delimiter),
+        }),
+      ),
+      {
         id: "quit",
         label: L("Quit %@", "CommaEditor"),
         shortcut: { key: "q", command: true },
@@ -818,7 +898,19 @@
   /** The menu bar as MainMenu.swift lays it out, for the commands this app has so far. */
   function menuEntries(): { title: string; entries: Entry[] }[] {
     const recent: Entry[] = recentFiles().map((_, index) => `recent:${index}`);
-    const file: Entry[] = ["new", "open", { title: L("Open Recent"), entries: [...recent, ...(recent.length ? ["-"] : []), "clearRecent"] }, "-", "close", "save", "saveAs"];
+    const file: Entry[] = [
+      "new",
+      "open",
+      { title: L("Open Recent"), entries: [...recent, ...(recent.length ? ["-"] : []), "clearRecent"] },
+      "-",
+      "close",
+      "save",
+      "saveAs",
+      "-",
+      { title: L("Reopen with Encoding"), entries: ["reopenEncoding:auto", "-", ...encodings.map((encoding) => `reopenEncoding:${encoding}`)] },
+      { title: L("Reopen with Delimiter"), entries: ["reopenDelimiter:auto", "-", ...delimiters.map((delimiter) => `reopenDelimiter:${delimiter}`)] },
+      "checkEncoding",
+    ];
     if (!mac) file.push("-", "quit");
     const app = {
       title: "CommaEditor",
@@ -1042,6 +1134,19 @@
       close={() => {
         menu = null;
         grid?.focus();
+      }}
+    />
+  {/if}
+  {#if checking && doc.status?.path}
+    <OpenOptions
+      path={doc.status.path}
+      encoding={reading.encoding}
+      delimiter={reading.delimiter}
+      uncertain={checking.uncertain}
+      choose={(choice) => {
+        checking = null;
+        grid?.focus();
+        if (choice) void reopen(choice.encoding, choice.delimiter);
       }}
     />
   {/if}
