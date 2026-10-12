@@ -51,8 +51,13 @@ make desktop-build  # Release-сборка: apps/desktop/src-tauri/target/releas
 commaeditor --bench table.csv   # замер прокрутки: открыть, прокрутить, вывести время, выйти
 ```
 
-Сетку без приложения можно открыть в браузере: `npm run dev` в `apps/desktop`, затем
-http://localhost:1430 — строки придумываются на лету (`?rows=` задаёт их число).
+Интерфейс можно открыть и в браузере, с настоящим ядром: мост для разработки отдаёт команды
+приложения по HTTP (только с этой машины и только через прокси Vite).
+
+```bash
+cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml --features bridge --bin comma-bridge
+cd apps/desktop && npm run dev   # затем http://localhost:1430/?open=/путь/к/файлу.csv&lang=ru
+```
 
 Утилита командной строки:
 

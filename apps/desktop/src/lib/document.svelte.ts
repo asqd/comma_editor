@@ -1,0 +1,80 @@
+// The document of a window as the interface sees it: its status, kept current after every
+// command, and while a large file is read or a job runs in the background.
+
+import { call, type Status } from "./api";
+import { sentence } from "./errors";
+
+/** How often the status is asked for while something runs in the background. */
+const POLL_MS = 100;
+
+export class Document {
+  /** `null` until a file is open. */
+  status = $state.raw<Status | null>(null);
+  /** The last problem, for the status bar. */
+  problem = $state("");
+  private polling = 0;
+
+  /**
+   * @param changed runs after every new status, with the one before: the grid reloads its
+   * rows when they may differ.
+   */
+  constructor(private readonly changed: (status: Status, previous: Status | null) => void) {}
+
+  get open(): boolean {
+    return this.status !== null;
+  }
+
+  /** Runs a command that returns the new status, and shows it. */
+  async run(command: string, args: object = {}): Promise<Status> {
+    return this.show(await call<Status>(command, args));
+  }
+
+  /** Runs a command whose reply carries the new status beside other things. */
+  async runWith<T extends { status: Status }>(command: string, args: object = {}): Promise<T> {
+    const reply = await call<T>(command, args);
+    this.show(reply.status);
+    return reply;
+  }
+
+  /** Runs a command, showing a failure in the status bar instead of throwing it. */
+  async attempt(work: () => Promise<unknown>): Promise<boolean> {
+    try {
+      await work();
+      this.problem = "";
+      return true;
+    } catch (error) {
+      this.problem = sentence(error);
+      return false;
+    }
+  }
+
+  async refresh(): Promise<void> {
+    if (this.status) this.show(await call<Status>("status"));
+  }
+
+  show(status: Status): Status {
+    const previous = this.status;
+    this.status = status;
+    this.changed(status, previous);
+    if ((status.indexing !== null || status.job !== null) && !this.polling) {
+      this.polling = window.setTimeout(() => this.poll(), POLL_MS);
+    }
+    return status;
+  }
+
+  private async poll(): Promise<void> {
+    this.polling = 0;
+    const before = this.status;
+    try {
+      const status = await call<Status>("status");
+      // A job that ended may have failed; its result says how.
+      if (before?.job && !status.job) {
+        const result = await call<{ ok?: unknown; error?: unknown } | null>("job_result");
+        if (result?.error) this.problem = sentence(result.error);
+      }
+      this.show(status);
+    } catch (error) {
+      this.problem = sentence(error);
+    }
+  }
+}

@@ -1,0 +1,166 @@
+// Calls to the core: through Tauri in the app, through the development bridge in a browser
+// (`comma-bridge`, behind the Vite proxy). Both run `Sessions::dispatch` in
+// src-tauri/src/session.rs; the types here mirror its replies and comma-ffi's records.
+
+import { invoke } from "@tauri-apps/api/core";
+
+export const inTauri = "__TAURI_INTERNALS__" in window;
+
+/** The bridge keeps a document per browser tab, as the app does per window. */
+const tab = (() => {
+  try {
+    const id = sessionStorage.getItem("comma-window") ?? `tab-${crypto.randomUUID()}`;
+    sessionStorage.setItem("comma-window", id);
+    return id;
+  } catch {
+    return `tab-${Math.random().toString(36).slice(2)}`;
+  }
+})();
+
+/** A command failed: `detail` is an error of the core (see `describe` in errors.ts) or a message. */
+export class CoreFailure extends Error {
+  constructor(readonly detail: unknown) {
+    super(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+}
+
+export async function call<T>(command: string, args: object = {}): Promise<T> {
+  if (inTauri) {
+    try {
+      return await invoke<T>("core", { command, args });
+    } catch (error) {
+      throw new CoreFailure(error);
+    }
+  }
+  const response = await fetch("/core", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ window: tab, command, args }),
+  });
+  const body: unknown = await response.json().catch(() => ({ message: `bridge: HTTP ${response.status}` }));
+  if (!response.ok) throw new CoreFailure(body);
+  return body as T;
+}
+
+export type TextEncoding =
+  | "utf8"
+  | "utf16Le"
+  | "utf16Be"
+  | "windows1251"
+  | "koi8R"
+  | "windows1252"
+  | "windows1250"
+  | "windows1253"
+  | "windows1254"
+  | "windows1257"
+  | "koi8U"
+  | "ibm866";
+
+export type LineEnding = "lf" | "crLf" | "cr";
+
+export interface SortKey {
+  column: number;
+  ascending: boolean;
+}
+
+export type FilterOp =
+  | "contains"
+  | "notContains"
+  | "equals"
+  | "notEquals"
+  | "startsWith"
+  | "endsWith"
+  | "matches"
+  | "isEmpty"
+  | "isNotEmpty"
+  | "greaterThan"
+  | "lessThan";
+
+export interface FilterRule {
+  /** `null` means any column. */
+  column: number | null;
+  op: FilterOp;
+  value: string;
+  caseSensitive: boolean;
+}
+
+export interface ViewSpec {
+  sort: SortKey[];
+  filters: FilterRule[];
+}
+
+/** Visible rows `top..=bottom` and columns `left..=right`. */
+export interface CellRange {
+  top: number;
+  left: number;
+  bottom: number;
+  right: number;
+}
+
+export interface CellPosition {
+  row: number;
+  column: number;
+}
+
+export interface SearchQuery {
+  text: string;
+  caseSensitive: boolean;
+  wholeCell: boolean;
+  regex: boolean;
+  column: number | null;
+  /** Search these visible cells only. */
+  range: CellRange | null;
+}
+
+export interface SaveFormat {
+  encoding: TextEncoding;
+  bom: boolean;
+  delimiter: string;
+  lineEnding: LineEnding;
+}
+
+export interface Status {
+  path: string | null;
+  /** Data rows shown by the sort and filters. */
+  rows: number;
+  dataRows: number;
+  columns: number;
+  /** Column titles; empty when the first row is data. */
+  header: string[];
+  hasHeader: boolean;
+  encoding: string;
+  hasBom: boolean;
+  delimiter: string;
+  lineEnding: LineEnding;
+  detectionConfident: boolean;
+  dirty: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  /** Changes whenever the rows to show change. */
+  change: number | null;
+  view: ViewSpec;
+  /** Share of a large file read so far, while it is read. */
+  indexing: number | null;
+  job: { kind: "view" | "edit"; fraction: number | null } | null;
+}
+
+export interface RangeStats {
+  cells: number;
+  filled: number;
+  numbers: number;
+  sum: number;
+}
+
+export interface EditResult {
+  changed: boolean;
+  count: number;
+}
+
+export interface FilePreview {
+  encoding: TextEncoding;
+  delimiter: string;
+  hasHeader: boolean;
+  rows: string[][];
+  columnCount: number;
+  detectionConfident: boolean;
+}

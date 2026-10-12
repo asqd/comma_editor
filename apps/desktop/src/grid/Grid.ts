@@ -130,6 +130,16 @@ export class Grid {
     this.scroller.focus();
   }
 
+  /** The rows changed: an edit, undo, sort or filter. Keeps the place and the column widths. */
+  reload(): void {
+    this.generation += 1;
+    this.blocks.clear();
+    this.pending.clear();
+    this.queue = [];
+    this.inFlight = 0;
+    this.update();
+  }
+
   /** The table grew: more rows were indexed, or columns appeared. */
   update(): void {
     const columns = this.source?.columns ?? 0;

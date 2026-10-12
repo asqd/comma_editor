@@ -18,6 +18,20 @@
         "/Users/asqd/Documents/workplace/comma_editor/apps/desktop"
       ],
       "port": 1430
+    },
+    {
+      "name": "desktop-bridge",
+      "runtimeExecutable": "/Users/asqd/.cargo/bin/cargo",
+      "runtimeArgs": [
+        "run",
+        "--manifest-path",
+        "/Users/asqd/Documents/workplace/comma_editor/apps/desktop/src-tauri/Cargo.toml",
+        "--features",
+        "bridge",
+        "--bin",
+        "comma-bridge"
+      ],
+      "port": 1431
     }
   ]
 }
