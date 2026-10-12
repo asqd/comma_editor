@@ -750,6 +750,13 @@ pub(crate) fn normalize(input: &str) -> Result<String, FormulaError> {
             Token::Word(word) if matches!(word.to_uppercase().as_str(), "ИСТИНА" | "TRUE") => out.push_str("TRUE"),
             Token::Word(word) if matches!(word.to_uppercase().as_str(), "ЛОЖЬ" | "FALSE") => out.push_str("FALSE"),
             Token::Word(word) if cell(word).is_some() => out.push_str(&word.to_uppercase()),
+            // `@` is how Excel shows the formula's own row; files write `[#This Row]`.
+            Token::Structured(table, inner) if inner.starts_with('@') => {
+                let columns = &inner[1..];
+                let columns = if columns.starts_with('[') { columns.to_owned() } else { format!("[{columns}]") };
+                let table = table.as_deref().unwrap_or_default();
+                out.push_str(&if columns == "[]" { format!("{table}[#This Row]") } else { format!("{table}[[#This Row],{columns}]") });
+            }
             _ => out.push_str(original.trim_end()),
         }
         out.push_str(spaces);
@@ -780,11 +787,33 @@ pub(crate) fn localize(formula: &str, names: bool) -> String {
             Token::Word(word) if followed_by_open => out.push_str(&if names { russian_function(word) } else { canonical_function(word) }),
             Token::Word(word) if names && word.eq_ignore_ascii_case("TRUE") => out.push_str("ИСТИНА"),
             Token::Word(word) if names && word.eq_ignore_ascii_case("FALSE") => out.push_str("ЛОЖЬ"),
+            Token::Structured(table, inner) => match this_row(inner) {
+                Some(columns) => out.push_str(&format!("{}[@{columns}]", table.as_deref().unwrap_or_default())),
+                None => out.push_str(written),
+            },
             _ => out.push_str(written),
         }
         out.push_str(spaces);
     }
     out
+}
+
+/// The columns of a reference to the formula's own row, as Excel shows them after `@`:
+/// `[#This Row],[Price]` → `Price`, `[#This Row],[Unit count]` → `[Unit count]`.
+fn this_row(inner: &str) -> Option<String> {
+    let (item, columns) = inner.split_once(',')?;
+    if !item.trim().eq_ignore_ascii_case("[#This Row]") {
+        return None;
+    }
+    let columns = columns.trim();
+    let bare = columns.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).filter(|name| !name.contains(['[', ']'])).unwrap_or(columns);
+    if bare.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') && !bare.is_empty() {
+        Some(bare.to_owned())
+    } else if columns.starts_with('[') {
+        Some(columns.to_owned())
+    } else {
+        Some(format!("[{columns}]"))
+    }
 }
 
 /// The Russian name of a function, or its English one without the `_xlfn.` files add.
@@ -876,6 +905,12 @@ mod tests {
         assert_eq!(normalize("ПРОСМОТРX(A1;B:B;C:C)").unwrap(), "_xlfn.XLOOKUP(A1,B:B,C:C)");
         assert_eq!(normalize("'Мой лист'!A1*2").unwrap(), "'Мой лист'!A1*2");
         assert!(normalize("СУММ(A1").is_err());
+        assert_eq!(localize("[[#This Row],Выручка]/SUM([Выручка])", true), "[@Выручка]/СУММ([Выручка])");
+        assert_eq!(normalize("[@Цена]*[@[Кол-во шт]]").unwrap(), "[[#This Row],[Цена]]*[[#This Row],[Кол-во шт]]");
+        assert_eq!(normalize("Orders[@Total]+Orders[@[A]:[B]]").unwrap(), "Orders[[#This Row],[Total]]+Orders[[#This Row],[A]:[B]]");
+        assert_eq!(normalize(&localize("[[#This Row],Выручка]/SUM([Выручка])", true)).unwrap(), "[[#This Row],[Выручка]]/SUM([Выручка])");
+        assert_eq!(localize("Orders[[#This Row],[Unit count]]*2", false), "Orders[@[Unit count]]*2");
+        assert_eq!(localize("SUM(Orders[[#Totals],[Total]])", false), "SUM(Orders[[#Totals],[Total]])");
         // A decimal comma alone, and Russian names, read the Russian way.
         assert_eq!(normalize("B2*1,5").unwrap(), "B2*1.5");
         assert_eq!(normalize("СУММ(1,5)").unwrap(), "SUM(1.5)");
