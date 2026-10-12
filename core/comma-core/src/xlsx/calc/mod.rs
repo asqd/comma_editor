@@ -34,13 +34,17 @@ pub(crate) fn normalize(text: &str) -> std::result::Result<String, FormulaError>
     parse::normalize(text)
 }
 
-/// What computing lasts across edits: values the file stores, and rows edited so far.
+/// What computing lasts across edits: values the file stores, what edited rows held, and the
+/// formulas read.
 #[derive(Default)]
 pub(crate) struct CalcState {
     raw: HashMap<usize, Arc<RawSheet>>,
-    /// Rows edited since the workbook was opened, by sheet. They stay after an undo, so that
-    /// formulas reading them are computed back.
-    pub(crate) touched: HashMap<usize, BTreeSet<u32>>,
+    /// Fingerprints of the edited rows when formulas were last computed, by sheet: a row whose
+    /// fingerprint differs now, or that is no longer edited, as after an undo, changed since.
+    /// Inserting, deleting or moving rows forgets a sheet's, so all its edited rows count.
+    pub(crate) entered: HashMap<usize, HashMap<u32, u64>>,
+    /// Formulas read so far, by text, so that computing again does not read them anew.
+    parsed: HashMap<String, Option<Arc<Expr>>>,
     /// Sheets whose every formula was computed, in a file that asks for it on opening.
     computed: HashSet<usize>,
 }
@@ -81,12 +85,25 @@ impl Workbook {
             return Ok(Recalculation::default());
         };
         let mut state = self.calc.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Rows changed since formulas were last computed.
+        let mut touched: HashMap<usize, BTreeSet<u32>> = HashMap::new();
         for (index, document) in sheets.iter() {
-            let touched = state.touched.entry(*index).or_default();
-            touched.extend((0..document.row_count()).filter(|&row| document.row_edited(row)).map(|row| row as u32));
+            let before = state.entered.remove(index).unwrap_or_default();
+            let mut now = HashMap::with_capacity(before.len());
+            let mut rows = BTreeSet::new();
+            for row in (0..document.row_count()).filter(|&row| document.row_edited(row)) {
+                let fingerprint = document.row_fingerprint(row);
+                if before.get(&(row as u32)) != Some(&fingerprint) {
+                    rows.insert(row as u32);
+                }
+                now.insert(row as u32, fingerprint);
+            }
+            rows.extend(before.keys().filter(|row| !now.contains_key(row)));
+            state.entered.insert(*index, now);
+            touched.insert(*index, rows);
         }
         let formats = styles.formats(&locale);
-        let mut shown_sheets = self.show_entered(&mut state, sheets, &formats, &locale);
+        let mut shown_sheets = self.show_entered(&mut state, sheets, &touched, &formats, &locale);
         let has_formulas = sheets.iter().any(|(_, document)| document.formula_cells().next().is_some());
         if !has_formulas {
             return Ok(Recalculation { sheets: shown_sheets, ..Recalculation::default() });
@@ -97,11 +114,18 @@ impl Workbook {
         let defined = self.defined_names();
         let tables = self.current_tables(sheets);
         let tables = tables.as_slice();
-        let mut parsed: HashMap<String, Option<Arc<Expr>>> = HashMap::new();
+        let parsed = &mut state.parsed;
         let mut formulas = Vec::new();
         for (index, document) in sheets.iter() {
             for (row, column, cell) in document.formula_cells() {
-                let expr = parsed.entry(cell.formula.clone()).or_insert_with(|| parse::parse(&cell.formula).ok().map(Arc::new)).clone();
+                let expr = match parsed.get(&cell.formula) {
+                    Some(expr) => expr.clone(),
+                    None => {
+                        let expr = parse::parse(&cell.formula).ok().map(Arc::new);
+                        parsed.insert(cell.formula.clone(), expr.clone());
+                        expr
+                    }
+                };
                 let mut reads = Vec::new();
                 if let Some(expr) = &expr {
                     let place = Place { sheet: *index, row: row as u32, column: column as u32 };
@@ -114,6 +138,11 @@ impl Workbook {
                 let array = range.map(|(first, _)| first);
                 formulas.push(Formula { sheet: *index, row: row as u32, column: column as u32, expr, reads, entered: !cell.from_file, array });
             }
+        }
+        // Formulas no longer in the sheets go once there are many of them.
+        if parsed.len() > 2 * formulas.len() + 1024 {
+            let texts: HashSet<&str> = sheets.iter().flat_map(|(_, document)| document.formula_cells().map(|(_, _, cell)| cell.formula.as_str())).collect();
+            parsed.retain(|text, _| texts.contains(text.as_str()));
         }
 
         // Formulas to compute: entered ones, those reading edited rows, then those reading
@@ -133,7 +162,7 @@ impl Workbook {
                     continue;
                 }
                 let reads_changed = formula.reads.iter().any(|(sheet, area)| {
-                    state.touched.get(sheet).is_some_and(|rows| rows.range(area.top..=area.bottom).next().is_some())
+                    touched.get(sheet).is_some_and(|rows| rows.range(area.top..=area.bottom).next().is_some())
                         || dirty.get(sheet).is_some_and(|cells| {
                             cells.range(area.top..=area.bottom).any(|(_, columns)| columns.range(area.left..=area.right).next().is_some())
                         })
@@ -194,6 +223,11 @@ impl Workbook {
                 .expect("computing does not panic");
         });
         if let Some(error) = model.failed.take() {
+            drop(model);
+            // Edited rows count as changed again next time.
+            for (index, _) in sheets.iter() {
+                state.entered.remove(index);
+            }
             return Err(error);
         }
 
@@ -231,7 +265,13 @@ impl Workbook {
         }
         for (index, document) in sheets.iter_mut() {
             if let Some(results) = updates.remove(index) {
+                // Rows given results count as edited from now on, and have not changed.
+                let rows: BTreeSet<usize> = results.iter().map(|(row, ..)| *row).collect();
                 document.set_formula_results(results);
+                let entered = state.entered.entry(*index).or_default();
+                for row in rows {
+                    entered.entry(row as u32).or_insert_with(|| document.row_fingerprint(row));
+                }
                 report.sheets.push(*index);
             }
         }
@@ -241,19 +281,26 @@ impl Workbook {
         Ok(report)
     }
 
-    /// Values typed into edited rows, shown as the number formats of their cells show them:
+    /// Values typed into rows changed since, shown as the number formats of their cells show them:
     /// `300` in a money cell as `300,00 ₽`, `2026-10-01` in a date cell as `01.10.2026`. A cell
     /// that shows what the file has keeps it. Returns the sheets whose cells changed.
     fn show_entered(
         &self,
         state: &mut CalcState,
         sheets: &mut [(usize, &mut Document)],
+        touched: &HashMap<usize, BTreeSet<u32>>,
         formats: &[Arc<NumberFormat>],
         locale: &DisplayLocale,
     ) -> Vec<usize> {
         let mut changed = Vec::new();
         for (index, document) in sheets.iter_mut() {
-            let rows: Vec<usize> = (0..document.row_count()).filter(|&row| document.row_edited(row)).collect();
+            let rows: Vec<usize> = touched
+                .get(index)
+                .into_iter()
+                .flatten()
+                .map(|&row| row as usize)
+                .filter(|&row| row < document.row_count() && document.row_edited(row))
+                .collect();
             if rows.is_empty() {
                 continue;
             }

@@ -471,6 +471,30 @@ impl Document {
         self.records.get(row).is_none_or(Record::is_edited)
     }
 
+    /// What was entered into a row, the results of its formulas left out: it changes when the
+    /// row is edited or an undo brings it back, not when its formulas are computed again.
+    pub(crate) fn row_fingerprint(&self, row: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        match self.records.get(row) {
+            Some(Record::Modified(modified)) => {
+                for field in &modified.fields {
+                    match field {
+                        Field::Raw { start, end } => (0u8, start, end).hash(&mut hasher),
+                        // A typed value shown in its cell's format is still what was typed.
+                        Field::Text(text) => (1u8, text, false).hash(&mut hasher),
+                        Field::Entered(cell) => (1u8, &cell.input, cell.exact).hash(&mut hasher),
+                        Field::Formula(cell) => (2u8, &cell.formula, &cell.array).hash(&mut hasher),
+                    }
+                }
+            }
+            Some(Record::Original { start, len, .. }) => (3u8, start, len).hash(&mut hasher),
+            Some(Record::Long(long)) => (4u8, long.0, long.1).hash(&mut hasher),
+            None => {}
+        }
+        hasher.finish()
+    }
+
     /// Writes computed results of formulas, as `(row, column, value shown, result)`. Results
     /// follow from the cells they read, so they are not undone: computing again after an undo
     /// brings back the earlier ones. The rows count as edited, so saving writes them.

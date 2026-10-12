@@ -77,12 +77,10 @@ impl Workbook {
             }
         }
 
-        // Rows edited before move with them, so that what reads them is still computed again.
+        // Rows edited before all count as changed, wherever they went, so that what reads
+        // them is computed again.
         if axis == Axis::Rows {
-            let mut state = self.calc.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(touched) = state.touched.get_mut(&index) {
-                *touched = touched.iter().filter_map(|&row| shift(row, row).map(|(row, _)| row)).collect();
-            }
+            self.calc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).entered.remove(&index);
         }
         Ok(changed)
     }
@@ -182,10 +180,7 @@ impl Workbook {
             }
             changed.push(*sheet);
         }
-        let mut state = self.calc.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(touched) = state.touched.get_mut(&index) {
-            *touched = touched.iter().map(|&row| place(row)).collect();
-        }
+        self.calc.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).entered.remove(&index);
         Ok(changed)
     }
 }
