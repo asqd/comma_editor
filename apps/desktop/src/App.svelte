@@ -30,6 +30,7 @@
   import FormulaSheet from "./FormulaSheet.svelte";
   import RecipesSheet from "./RecipesSheet.svelte";
   import SheetTabs from "./SheetTabs.svelte";
+  import SearchField from "./SearchField.svelte";
   import { sheetColumns, workbookLocale } from "./lib/workbook";
   import type { Recipe } from "./lib/recipes";
   import { describeFormula, type FormulaReport } from "./lib/formula";
@@ -141,6 +142,8 @@
     if (!previous || sheetShown || previous.change !== status.change || previous.hasHeader !== status.hasHeader || (previous.indexing !== null && status.indexing === null))
       scheduleProblemCheck(previous ? 300 : 0);
     if (opened || sheetShown || previous?.change !== status.change || previous?.revision !== status.revision) void inspectCell();
+    // The count of the toolbar's search follows changes, and the sheet shown.
+    if (searchText && !finding && (sheetShown || previous?.change !== status.change)) void searchFromToolbar(false);
   });
 
   // Sheets of a workbook (GridViewController+Sheets.swift): the table's state on each sheet as
@@ -334,6 +337,7 @@
     if (!status) return "";
     const parts: string[] = [];
     if (status.recording !== null) parts.push(`● ${L("Recording a recipe: %@ steps", count(status.recording))}`);
+    if (searchSummary && searchText && !finding) parts.push(searchSummary);
     if (selection && !selection.single) {
       parts.push(L("Selected: %@ × %@", count(selection.rowCount), count(selection.columnCount)));
       if (stats && stats.numbers > 0) {
@@ -1601,10 +1605,70 @@
   /** The text field with the focus, for commands that act on its text there. */
   const field = () => (fieldFocused() ? (document.activeElement as HTMLInputElement | HTMLTextAreaElement) : null);
 
+  /**
+   * ⌘F: the toolbar's search field, or the find bar while it shows (GridViewController.showFindBar);
+   * Find and Replace opens the bar with what the field has.
+   */
   function openFind(replacing: boolean) {
     if (!doc.open) return;
-    if (finding && finding.replacing === replacing) findBar?.focus();
+    if (!replacing && !finding) searchField?.focus();
+    else if (finding && finding.replacing === replacing) findBar?.focus();
     else finding = { replacing, selection: grid?.selection?.range ?? null };
+  }
+
+  // The toolbar's search field (DocumentToolbar.swift): it searches as one types, the count of
+  // matches in the status bar, and selects the first match from the active cell.
+
+  let searchText = $state("");
+  let searchField = $state<ReturnType<typeof SearchField>>();
+  /** What the field found, for the status bar while the find bar is hidden. */
+  let searchSummary = $state("");
+  let searchAsked = 0;
+  let searchTimer = 0;
+
+  const searchQuery = () => ({ text: searchText, caseSensitive: false, wholeCell: false, regex: false, column: null, range: null });
+
+  /** The cell before the active one, so that a search starting there finds the active cell too. */
+  function cellBefore(cell: Cell | undefined): Cell | null {
+    if (!cell) return null;
+    if (cell.column > 0) return { row: cell.row, column: cell.column - 1 };
+    if (cell.row > 0) return { row: cell.row - 1, column: Math.max(0, (doc.status?.columns ?? 1) - 1) };
+    return null;
+  }
+
+  function toolbarSearchChanged() {
+    clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => void searchFromToolbar(), 200);
+  }
+
+  async function searchFromToolbar(jump = true) {
+    const mine = ++searchAsked;
+    if (!searchText || !doc.open) {
+      searchSummary = "";
+      return;
+    }
+    searchSummary = L("Searching…");
+    try {
+      const matches = await call<number>("count_matches", { query: searchQuery() });
+      if (mine !== searchAsked) return;
+      searchSummary = matches === 0 ? L("Not found") : L("Matches: %@", count(matches));
+      if (matches === 0 || !jump) return;
+      const found = await call<Cell | null>("find", { query: searchQuery(), from: cellBefore(grid?.selection?.cursor), forward: true });
+      if (found && mine === searchAsked) grid?.select(Selection.at(found));
+    } catch (error) {
+      if (mine === searchAsked) searchSummary = describe(error).message;
+    }
+  }
+
+  /** The next or the previous match of the field's text, from the active cell. */
+  async function findFromToolbar(forward: boolean) {
+    if (!searchText || !doc.open) return;
+    try {
+      const found = await call<Cell | null>("find", { query: searchQuery(), from: grid?.selection?.cursor ?? null, forward });
+      if (found) grid?.select(Selection.at(found));
+    } catch (error) {
+      searchSummary = describe(error).message;
+    }
   }
 
   /** Every command of the menus and the keyboard (MainMenu.swift). */
@@ -1755,16 +1819,16 @@
         label: L("Find Next"),
         shortcut: { key: "g", command: true },
         inFields: true,
-        enabled: () => !!finding,
-        run: () => void findBar?.next(true),
+        enabled: () => !!finding || !!searchText,
+        run: () => void (finding ? findBar?.next(true) : findFromToolbar(true)),
       },
       {
         id: "findPrevious",
         label: L("Find Previous"),
         shortcut: { key: "g", command: true, shift: true },
         inFields: true,
-        enabled: () => !!finding,
-        run: () => void findBar?.next(false),
+        enabled: () => !!finding || !!searchText,
+        run: () => void (finding ? findBar?.next(false) : findFromToolbar(false)),
       },
       { id: "editCell", label: L("Edit Cell"), enabled: () => idle() && hasSelection(), run: () => void edit(grid!.selection!.cursor) },
       {
@@ -2599,6 +2663,14 @@
   <header class="toolbar">
     <button onclick={choose} title={openShortcut}>{L("Open…")}</button>
     <Toolbar items={toolbar} openMenu={(x, y, items) => (menu = { x, y, items })} />
+    <SearchField
+      bind:this={searchField}
+      bind:value={searchText}
+      disabled={!doc.open}
+      changed={toolbarSearchChanged}
+      find={(forward) => void findFromToolbar(forward)}
+      cancel={() => grid?.focus()}
+    />
   </header>
   {#if finding && doc.status}
     <FindBar
@@ -2613,6 +2685,8 @@
         finding = null;
         grid?.focus();
       }}
+      initialText={searchText}
+      textChanged={(text) => (searchText = text)}
     />
   {/if}
   {#if filtering && doc.status}

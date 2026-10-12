@@ -1,7 +1,7 @@
 <!-- Find and replace over the table, as FindBarView in the macOS app: what is typed is
      counted and the first match from the active cell is selected. -->
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { call, CoreFailure, type CellPosition, type CellRange, type EditResult, type SearchQuery, type Status } from "./lib/api";
   import type { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
@@ -19,12 +19,15 @@
     cursor: () => Cell | null;
     select: (cell: Cell) => void;
     close: () => void;
+    /** What the toolbar's search field has, to start from, and where typed text goes back. */
+    initialText: string;
+    textChanged: (text: string) => void;
   }
 
-  let { document: doc, replacing, selection, titles, cursor, select, close }: Props = $props();
+  let { document: doc, replacing, selection, titles, cursor, select, close, initialText, textChanged }: Props = $props();
 
   let field: HTMLInputElement;
-  let text = $state("");
+  let text = $state(untrack(() => initialText));
   let replacement = $state("");
   let caseSensitive = $state(false);
   let wholeCell = $state(false);
@@ -85,6 +88,7 @@
   }
 
   function changed() {
+    textChanged(text);
     clearTimeout(timer);
     timer = window.setTimeout(() => void update(true), 200);
   }
@@ -157,6 +161,7 @@
   onMount(() => {
     if (selection && (selection.bottom > selection.top || selection.right > selection.left)) scope = "selection";
     focus();
+    if (text) void update(false);
   });
 </script>
 
