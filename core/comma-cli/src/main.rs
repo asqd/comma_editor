@@ -21,9 +21,12 @@ const USAGE: &str = "usage:
   comma generate ROWS FILE
                        write a table the bench uses, ROWS rows of 10 columns (e.g. 60m)";
 
+/// A command that takes its own arguments rather than a list of files.
+type Tool = fn(&[String]) -> Result<(), String>;
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let tool: Option<(&str, fn(&[String]) -> Result<(), String>)> = match args.first().map(String::as_str) {
+    let tool: Option<(&str, Tool)> = match args.first().map(String::as_str) {
         Some("bench") => Some(("bench", bench::run)),
         Some("generate") => Some(("generate", bench::generate_file)),
         _ => None,
