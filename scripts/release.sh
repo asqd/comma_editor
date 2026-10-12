@@ -87,5 +87,5 @@ if [[ -n "$TEAM" ]]; then
         echo "note: NOTARY_PROFILE is not set, so the DMG is signed but not notarized"
     fi
 fi
-shasum -a 256 "$DMG" | tee "$DMG.sha256"
+(cd "$BUILD" && shasum -a 256 "$(basename "$DMG")" | tee "$(basename "$DMG").sha256")
 echo "== done: $DMG"
