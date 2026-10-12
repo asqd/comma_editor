@@ -1,6 +1,7 @@
 //! `comma info FILE...` prints what CommaEditor detects in a file, or the sheets of a workbook.
 //! `comma check FILE...` verifies that opening and saving a file reproduces it byte for byte.
 //! `comma bench [ROWS...]` times opening, reading, sorting and filtering generated tables.
+//! `comma generate ROWS FILE` writes such a table.
 
 mod bench;
 
@@ -16,15 +17,22 @@ const USAGE: &str = "usage:
   comma check FILE...  verify that open → save reproduces each file byte for byte
   comma bench [ROWS...] [--runs N]
                        time the first screen, reading, sorting and filtering of generated
-                       tables (default 1m 12m 60m rows; the files go to the temp folder)";
+                       tables (default 1m 12m 60m rows; the files go to the temp folder)
+  comma generate ROWS FILE
+                       write a table the bench uses, ROWS rows of 10 columns (e.g. 60m)";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().is_some_and(|command| command == "bench") {
-        return match bench::run(&args[1..]) {
+    let tool: Option<(&str, fn(&[String]) -> Result<(), String>)> = match args.first().map(String::as_str) {
+        Some("bench") => Some(("bench", bench::run)),
+        Some("generate") => Some(("generate", bench::generate_file)),
+        _ => None,
+    };
+    if let Some((name, run)) = tool {
+        return match run(&args[1..]) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("bench: {error}");
+                eprintln!("{name}: {error}");
                 ExitCode::FAILURE
             }
         };
