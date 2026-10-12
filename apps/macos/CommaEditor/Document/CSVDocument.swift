@@ -828,8 +828,8 @@ class CSVDocument: NSDocument {
                 userInfo[NSLocalizedDescriptionKey] = L("A pivot table is laid out on this sheet.")
                 userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Its rows and columns stay where they are, as the pivot table takes them. Rows can be added at the end.")
             case .tableRowsMoved:
-                userInfo[NSLocalizedDescriptionKey] = L("Rows of a sheet with an Excel table cannot be moved or sorted yet.")
-                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Rows can be inserted and deleted, and the table follows them.")
+                userInfo[NSLocalizedDescriptionKey] = L("These rows would break an Excel table.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Rows of a table move and sort among its data rows, without its headers and totals, and with nothing beside the table in them; other rows move outside tables. Rows can always be inserted and deleted.")
             case .tableEdges:
                 userInfo[NSLocalizedDescriptionKey] = L("These rows of an Excel table cannot be deleted.")
                 userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("The header row, the totals row and the last data row hold the table together. Other rows of it can be deleted.")

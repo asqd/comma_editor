@@ -1005,7 +1005,7 @@ fn push_moved_row(body: &mut PartWriter, xml: &str, span: &RowSpan, row: u32, pr
 }
 
 /// What a cell shows.
-fn value(field: &Field) -> &str {
+pub(super) fn value(field: &Field) -> &str {
     match field {
         Field::Text(text) => text,
         Field::Entered(cell) => &cell.shown,

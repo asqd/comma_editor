@@ -73,8 +73,9 @@ pub enum SheetStructure {
     /// A pivot table is laid out on the sheet, on cells it does not move from.
     #[error("a pivot table is laid out on this sheet")]
     PivotTable,
-    /// Rows of a sheet with an Excel table cannot be moved or sorted, which could break it.
-    #[error("rows of a sheet with an Excel table cannot be moved or sorted")]
+    /// Rows moved or sorted would break an Excel table: they leave its data rows, or come
+    /// into them, or carry cells beside it.
+    #[error("the rows would break an Excel table")]
     TableRowsMoved,
     /// The headers, the totals or all the data rows of an Excel table cannot be deleted.
     #[error("the headers, the totals or all the data rows of an Excel table cannot be deleted")]

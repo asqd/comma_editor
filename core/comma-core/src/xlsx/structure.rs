@@ -99,10 +99,6 @@ impl Workbook {
         if document.sheet_structure_locked() {
             return Err(Error::SheetStructure(document.locked_structure(true)));
         }
-        // Rows moved in or out of an Excel table would break it.
-        if self.tables().iter().any(|table| table.sheet == index) {
-            return Err(Error::SheetStructure(SheetStructure::TableRowsMoved));
-        }
         let mut rows = rows.to_vec();
         rows.sort_unstable();
         rows.dedup();
@@ -132,6 +128,7 @@ impl Workbook {
         if order.iter().enumerate().all(|(new, &old)| new == old) {
             return Ok(Vec::new());
         }
+        self.check_table_rows(document, index, &order)?;
         let mut new_of_old = vec![0u32; length];
         for (new, &old) in order.iter().enumerate() {
             new_of_old[old] = new as u32;
@@ -197,14 +194,12 @@ impl Workbook {
         if document.sheet_structure_locked() {
             return Err(Error::SheetStructure(document.locked_structure(true)));
         }
-        if self.tables().iter().any(|table| table.sheet == index) {
-            return Err(Error::SheetStructure(SheetStructure::TableRowsMoved));
-        }
         let Some(order) = document.sorted_order() else { return Ok(false) };
         if order.iter().enumerate().all(|(new, &old)| new == old) {
             document.clear_sort();
             return Ok(false);
         }
+        self.check_table_rows(document, index, &order)?;
         let moving: Vec<usize> = order.iter().enumerate().filter(|(new, old)| new != *old).map(|(new, _)| new).collect();
         if let Some(sheet) = &document.sheet {
             let origins: std::collections::HashSet<usize> = moving.iter().filter_map(|&row| document.row_origin(row)).collect();
@@ -306,6 +301,51 @@ impl Workbook {
     /// they are now: a column inserted or deleted inside a table, or rows deleted from its
     /// headers or totals or all its data, are refused. Rows inserted among a table's data rows
     /// get its calculated columns: the fields they start with.
+    /// Fails if rows going to new places, `order` giving the old row of each place, would
+    /// break an Excel table of the sheet: a row that moves must stay among the data rows of
+    /// its table, or outside every table, and a row moving among a table's data must have no
+    /// cells beside the table, which Excel would leave where they are.
+    fn check_table_rows(&self, document: &Document, index: usize, order: &[usize]) -> Result<()> {
+        let (rows, columns) = (super::save::AxisMap::rows(document), super::save::AxisMap::columns(document));
+        // Each table's rows, data rows and columns where they are now.
+        let tables: Vec<(usize, usize, usize, usize, usize, usize)> = self
+            .tables()
+            .iter()
+            .filter(|table| table.sheet == index)
+            .filter_map(|table| {
+                let (top, bottom) = rows.range(table.top, table.bottom)?;
+                let (left, right) = columns.range(table.left, table.right)?;
+                let (top, bottom) = (top as usize, bottom as usize);
+                Some((top, bottom, top + table.headers as usize, bottom.saturating_sub(table.totals as usize), left as usize, right as usize))
+            })
+            .collect();
+        if tables.is_empty() {
+            return Ok(());
+        }
+        // Where a row stands: among the data of a table, on its headers or totals, or outside.
+        let place = |row: usize| -> Option<(usize, bool)> {
+            tables.iter().position(|&(top, bottom, ..)| (top..=bottom).contains(&row)).map(|table| {
+                let (_, _, first, last, ..) = tables[table];
+                (table, (first..=last).contains(&row))
+            })
+        };
+        for (new, &old) in order.iter().enumerate().filter(|(new, old)| *new != **old) {
+            let (from, to) = (place(old), place(new));
+            let stays = match (from, to) {
+                (None, None) => true,
+                (Some((table, true)), Some((other, true))) if table == other => {
+                    let (.., left, right) = tables[table];
+                    document.row_fields(old).iter().enumerate().all(|(column, field)| (left..=right).contains(&column) || super::save::value(field).is_empty())
+                }
+                _ => false,
+            };
+            if !stays {
+                return Err(Error::SheetStructure(SheetStructure::TableRowsMoved));
+            }
+        }
+        Ok(())
+    }
+
     fn table_rows(&self, document: &Document, index: usize, axis: Axis, at: usize, count: usize, insert: bool) -> Result<Option<Vec<Field>>> {
         let (rows, columns) = (super::save::AxisMap::rows(document), super::save::AxisMap::columns(document));
         let mut template: Option<Vec<Field>> = None;

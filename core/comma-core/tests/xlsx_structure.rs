@@ -458,7 +458,18 @@ fn rows_inserted_into_a_table_extend_it_and_fill_its_formulas() {
     // A column inside the table, and the header row, stay.
     assert!(matches!(workbook.insert(&mut [(0, &mut sales)], 0, Axis::Columns, 2, 1), Err(Error::SheetStructure(SheetStructure::TableColumns))));
     assert!(matches!(workbook.delete(&mut [(0, &mut sales)], 0, Axis::Rows, 0, 1), Err(Error::SheetStructure(SheetStructure::TableEdges))));
-    assert!(matches!(workbook.move_rows(&mut [(0, &mut sales)], 0, &[1], 3), Err(Error::SheetStructure(SheetStructure::TableRowsMoved))));
+    // Rows move among the table's data, not out of it, and its headers stay.
+    assert!(matches!(workbook.move_rows(&mut [(0, &mut sales)], 0, &[1], 6), Err(Error::SheetStructure(SheetStructure::TableRowsMoved))));
+    assert!(matches!(workbook.move_rows(&mut [(0, &mut sales)], 0, &[0], 3), Err(Error::SheetStructure(SheetStructure::TableRowsMoved))));
+    let first = sales.cell(1, 0).unwrap();
+    workbook.move_rows(&mut [(0, &mut sales)], 0, &[1], 4).unwrap();
+    assert_eq!(sales.cell(3, 0).unwrap(), first);
+    assert_eq!(sales.cell(6, 0).unwrap(), "80");
+    let saved = workbook.to_bytes(&[(0, &sales)]).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(saved)).unwrap();
+    let mut table = String::new();
+    archive.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut table).unwrap();
+    assert!(table.contains(r#"ref="A1:D5""#), "{table}");
     // Deleting a data row shrinks it.
     workbook.delete(&mut [(0, &mut sales)], 0, Axis::Rows, 1, 1).unwrap();
     let saved = workbook.to_bytes(&[(0, &sales)]).unwrap();
@@ -466,4 +477,34 @@ fn rows_inserted_into_a_table_extend_it_and_fill_its_formulas() {
     let mut table = String::new();
     archive.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut table).unwrap();
     assert!(table.contains(r#"ref="A1:D4""#), "{table}");
+}
+
+#[test]
+fn rows_of_a_table_sort_among_themselves() {
+    // The table alone on its sheet: its data rows sort, the sum below would join them.
+    let bytes = table_book();
+    let workbook = Workbook::from_bytes(bytes).unwrap();
+    let mut sales = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    sales.set_has_header(true);
+    let by_item = comma_core::ViewSpec { sort: vec![comma_core::SortKey { column: 0, ascending: true }], filters: vec![] };
+    sales.set_view(by_item.clone()).unwrap();
+    // The sum's row, empty in A but for its formula, sorts in with the table's rows.
+    assert!(matches!(workbook.sort_rows(&mut sales, 0), Err(Error::SheetStructure(SheetStructure::TableRowsMoved))));
+    // Without it, the items sort.
+    sales.set_view(comma_core::ViewSpec { sort: vec![], filters: vec![] }).unwrap();
+    workbook.delete(&mut [(0, &mut sales)], 0, Axis::Rows, 4, 2).unwrap();
+    sales.set_view(by_item).unwrap();
+    assert!(workbook.sort_rows(&mut sales, 0).unwrap());
+    let items: Vec<String> = (1..4).map(|row| sales.cell(row, 0).unwrap()).collect();
+    assert_eq!(items, ["Coffee", "Sugar", "Tea"]);
+    let saved = workbook.to_bytes(&[(0, &sales)]).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(saved.clone())).unwrap();
+    let mut table = String::new();
+    archive.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut table).unwrap();
+    assert!(table.contains(r#"ref="A1:D4""#), "{table}");
+    let reopened = Workbook::from_bytes(saved).unwrap();
+    let mut again = reopened.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    reopened.recalculate(&mut [(0, &mut again)], 45658.0).unwrap();
+    // Coffee 20 × 1 on the first data row.
+    assert_eq!((again.cell(1, 0).unwrap(), again.cell(1, 3).unwrap()), ("Coffee".to_owned(), "20".to_owned()));
 }
