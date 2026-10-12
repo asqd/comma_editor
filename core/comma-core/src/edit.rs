@@ -103,6 +103,12 @@ impl Progress {
     pub(crate) fn advance(&self, steps: usize) {
         self.done.fetch_add(steps, Ordering::Relaxed);
     }
+
+    /// Takes back work expected and done, for work that starts over another way.
+    pub(crate) fn take_back(&self, expected: usize, done: usize) {
+        self.total.fetch_sub(expected.min(self.total.load(Ordering::Relaxed)), Ordering::Relaxed);
+        self.done.fetch_sub(done.min(self.done.load(Ordering::Relaxed)), Ordering::Relaxed);
+    }
 }
 
 /// Rows handled between looks at `Progress`.

@@ -2,6 +2,7 @@
 //! app needs to lay the sheet out.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::sync::Arc;
 
 use quick_xml::events::{BytesStart, Event};
@@ -123,6 +124,14 @@ struct Reading {
     cell: Option<Cell>,
     refers_to_rows: bool,
     raw: Option<RawSheet>,
+    /// Reading a run of rows on its own: rows are kept from `base`, the first one's number,
+    /// and shared formulas written in earlier runs are left to fill in.
+    run: bool,
+    base: Option<u32>,
+    /// Cells of shared formulas whose formula an earlier run has: row, column and `si`.
+    pending: Vec<(u32, u32, String)>,
+    /// The run cannot be read on its own: a row without its number, or rows out of order.
+    unsuited: bool,
 }
 
 /// Reads the sheet from `source`, which holds `size` bytes; `None` if `progress` was cancelled.
@@ -135,81 +144,113 @@ pub(crate) fn read_sheet(
     progress: Option<&Progress>,
     raw: bool,
 ) -> Result<Option<SheetContent>> {
-    let mut reading = Reading {
-        rows: Vec::new(),
-        layout: SheetLayout::default(),
-        shared: HashMap::new(),
-        row: 0,
-        next_row: 0,
-        next_column: 0,
-        cell: None,
-        refers_to_rows: false,
-        raw: raw.then(RawSheet::default),
-    };
-    let mut cells = 0usize;
-    let mut reported = 0u64;
+    let mut reading = Reading::new(raw);
     if let Some(progress) = progress {
         progress.expect(size as usize);
     }
-    loop {
-        // An event read from a stream lives in the stream's buffer: what it says is taken out
-        // before anything more is read.
-        let next = {
-            let event = source.next_event(part)?;
-            reading.take(&event)
-        };
-        match next {
-            Next::Nothing => {}
-            Next::Value => match &mut reading.cell {
-                Some(cell) => push_text_until(source, part, "v", &mut cell.value)?,
-                None => push_text_until(source, part, "v", &mut String::new())?,
-            },
-            Next::InlineString => {
-                let value = xml::read_string(source, part, "is")?;
-                if let Some(cell) = &mut reading.cell {
-                    cell.value = value;
-                }
-            }
-            Next::Formula(attributes) => {
-                let mut text = String::new();
-                if !attributes.empty {
-                    push_text_until(source, part, "f", &mut text)?;
-                    text = xml::unescape_characters(text);
-                }
-                if let Some(cell) = &mut reading.cell {
-                    read_formula(cell, attributes, text, &mut reading.shared);
-                }
-            }
-            Next::CellEnd => {
-                if let Some(cell) = &mut reading.cell {
-                    match &mut reading.raw {
-                        Some(raw) => place_raw(raw, cell, context),
-                        None => place(&mut reading.rows, cell, context),
-                    }
-                }
-                cells += 1;
-                if cells.is_multiple_of(PROGRESS_STEP)
-                    && let Some(progress) = progress
-                {
-                    if progress.is_cancelled() {
-                        return Ok(None);
-                    }
-                    let position = source.position().min(size);
-                    progress.advance((position - reported) as usize);
-                    reported = position;
-                }
-            }
-            Next::End => break,
-        }
+    if !reading.read(source, part, context, progress, size)? {
+        return Ok(None);
     }
-    if let Some(progress) = progress {
-        progress.advance(size.saturating_sub(reported) as usize);
-    }
-    let refers_to_rows = reading.refers_to_rows || !reading.layout.merged.is_empty();
-    Ok(Some(SheetContent { rows: reading.rows, layout: reading.layout, refers_to_rows, raw: reading.raw }))
+    Ok(Some(reading.content()))
 }
 
 impl Reading {
+    fn new(raw: bool) -> Self {
+        Self {
+            rows: Vec::new(),
+            layout: SheetLayout::default(),
+            shared: HashMap::new(),
+            row: 0,
+            next_row: 0,
+            next_column: 0,
+            cell: None,
+            refers_to_rows: false,
+            raw: raw.then(RawSheet::default),
+            run: false,
+            base: None,
+            pending: Vec::new(),
+            unsuited: false,
+        }
+    }
+
+    fn content(self) -> SheetContent {
+        let refers_to_rows = self.refers_to_rows || !self.layout.merged.is_empty();
+        SheetContent { rows: self.rows, layout: self.layout, refers_to_rows, raw: self.raw }
+    }
+
+    /// Reads the events of `source`, which holds `size` bytes, telling `progress` how far it
+    /// got; `false` if `progress` was cancelled.
+    fn read(&mut self, source: &mut impl EventSource, part: &str, context: &Context, progress: Option<&Progress>, size: u64) -> Result<bool> {
+        let mut cells = 0usize;
+        let mut reported = 0u64;
+        loop {
+            // An event read from a stream lives in the stream's buffer: what it says is taken
+            // out before anything more is read.
+            let next = {
+                let event = source.next_event(part)?;
+                self.take(&event)
+            };
+            match next {
+                Next::Nothing => {}
+                Next::Value => match &mut self.cell {
+                    Some(cell) => push_text_until(source, part, "v", &mut cell.value)?,
+                    None => push_text_until(source, part, "v", &mut String::new())?,
+                },
+                Next::InlineString => {
+                    let value = xml::read_string(source, part, "is")?;
+                    if let Some(cell) = &mut self.cell {
+                        cell.value = value;
+                    }
+                }
+                Next::Formula(attributes) => {
+                    let mut text = String::new();
+                    if !attributes.empty {
+                        push_text_until(source, part, "f", &mut text)?;
+                        text = xml::unescape_characters(text);
+                    }
+                    if let Some(cell) = &mut self.cell {
+                        let shared_index = attributes.shared_index.clone();
+                        read_formula(cell, attributes, text, &mut self.shared);
+                        // A shared formula written in an earlier run is filled in afterwards.
+                        if self.run && cell.formula.is_none() && let Some(index) = shared_index {
+                            self.pending.push((cell.row, cell.column, index));
+                            cell.formula = Some(String::new());
+                        }
+                    }
+                }
+                Next::CellEnd => {
+                    if let Some(cell) = &mut self.cell {
+                        let base = self.base.unwrap_or(0);
+                        if cell.row < base {
+                            self.unsuited = true;
+                        } else {
+                            match &mut self.raw {
+                                Some(raw) => place_raw(raw, base, cell, context),
+                                None => place(&mut self.rows, base, cell, context),
+                            }
+                        }
+                    }
+                    cells += 1;
+                    if cells.is_multiple_of(PROGRESS_STEP)
+                        && let Some(progress) = progress
+                    {
+                        if progress.is_cancelled() {
+                            return Ok(false);
+                        }
+                        let position = source.position().min(size);
+                        progress.advance((position - reported) as usize);
+                        reported = position;
+                    }
+                }
+                Next::End => break,
+            }
+        }
+        if let Some(progress) = progress {
+            progress.advance(size.saturating_sub(reported) as usize);
+        }
+        Ok(true)
+    }
+
     /// Takes in an event, and says what to read next.
     fn take(&mut self, event: &Event<'_>) -> Next {
         let (element, empty) = match event {
@@ -221,10 +262,15 @@ impl Reading {
         };
         match element.local_name().as_ref() {
             "row" => {
-                self.row = attribute(element, "r")
-                    .and_then(|r| r.parse::<u32>().ok())
-                    .filter(|&r| (1..=MAX_ROWS).contains(&r))
-                    .map_or(self.next_row, |r| r - 1);
+                let number = attribute(element, "r").and_then(|r| r.parse::<u32>().ok()).filter(|&r| (1..=MAX_ROWS).contains(&r));
+                if self.run {
+                    match number {
+                        Some(number) if self.base.is_none() => self.base = Some(number - 1),
+                        Some(_) => {}
+                        None => self.unsuited = true,
+                    }
+                }
+                self.row = number.map_or(self.next_row, |r| r - 1);
                 self.next_row = self.row + 1;
                 self.next_column = 0;
             }
@@ -293,6 +339,340 @@ impl Reading {
             _ => {}
         }
         Next::Nothing
+    }
+}
+
+/// Bytes of a sheet from which its rows are read on several threads.
+pub(crate) const PARALLEL_SIZE: u64 = 8 << 20;
+
+/// Bytes of rows a thread reads at a time.
+const RUN: usize = 1 << 20;
+
+/// What reading a sheet on several threads came to.
+pub(crate) enum Parallel {
+    /// The sheet, or `None` if `progress` was cancelled.
+    Read(Option<SheetContent>),
+    /// The sheet is not laid out for it, its rows unnumbered or out of order, and is to be read
+    /// on one thread; nothing was read.
+    Unsuited,
+}
+
+/// A run of whole rows of a sheet, cut from it as it streams in.
+struct Run {
+    index: usize,
+    /// Where the run starts in the part.
+    offset: usize,
+    bytes: Vec<u8>,
+}
+
+/// Reads a sheet streaming from `input`, `size` bytes, as `read_sheet` does, its rows in runs
+/// read on several threads while the part is still coming. What comes before and after the
+/// rows, the columns and merged cells among them, is read on this thread.
+pub(crate) fn read_sheet_parallel(input: &mut impl Read, size: u64, part: &str, context: &Context, progress: Option<&Progress>, raw: bool) -> Result<Parallel> {
+    read_in_runs(input, size, part, context, progress, raw, RUN)
+}
+
+fn read_in_runs(input: &mut impl Read, size: u64, part: &str, context: &Context, progress: Option<&Progress>, raw: bool, run_size: usize) -> Result<Parallel> {
+    let spare = std::sync::Mutex::new(Vec::new());
+    let mut feed = Feed { input, buffer: Vec::with_capacity(run_size * 2), eof: false, read: 0, spare: &spare };
+    if let Some(progress) = progress {
+        progress.expect(size as usize);
+    }
+    let unsuited = |read: usize| {
+        if let Some(progress) = progress {
+            progress.take_back(size as usize, read);
+        }
+        Ok(Parallel::Unsuited)
+    };
+
+    // The start, up to the rows: the root and `<sheetData>`, with their prefixes.
+    let (data_end, root, data_name) = loop {
+        if let Some(found) = find_start_tag(&feed.buffer, b"sheetData") {
+            break found;
+        }
+        if feed.eof || feed.buffer.len() > 64 << 20 || !feed.more(progress)? {
+            return unsuited(feed.read);
+        }
+    };
+    if feed.buffer[..data_end].ends_with(b"/>") || feed.buffer.starts_with(&[0xFF, 0xFE]) || feed.buffer.starts_with(&[0xFE, 0xFF]) {
+        return unsuited(feed.read);
+    }
+    let Some(root) = root else { return unsuited(feed.read) };
+    let prefix = data_name.strip_suffix(b"sheetData").unwrap_or_default().to_vec();
+    let row_end = [b"</".as_slice(), &prefix, b"row>"].concat();
+    let data_close = [b"</".as_slice(), &data_name, b">"].concat();
+    let mut reading = Reading::new(raw);
+    let Ok(head) = std::str::from_utf8(&feed.buffer[..data_end]) else { return unsuited(feed.read) };
+    let head = head.strip_prefix('\u{feff}').unwrap_or(head);
+    reading.read(&mut xml::reader(head), part, context, None, 0)?;
+    feed.buffer.drain(..data_end);
+    let mut consumed = data_end;
+
+    // Runs of rows to the threads as they come, the rest after `</sheetData>` kept.
+    let threads = std::thread::available_parallelism().map_or(1, |count| count.get()).clamp(1, 16);
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<Run>(threads);
+    let receiver = std::sync::Mutex::new(receiver);
+    let results = std::sync::Mutex::new(Vec::new());
+    let produced: Result<Option<Vec<u8>>> = std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let run = match receiver.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).recv() {
+                        Ok(run) => run,
+                        Err(_) => break,
+                    };
+                    let rows = read_run(&run, part, context, raw);
+                    results.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push((run.index, rows));
+                    spare.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(run.bytes);
+                }
+            });
+        }
+        let mut index = 0;
+        let mut searched = 0;
+        let produced = loop {
+            if let Some(at) = memchr::memmem::find(&feed.buffer[searched..], &data_close).map(|at| searched + at) {
+                let bytes = feed.take(at);
+                if !bytes.is_empty() && sender.send(Run { index, offset: consumed, bytes }).is_err() {
+                    break Ok(None);
+                }
+                // The rest of the part, read here.
+                while !feed.eof {
+                    if !feed.more(progress)? {
+                        break;
+                    }
+                }
+                break Ok(Some(std::mem::take(&mut feed.buffer)));
+            }
+            if feed.buffer.len() >= run_size
+                && let Some(at) = memchr::memmem::rfind(&feed.buffer, &row_end)
+            {
+                let bytes = feed.take(at + row_end.len());
+                let length = bytes.len();
+                if sender.send(Run { index, offset: consumed, bytes }).is_err() {
+                    break Ok(None);
+                }
+                consumed += length;
+                index += 1;
+                searched = 0;
+                continue;
+            }
+            if feed.eof {
+                break Ok(None);
+            }
+            searched = feed.buffer.len().saturating_sub(data_close.len());
+            match feed.more(progress) {
+                Ok(true) => {}
+                Ok(false) => break Ok(None),
+                Err(error) => break Err(error),
+            }
+        };
+        drop(sender);
+        produced
+    });
+    let tail = match produced? {
+        Some(tail) => tail,
+        None if progress.is_some_and(Progress::is_cancelled) => return Ok(Parallel::Read(None)),
+        None => return unsuited(feed.read),
+    };
+
+    // The runs in their order, shared formulas filled in from the runs before.
+    let mut runs = results.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+    runs.sort_by_key(|(index, _)| *index);
+    let mut shared: HashMap<String, (String, u32, u32)> = HashMap::new();
+    for (_, run) in runs {
+        let run = run?;
+        if run.unsuited {
+            return unsuited(feed.read);
+        }
+        let base = run.base.unwrap_or(0) as usize;
+        match (&mut reading.raw, run.raw) {
+            (Some(raw), Some(mut more)) if !more.rows.is_empty() => {
+                if base < raw.rows.len() {
+                    return unsuited(feed.read);
+                }
+                let offset = raw.texts.len() as u32;
+                for cell in more.rows.iter_mut().flatten() {
+                    match &mut cell.value {
+                        RawValue::Text(index) | RawValue::Error(index) => *index += offset,
+                        _ => {}
+                    }
+                }
+                raw.rows.resize_with(base, Vec::new);
+                raw.rows.append(&mut more.rows);
+                raw.texts.append(&mut more.texts);
+            }
+            (Some(_), _) => {}
+            (None, _) => {
+                if !run.rows.is_empty() {
+                    if base < reading.rows.len() {
+                        return unsuited(feed.read);
+                    }
+                    reading.rows.resize_with(base, Vec::new);
+                    reading.rows.extend(run.rows);
+                }
+                for (row, column, index) in run.pending {
+                    let Some(Field::Formula(cell)) = reading.rows.get_mut(row as usize).and_then(|fields| fields.get_mut(column as usize)) else { continue };
+                    match shared.get(&index) {
+                        Some((formula, from_row, from_column)) => {
+                            cell.formula = refs::shift_formula(formula, i64::from(row) - i64::from(*from_row), i64::from(column) - i64::from(*from_column));
+                        }
+                        None => {
+                            let value = std::mem::take(&mut cell.value);
+                            reading.rows[row as usize][column as usize] = Field::Text(value);
+                        }
+                    }
+                }
+            }
+        }
+        reading.refers_to_rows |= run.refers_to_rows;
+        shared.extend(run.shared);
+    }
+
+    // What comes after the rows, read inside the elements it closes.
+    let mut text = Vec::with_capacity(tail.len() + root.len() + data_name.len() + 4);
+    text.extend_from_slice(b"<");
+    text.extend_from_slice(&root);
+    text.extend_from_slice(b"><");
+    text.extend_from_slice(&data_name);
+    text.extend_from_slice(b">");
+    text.extend_from_slice(&tail);
+    let Ok(text) = std::str::from_utf8(&text) else { return unsuited(feed.read) };
+    reading.read(&mut xml::reader(text), part, context, None, 0)?;
+    if let Some(progress) = progress {
+        progress.advance(size.saturating_sub(feed.read as u64) as usize);
+    }
+    Ok(Parallel::Read(Some(reading.content())))
+}
+
+/// The part as it streams in.
+struct Feed<'a, R> {
+    input: &'a mut R,
+    buffer: Vec<u8>,
+    eof: bool,
+    read: usize,
+    /// Buffers of runs read, to take the next runs: a buffer freed for each run would stay
+    /// with the allocator, as large as the sheet.
+    spare: &'a std::sync::Mutex<Vec<Vec<u8>>>,
+}
+
+impl<R: Read> Feed<'_, R> {
+    /// The first `length` bytes, taken out into a buffer of a run read before if there is one.
+    fn take(&mut self, length: usize) -> Vec<u8> {
+        let mut bytes = self.spare.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).pop().unwrap_or_default();
+        bytes.clear();
+        bytes.extend_from_slice(&self.buffer[..length]);
+        self.buffer.drain(..length);
+        bytes
+    }
+
+    /// Reads more into the buffer; `false` if `progress` was cancelled.
+    fn more(&mut self, progress: Option<&Progress>) -> Result<bool> {
+        if progress.is_some_and(Progress::is_cancelled) {
+            return Ok(false);
+        }
+        let start = self.buffer.len();
+        self.buffer.resize(start + (1 << 20), 0);
+        let count = loop {
+            match self.input.read(&mut self.buffer[start..]) {
+                Ok(count) => break count,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    self.buffer.truncate(start);
+                    return Err(error.into());
+                }
+            }
+        };
+        self.buffer.truncate(start + count);
+        self.eof = count == 0;
+        self.read += count;
+        if let Some(progress) = progress {
+            progress.advance(count);
+        }
+        Ok(true)
+    }
+}
+
+/// Rows of one run, read on their own.
+struct RunRows {
+    rows: Vec<Vec<Field>>,
+    raw: Option<RawSheet>,
+    base: Option<u32>,
+    refers_to_rows: bool,
+    shared: HashMap<String, (String, u32, u32)>,
+    pending: Vec<(u32, u32, String)>,
+    unsuited: bool,
+}
+
+fn read_run(run: &Run, part: &str, context: &Context, raw: bool) -> Result<RunRows> {
+    let mut reading = Reading::new(raw);
+    reading.run = true;
+    match std::str::from_utf8(&run.bytes) {
+        Ok(text) => {
+            if let Err(error) = reading.read(&mut xml::reader(text), part, context, None, 0) {
+                // Where in the part, not in the run.
+                return Err(match error {
+                    crate::error::Error::Workbook(crate::error::WorkbookError::Damaged { part, position, detail }) => {
+                        let position = position.map(|position| position + run.offset as u64);
+                        crate::error::WorkbookError::Damaged { part, position, detail }.into()
+                    }
+                    error => error,
+                });
+            }
+        }
+        Err(_) => reading.unsuited = true,
+    }
+    Ok(RunRows {
+        rows: reading.rows,
+        raw: reading.raw,
+        base: reading.base,
+        refers_to_rows: reading.refers_to_rows,
+        shared: reading.shared,
+        pending: reading.pending,
+        unsuited: reading.unsuited,
+    })
+}
+
+/// The end of the first start tag with this local name, the name of the first element of all
+/// before it, and the tag's name with its prefix.
+fn find_start_tag(xml: &[u8], local: &[u8]) -> Option<(usize, Option<Vec<u8>>, Vec<u8>)> {
+    let name_byte = |byte: u8| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.');
+    let mut from = 0;
+    while let Some(at) = memchr::memmem::find(&xml[from..], local).map(|at| from + at) {
+        from = at + 1;
+        let after = at + local.len();
+        if !matches!(xml.get(after), Some(b'>' | b'/' | b' ' | b'\t' | b'\r' | b'\n')) {
+            continue;
+        }
+        let mut start = at;
+        if start > 0 && xml[start - 1] == b':' {
+            start -= 1;
+            while start > 0 && name_byte(xml[start - 1]) {
+                start -= 1;
+            }
+        }
+        if start == 0 || xml[start - 1] != b'<' {
+            continue;
+        }
+        let end = after + memchr::memchr(b'>', &xml[after..])? + 1;
+        let root = first_element(&xml[..start - 1]);
+        return Some((end, root, xml[start..after].to_vec()));
+    }
+    None
+}
+
+/// The name of the first element in `xml`, past the declaration and comments.
+fn first_element(xml: &[u8]) -> Option<Vec<u8>> {
+    let mut at = 0;
+    loop {
+        at += memchr::memchr(b'<', &xml[at..])?;
+        match xml.get(at + 1) {
+            Some(b'?' | b'!') => at += 1,
+            Some(_) => {
+                let name: Vec<u8> = xml[at + 1..].iter().copied().take_while(|byte| !byte.is_ascii_whitespace() && *byte != b'>' && *byte != b'/').collect();
+                return (!name.is_empty()).then_some(name);
+            }
+            None => return None,
+        }
     }
 }
 
@@ -365,7 +745,7 @@ fn push_text_until(source: &mut impl EventSource, part: &str, end: &str, out: &m
 
 /// Puts a cell into its row, as the value Excel shows. Cells with neither a value nor a
 /// formula, which only carry a style, are left out.
-fn place(rows: &mut Vec<Vec<Field>>, cell: &mut Cell, context: &Context) {
+fn place(rows: &mut Vec<Vec<Field>>, base: u32, cell: &mut Cell, context: &Context) {
     if cell.value.is_empty() && cell.formula.is_none() {
         return;
     }
@@ -383,7 +763,7 @@ fn place(rows: &mut Vec<Vec<Field>>, cell: &mut Cell, context: &Context) {
         }
         None => Field::Text(value),
     };
-    let (row, column) = (cell.row as usize, cell.column as usize);
+    let (row, column) = ((cell.row - base) as usize, cell.column as usize);
     if rows.len() <= row {
         // Rows of a sheet are mostly as long as the one before.
         let width = rows.last().map_or(0, Vec::len);
@@ -399,9 +779,9 @@ fn place(rows: &mut Vec<Vec<Field>>, cell: &mut Cell, context: &Context) {
 
 /// Puts a cell's stored value and style into its row. Cells with a style only are kept: a
 /// formula typed into one takes its format.
-fn place_raw(raw: &mut RawSheet, cell: &mut Cell, context: &Context) {
+fn place_raw(raw: &mut RawSheet, base: u32, cell: &mut Cell, context: &Context) {
     let value = raw_value(cell, context, &mut raw.texts);
-    let (row, column) = (cell.row as usize, cell.column as usize);
+    let (row, column) = ((cell.row - base) as usize, cell.column as usize);
     if raw.rows.len() <= row {
         raw.rows.resize_with(row + 1, Vec::new);
     }
@@ -465,5 +845,74 @@ fn shown_value(cell: &Cell, context: &Context) -> String {
             Ok(number) => format.format_number(number, context.locale, context.date1904),
             Err(_) => raw.clone(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sheet with what reading in runs has to put together: columns and a frozen pane
+    /// before the rows, a shared formula written early and used late, inline strings, gaps
+    /// between rows, merged cells and a link after them.
+    fn sheet(prefix: &str) -> String {
+        let p = prefix;
+        let mut rows = String::new();
+        for row in 1..=60u32 {
+            if row % 7 == 0 {
+                continue;
+            }
+            let formula = if row == 2 {
+                format!(r#"<{p}f t="shared" ref="C2:C60" si="0">A2*2</{p}f>"#)
+            } else {
+                format!(r#"<{p}f t="shared" si="0"/>"#)
+            };
+            rows.push_str(&format!(
+                r#"<{p}row r="{row}" spans="1:3"><{p}c r="A{row}"><{p}v>{row}</{p}v></{p}c><{p}c r="B{row}" t="inlineStr"><{p}is><{p}t>Строка &amp; {row}</{p}t></{p}is></{p}c>{}</{p}row>"#,
+                if row >= 2 { format!(r#"<{p}c r="C{row}">{formula}<{p}v>{}</{p}v></{p}c>"#, row * 2) } else { String::new() }
+            ));
+        }
+        let space = if p.is_empty() { String::new() } else { format!(r#" xmlns:{}="m""#, &p[..p.len() - 1]) };
+        format!(
+            "\u{feff}<?xml version=\"1.0\"?>\n<{p}worksheet{space} xmlns:r=\"r\"><{p}sheetViews><{p}sheetView><{p}pane ySplit=\"1\" state=\"frozen\"/></{p}sheetView></{p}sheetViews><{p}cols><{p}col min=\"2\" max=\"2\" width=\"30\"/></{p}cols><{p}sheetData>{rows}</{p}sheetData><{p}mergeCells><{p}mergeCell ref=\"D1:E2\"/></{p}mergeCells><{p}hyperlinks><{p}hyperlink ref=\"A1\" r:id=\"x\"/></{p}hyperlinks></{p}worksheet>"
+        )
+    }
+
+    fn read_both(xml: &str, raw: bool) -> (String, String) {
+        let formats = [Arc::new(NumberFormat::general())];
+        let locale = DisplayLocale::default();
+        let context = Context { strings: &[], formats: &formats, locale: &locale, date1904: false };
+        let text = xml.strip_prefix('\u{feff}').unwrap_or(xml);
+        let one = read_sheet(&mut xml::reader(text), xml.len() as u64, "sheet", &context, None, raw).unwrap().unwrap();
+        let Parallel::Read(Some(runs)) = read_in_runs(&mut xml.as_bytes(), xml.len() as u64, "sheet", &context, None, raw, 300).unwrap() else {
+            panic!("not read in runs");
+        };
+        let show = |content: &SheetContent| format!("{:?}\n{:?}\n{:?}\n{}", content.rows, content.raw, content.layout, content.refers_to_rows);
+        (show(&one), show(&runs))
+    }
+
+    #[test]
+    fn rows_read_in_runs_are_the_rows_read_at_once() {
+        for prefix in ["", "x:"] {
+            for raw in [false, true] {
+                let (one, runs) = read_both(&sheet(prefix), raw);
+                assert_eq!(one, runs, "prefix {prefix:?}, raw {raw}");
+            }
+        }
+        // The shared formula reaches the last runs, the merged cells and pane come through.
+        let (_, runs) = read_both(&sheet(""), false);
+        for part in ["A59*2", "Строка & 59", "SheetRange { top: 0, left: 3, bottom: 1, right: 4 }", "frozen_rows: 1"] {
+            assert!(runs.contains(part), "{part} in {runs}");
+        }
+    }
+
+    #[test]
+    fn unnumbered_rows_are_read_at_once() {
+        let xml = sheet("").replace(r#"<row r="30" spans="1:3">"#, "<row>");
+        let formats = [Arc::new(NumberFormat::general())];
+        let locale = DisplayLocale::default();
+        let context = Context { strings: &[], formats: &formats, locale: &locale, date1904: false };
+        let read = read_in_runs(&mut xml.as_bytes(), xml.len() as u64, "sheet", &context, None, false, 300).unwrap();
+        assert!(matches!(read, Parallel::Unsuited));
     }
 }

@@ -397,6 +397,15 @@ impl Workbook {
             input.read_to_end(&mut bytes)?;
             let text = xml::decode(bytes);
             sheet::read_sheet(&mut xml::reader(&text), text.len() as u64, part, &context, Some(progress), false)?
+        } else if size >= sheet::PARALLEL_SIZE {
+            match sheet::read_sheet_parallel(&mut input, size, part, &context, Some(progress), false)? {
+                sheet::Parallel::Read(content) => content,
+                sheet::Parallel::Unsuited => {
+                    let (stream, size) = package.stream(part)?.ok_or_else(missing)?;
+                    let input = BufReader::with_capacity(1 << 16, stream);
+                    sheet::read_sheet(&mut xml::Stream::new(input), size, part, &context, Some(progress), false)?
+                }
+            }
         } else {
             sheet::read_sheet(&mut xml::Stream::new(input), size, part, &context, Some(progress), false)?
         };

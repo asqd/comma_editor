@@ -377,11 +377,18 @@ impl Workbook {
         let Some(part) = self.sheets.get(index).and_then(|sheet| sheet.part.as_deref()) else {
             return Ok(RawSheet::default());
         };
+        let formats = styles.formats(locale);
+        let context = super::sheet::Context { strings, formats: &formats, locale, date1904: self.date1904 };
+        // A large sheet is read on several threads.
+        if let Some((mut stream, size)) = package.stream(part)?
+            && size >= super::sheet::PARALLEL_SIZE
+            && let super::sheet::Parallel::Read(content) = super::sheet::read_sheet_parallel(&mut stream, size, part, &context, None, true)?
+        {
+            return Ok(content.and_then(|content| content.raw).unwrap_or_default());
+        }
         let Some(text) = package.read_text(part)? else {
             return Ok(RawSheet::default());
         };
-        let formats = styles.formats(locale);
-        let context = super::sheet::Context { strings, formats: &formats, locale, date1904: self.date1904 };
         let content = super::sheet::read_sheet(&mut super::xml::reader(&text), text.len() as u64, part, &context, None, true)?;
         Ok(content.and_then(|content| content.raw).unwrap_or_default())
     }
