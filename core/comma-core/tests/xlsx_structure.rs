@@ -220,7 +220,8 @@ fn pivot_tables_read_the_rows_they_read() {
     let (workbook, mut data, pivot) = open(pivot_book());
     assert!(!data.sheet_structure_locked());
     // The pivot table lays itself out on its sheet, which keeps its rows.
-    assert!(pivot.sheet_structure_locked());
+    let mut pivot = pivot;
+    assert!(matches!(workbook.insert(&mut [(1, &mut pivot)], 1, Axis::Rows, 0, 1), Err(Error::SheetStructure(SheetStructure::PivotTable))));
     // A row before row 3 of the source, one after it.
     workbook.insert(&mut [(0, &mut data)], 0, Axis::Rows, 2, 1).unwrap();
     workbook.insert(&mut [(0, &mut data)], 0, Axis::Rows, 7, 1).unwrap();
@@ -449,8 +450,9 @@ fn rows_inserted_into_a_table_extend_it_and_fill_its_formulas() {
     assert_eq!(again.cell(3, 0).unwrap(), "Milk");
     assert_eq!(again.cell(6, 0).unwrap(), "80");
     // A column inside the table, and the header row, stay.
-    assert!(matches!(workbook.insert(&mut [(0, &mut sales)], 0, Axis::Columns, 2, 1), Err(Error::SheetStructure(SheetStructure::ColumnsFixed))));
-    assert!(matches!(workbook.delete(&mut [(0, &mut sales)], 0, Axis::Rows, 0, 1), Err(Error::SheetStructure(SheetStructure::RowsFixed))));
+    assert!(matches!(workbook.insert(&mut [(0, &mut sales)], 0, Axis::Columns, 2, 1), Err(Error::SheetStructure(SheetStructure::TableColumns))));
+    assert!(matches!(workbook.delete(&mut [(0, &mut sales)], 0, Axis::Rows, 0, 1), Err(Error::SheetStructure(SheetStructure::TableEdges))));
+    assert!(matches!(workbook.move_rows(&mut [(0, &mut sales)], 0, &[1], 3), Err(Error::SheetStructure(SheetStructure::TableRowsMoved))));
     // Deleting a data row shrinks it.
     workbook.delete(&mut [(0, &mut sales)], 0, Axis::Rows, 1, 1).unwrap();
     let saved = workbook.to_bytes(&[(0, &sales)]).unwrap();

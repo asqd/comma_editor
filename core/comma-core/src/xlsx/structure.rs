@@ -44,9 +44,8 @@ impl Workbook {
         let Some(position) = sheets.iter().position(|(sheet, _)| *sheet == index) else {
             return Ok(Vec::new());
         };
-        let change = if axis == Axis::Rows { SheetStructure::RowsFixed } else { SheetStructure::ColumnsFixed };
         if sheets[position].1.sheet_structure_locked() {
-            return Err(Error::SheetStructure(change));
+            return Err(Error::SheetStructure(sheets[position].1.locked_structure(axis == Axis::Rows)));
         }
         let (length, limit) = match axis {
             Axis::Rows => (sheets[position].1.row_count(), super::refs::MAX_ROWS),
@@ -97,9 +96,12 @@ impl Workbook {
             return Ok(Vec::new());
         };
         let document = &sheets[position].1;
+        if document.sheet_structure_locked() {
+            return Err(Error::SheetStructure(document.locked_structure(true)));
+        }
         // Rows moved in or out of an Excel table would break it.
-        if document.sheet_structure_locked() || self.tables().iter().any(|table| table.sheet == index) {
-            return Err(Error::SheetStructure(SheetStructure::RowsFixed));
+        if self.tables().iter().any(|table| table.sheet == index) {
+            return Err(Error::SheetStructure(SheetStructure::TableRowsMoved));
         }
         let mut rows = rows.to_vec();
         rows.sort_unstable();
@@ -119,7 +121,7 @@ impl Workbook {
                 }
             });
             if split {
-                return Err(Error::SheetStructure(SheetStructure::RowsFixed));
+                return Err(Error::SheetStructure(SheetStructure::MergedArea));
             }
         }
         // The new order of the rows, and where each old row goes.
@@ -192,8 +194,11 @@ impl Workbook {
     /// Refused when a merged area lies among the rows that move, as Excel refuses it. One
     /// undoable step; `false` when nothing moved.
     pub fn sort_rows(&self, document: &mut Document, index: usize) -> Result<bool> {
-        if document.sheet_structure_locked() || self.tables().iter().any(|table| table.sheet == index) {
-            return Err(Error::SheetStructure(SheetStructure::RowsFixed));
+        if document.sheet_structure_locked() {
+            return Err(Error::SheetStructure(document.locked_structure(true)));
+        }
+        if self.tables().iter().any(|table| table.sheet == index) {
+            return Err(Error::SheetStructure(SheetStructure::TableRowsMoved));
         }
         let Some(order) = document.sorted_order() else { return Ok(false) };
         if order.iter().enumerate().all(|(new, &old)| new == old) {
@@ -204,7 +209,7 @@ impl Workbook {
         if let Some(sheet) = &document.sheet {
             let origins: std::collections::HashSet<usize> = moving.iter().filter_map(|&row| document.row_origin(row)).collect();
             if sheet.merged.iter().any(|area| (area.top..=area.bottom).any(|row| origins.contains(&row))) {
-                return Err(Error::SheetStructure(SheetStructure::RowsFixed));
+                return Err(Error::SheetStructure(SheetStructure::MergedArea));
             }
         }
         let locale = document.sheet.as_ref().map(|sheet| sheet.locale.clone()).unwrap_or_default();
@@ -312,14 +317,14 @@ impl Workbook {
             let (first_data, last_data) = (top + table.headers as usize, bottom.saturating_sub(table.totals as usize));
             let last = at + count - 1;
             match axis {
-                Axis::Columns if insert && at > left && at <= right => return Err(Error::SheetStructure(SheetStructure::ColumnsFixed)),
-                Axis::Columns if !insert && at <= right && last >= left => return Err(Error::SheetStructure(SheetStructure::ColumnsFixed)),
+                Axis::Columns if insert && at > left && at <= right => return Err(Error::SheetStructure(SheetStructure::TableColumns)),
+                Axis::Columns if !insert && at <= right && last >= left => return Err(Error::SheetStructure(SheetStructure::TableColumns)),
                 Axis::Rows if !insert => {
                     let headers = table.headers > 0 && at < first_data && last >= top;
                     let totals = table.totals > 0 && at <= bottom && last > last_data;
                     let all_data = at <= first_data && last >= last_data;
                     if (headers || totals || all_data) && at <= bottom && last >= top {
-                        return Err(Error::SheetStructure(SheetStructure::RowsFixed));
+                        return Err(Error::SheetStructure(SheetStructure::TableEdges));
                     }
                 }
                 Axis::Rows if insert && at >= first_data && at <= last_data + 1 && (table.totals > 0 || at <= last_data) => {

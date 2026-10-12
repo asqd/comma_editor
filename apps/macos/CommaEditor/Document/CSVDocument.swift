@@ -815,13 +815,30 @@ class CSVDocument: NSDocument {
             )
         case .Formula(let problem):
             userInfo[NSLocalizedDescriptionKey] = FormulaHelp.describe(problem)
-        case .SheetStructure(let rows):
-            if rows {
-                userInfo[NSLocalizedDescriptionKey] = L("Rows of this sheet cannot be inserted, deleted or moved.")
-                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("A pivot table is laid out on this sheet, the rows would split an Excel table or a merged area, or the workbook is in the old Excel format. Rows can be added at the end.")
-            } else {
+        case .SheetStructure(let change):
+            let rows = L("Rows of this sheet cannot be inserted, deleted or moved.")
+            switch change {
+            case .rows:
+                userInfo[NSLocalizedDescriptionKey] = rows
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Formulas, merged cells or other parts of the workbook refer to them, and this command would leave the references behind. Rows can be added at the end.")
+            case .columns:
                 userInfo[NSLocalizedDescriptionKey] = L("Columns of a workbook cannot be inserted, deleted or moved yet.")
                 userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Values in the columns can be changed. To change the columns, export the sheet as CSV.")
+            case .pivotTable:
+                userInfo[NSLocalizedDescriptionKey] = L("A pivot table is laid out on this sheet.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Its rows and columns stay where they are, as the pivot table takes them. Rows can be added at the end.")
+            case .tableRowsMoved:
+                userInfo[NSLocalizedDescriptionKey] = L("Rows of a sheet with an Excel table cannot be moved or sorted yet.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Rows can be inserted and deleted, and the table follows them.")
+            case .tableEdges:
+                userInfo[NSLocalizedDescriptionKey] = L("These rows of an Excel table cannot be deleted.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("The header row, the totals row and the last data row hold the table together. Other rows of it can be deleted.")
+            case .tableColumns:
+                userInfo[NSLocalizedDescriptionKey] = L("Columns cannot be inserted or deleted inside an Excel table.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Columns left and right of the table can be inserted and deleted.")
+            case .mergedArea:
+                userInfo[NSLocalizedDescriptionKey] = L("These rows cannot be moved or sorted.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Some of the rows are part of a merged area, which moves whole or not at all. Unmerge it in Excel, or move all its rows together.")
             }
         case .MergedCell(let row, let column):
             userInfo[NSLocalizedDescriptionKey] = L("This cell is inside a merged area.")

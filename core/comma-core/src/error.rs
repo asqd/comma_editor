@@ -63,14 +63,28 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Changes to the shape of a sheet that saving cannot keep yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SheetStructure {
-    /// Rows cannot be inserted, deleted or moved: a pivot table is laid out on the sheet, the
-    /// rows would split an Excel table or a merged area, or the workbook is an old one.
+    /// Rows cannot be inserted, deleted or moved this way: formulas, merged cells or other
+    /// parts of the workbook refer to them, and the change would not move the references.
     #[error("rows of this sheet cannot be inserted, deleted or moved: other parts of the workbook refer to them")]
     RowsFixed,
-    /// Columns of a workbook cannot be inserted, deleted or moved yet; they can be added at
-    /// the end.
+    /// Columns cannot be inserted, deleted or moved this way; they can be added at the end.
     #[error("columns of a workbook cannot be inserted, deleted or moved")]
     ColumnsFixed,
+    /// A pivot table is laid out on the sheet, on cells it does not move from.
+    #[error("a pivot table is laid out on this sheet")]
+    PivotTable,
+    /// Rows of a sheet with an Excel table cannot be moved or sorted, which could break it.
+    #[error("rows of a sheet with an Excel table cannot be moved or sorted")]
+    TableRowsMoved,
+    /// The headers, the totals or all the data rows of an Excel table cannot be deleted.
+    #[error("the headers, the totals or all the data rows of an Excel table cannot be deleted")]
+    TableEdges,
+    /// Columns cannot be inserted or deleted inside an Excel table.
+    #[error("columns cannot be inserted or deleted inside an Excel table")]
+    TableColumns,
+    /// The rows moved would split a merged area.
+    #[error("the rows would split a merged area")]
+    MergedArea,
 }
 
 /// Why an Excel workbook or one of its sheets cannot be read.

@@ -220,6 +220,8 @@ pub(crate) struct SheetSource {
     /// Rows and columns cannot be inserted or deleted even with references moved; see
     /// `Document::sheet_structure_locked`.
     pub structure_locked: bool,
+    /// A pivot table is laid out on the sheet: why its structure is locked.
+    pub pivot_table: bool,
     /// Formulas of this sheet were rewritten when rows or columns moved; saving writes them all
     /// on their own, since a formula shared by several cells may have changed in some of them.
     pub formulas_moved: Arc<AtomicBool>,
@@ -400,16 +402,25 @@ impl Document {
     }
 
     /// Whether rows and columns of this sheet stay where they are even when references to them
-    /// move with them: tables, drawings, comments, charts or pivot tables are anchored to them.
+    /// move with them: a pivot table is laid out on it, or the workbook is an old one.
     pub fn sheet_structure_locked(&self) -> bool {
         self.sheet.as_ref().is_some_and(|sheet| sheet.structure_locked)
+    }
+
+    /// Why a change of rows (`rows`) or else columns cannot be made to a locked sheet.
+    pub(crate) fn locked_structure(&self, rows: bool) -> SheetStructure {
+        match self.sheet.as_ref() {
+            Some(sheet) if sheet.pivot_table => SheetStructure::PivotTable,
+            _ if rows => SheetStructure::RowsFixed,
+            _ => SheetStructure::ColumnsFixed,
+        }
     }
 
     /// Fails if a sheet cannot take a change to its rows or columns.
     pub(crate) fn check_structure(&self, change: SheetStructure) -> Result<()> {
         let fixed = match change {
-            SheetStructure::RowsFixed => self.sheet_rows_fixed(),
             SheetStructure::ColumnsFixed => self.is_sheet(),
+            _ => self.sheet_rows_fixed(),
         };
         if fixed { Err(Error::SheetStructure(change)) } else { Ok(()) }
     }

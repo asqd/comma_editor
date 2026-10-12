@@ -49,9 +49,9 @@ pub enum CoreError {
     /// An Excel workbook that cannot be read, and why.
     #[error("{problem:?}")]
     Workbook { problem: WorkbookProblem },
-    /// A change to rows (or else columns) a sheet of a workbook cannot take and still be saved.
+    /// A change to rows or columns a sheet of a workbook cannot take and still be saved.
     #[error("the rows or columns of this sheet cannot change")]
-    SheetStructure { rows: bool },
+    SheetStructure { change: SheetChange },
     /// The cell is hidden by a merged area; its value is in the area's first cell, by row of
     /// the file and column.
     #[error("the cell is inside a merged area")]
@@ -126,7 +126,7 @@ impl From<core::Error> for CoreError {
             core::Error::UnknownColumn(ref column) => Self::Recipe { step: 0, column: Some(column.clone()), message: error.to_string() },
             core::Error::InvalidRecipe(message) => Self::InvalidRecipe { message },
             core::Error::Workbook(problem) => Self::Workbook { problem: problem.into() },
-            core::Error::SheetStructure(change) => Self::SheetStructure { rows: change == core::SheetStructure::RowsFixed },
+            core::Error::SheetStructure(change) => Self::SheetStructure { change: change.into() },
             core::Error::MergedCell { row, column } => Self::MergedCell { row: row as u64, column: column as u64 },
             core::Error::Recipe { step, source } => {
                 let column = match source.as_ref() {
@@ -135,6 +135,32 @@ impl From<core::Error> for CoreError {
                 };
                 Self::Recipe { step: step as u64, column, message: source.to_string() }
             }
+        }
+    }
+}
+
+/// Why rows or columns of a sheet cannot change: see `comma_core::SheetStructure`.
+#[derive(Debug, uniffi::Enum)]
+pub enum SheetChange {
+    Rows,
+    Columns,
+    PivotTable,
+    TableRowsMoved,
+    TableEdges,
+    TableColumns,
+    MergedArea,
+}
+
+impl From<core::SheetStructure> for SheetChange {
+    fn from(change: core::SheetStructure) -> Self {
+        match change {
+            core::SheetStructure::RowsFixed => Self::Rows,
+            core::SheetStructure::ColumnsFixed => Self::Columns,
+            core::SheetStructure::PivotTable => Self::PivotTable,
+            core::SheetStructure::TableRowsMoved => Self::TableRowsMoved,
+            core::SheetStructure::TableEdges => Self::TableEdges,
+            core::SheetStructure::TableColumns => Self::TableColumns,
+            core::SheetStructure::MergedArea => Self::MergedArea,
         }
     }
 }

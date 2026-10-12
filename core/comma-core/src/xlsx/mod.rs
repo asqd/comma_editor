@@ -375,6 +375,7 @@ impl Workbook {
                 let source = SheetSource {
                     rows_fixed: true,
                     structure_locked: true,
+                    pivot_table: false,
                     formulas_moved: Arc::default(),
                     rows: rows.len(),
                     columns: 0,
@@ -424,6 +425,7 @@ impl Workbook {
                 SheetSource {
                     rows_fixed,
                     structure_locked: hosts_pivot,
+                    pivot_table: hosts_pivot,
                     formulas_moved: Arc::default(),
                     rows,
                     columns: 0,
