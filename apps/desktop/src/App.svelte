@@ -5,7 +5,9 @@
   import { Grid, type TableSource } from "./grid/Grid";
   import { formatBench, runBench } from "./grid/bench";
   import { call, inTauri, type RangeStats, type Status } from "./lib/api";
-  import type { Selection } from "./grid/selection";
+  import { Selection, type Cell } from "./grid/selection";
+  import { CellEditor, type Move } from "./grid/editor";
+  import CellSheet from "./CellSheet.svelte";
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
@@ -15,6 +17,9 @@
 
   let host: HTMLElement;
   let grid: Grid | null = null;
+  let editor: CellEditor | null = null;
+  /** A value with line breaks being edited in a window of its own. */
+  let sheet = $state<{ cell: Cell; heading: string; value: string } | null>(null);
   /** The status the view shows rows for; the rows reload when it differs in what they show. */
   const doc = new Document((status, previous) => {
     if (!grid) return;
@@ -169,7 +174,93 @@
     }
   }
 
+  /** Whether the document can change now; says why not in the status bar. */
+  function changeable(): boolean {
+    const status = doc.status;
+    if (!status) return false;
+    if (status.indexing !== null) {
+      doc.problem = `${L("The file is still being read.")} ${L("Changes and saving are possible once the whole file is read; the progress is in the status bar.")}`;
+      return false;
+    }
+    if (status.job) {
+      doc.problem = `${L("Another change is being made.")} ${L("Wait until it ends or cancel it in the status bar.")}`;
+      return false;
+    }
+    return true;
+  }
+
+  async function cellValue(cell: Cell): Promise<string> {
+    const loaded = grid?.value(cell);
+    if (loaded !== undefined) return loaded;
+    const [row] = await call<string[][]>("rows", { start: cell.row, count: 1 });
+    return row?.[cell.column] ?? "";
+  }
+
+  /** Edits a cell: in place, or in a window when its value has line breaks or `window` asks. */
+  async function edit(cell: Cell, typed?: string, inWindow = false) {
+    if (!grid || !editor || !changeable()) return;
+    const value = await cellValue(cell);
+    if (inWindow || value.includes("\n") || value.includes("\r")) {
+      sheet = { cell, heading: L("Row %ld, column %@", cell.row + 1, grid.title(cell.column)), value };
+      return;
+    }
+    editor.start(cell, value, typed);
+  }
+
+  async function write(cell: Cell, value: string | null, move: Move) {
+    if (value !== null) await doc.attempt(() => doc.run("set_cell", { row: cell.row, column: cell.column, value }));
+    if (!grid || !move) return;
+    const to = {
+      row: move === "down" ? cell.row + 1 : cell.row,
+      column: move === "right" ? cell.column + 1 : move === "left" ? cell.column - 1 : cell.column,
+    };
+    const rows = doc.status?.rows ?? 0;
+    const columns = doc.status?.columns ?? 0;
+    grid.select(Selection.at({ row: Math.min(Math.max(0, to.row), rows - 1), column: Math.min(Math.max(0, to.column), columns - 1) }));
+  }
+
+  async function clear() {
+    const range = grid?.selection?.range;
+    if (range && changeable()) await doc.attempt(() => doc.run("fill", { range, value: "" }));
+  }
+
+  async function undo(redo: boolean) {
+    const status = doc.status;
+    if (!status || !changeable() || !(redo ? status.canRedo : status.canUndo)) return;
+    await doc.attempt(() => doc.run(redo ? "redo" : "undo"));
+  }
+
+  /** Keys that reach the grid itself and are not moves of the cursor. */
+  function gridKey(event: KeyboardEvent): boolean {
+    const command = mac ? event.metaKey : event.ctrlKey;
+    const cursor = grid?.selection?.cursor;
+    const key = event.key;
+    if (command && !event.altKey && key.toLowerCase() === "z") {
+      void undo(event.shiftKey);
+    } else if (!mac && event.ctrlKey && !event.shiftKey && !event.altKey && key.toLowerCase() === "y") {
+      void undo(true);
+    } else if (command && event.altKey && event.code === "KeyE") {
+      if (cursor) void edit(cursor, undefined, true);
+    } else if (!cursor) {
+      return false;
+    } else if (key === "Enter" && !command && !event.altKey && !event.shiftKey) {
+      void edit(cursor);
+    } else if ((key === "Delete" || key === "Backspace") && !command && !event.altKey) {
+      void clear();
+    } else if (key.length === 1 && !command && !event.altKey && !(mac && event.ctrlKey)) {
+      // Typing replaces the value, as in the macOS app.
+      void edit(cursor, key);
+    } else {
+      return false;
+    }
+    return true;
+  }
+
   function keydown(event: KeyboardEvent) {
+    if (grid?.owns(event.target) && !event.isComposing && gridKey(event)) {
+      event.preventDefault();
+      return;
+    }
     const command = mac ? event.metaKey : event.ctrlKey;
     if (command && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "o") {
       event.preventDefault();
@@ -182,6 +273,8 @@
 
   onMount(() => {
     grid = new Grid(host);
+    editor = new CellEditor(grid, host, (cell, value, move) => void write(cell, value, move));
+    grid.onActivate = (cell) => void edit(cell);
     grid.onSelect = (selected) => {
       selection = selected;
       void measure(selected);
@@ -226,6 +319,23 @@
       {/if}
     {/if}
   </footer>
+  {#if sheet}
+    <CellSheet
+      heading={sheet.heading}
+      value={sheet.value}
+      save={(value) => {
+        const cell = sheet!.cell;
+        const changed = value !== sheet!.value;
+        sheet = null;
+        grid?.focus();
+        if (changed) void write(cell, value, null);
+      }}
+      cancel={() => {
+        sheet = null;
+        grid?.focus();
+      }}
+    />
+  {/if}
   {#if benchText}
     <aside class="bench">
       <pre>{benchText}</pre>

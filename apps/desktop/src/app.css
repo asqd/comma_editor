@@ -88,3 +88,16 @@ button:disabled {
 button.small {
   padding: 1px 8px;
 }
+
+.cell-editor {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0 6px;
+  font: 13px system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif;
+  color: var(--grid-text);
+  background: var(--grid-background);
+  border: 2px solid var(--accent);
+  outline: none;
+}

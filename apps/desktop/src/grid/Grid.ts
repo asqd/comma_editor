@@ -73,6 +73,8 @@ export class Grid {
   onActivate: ((cell: Cell) => void) | null = null;
   /** A click on a column's title, with Shift or not. */
   onHeader: ((column: number, shift: boolean) => void) | null = null;
+  /** Run after every frame, e.g. to keep an editor over its cell. */
+  readonly afterDraw: (() => void)[] = [];
 
   private readonly scroller: HTMLDivElement;
   private readonly spacer: HTMLDivElement;
@@ -230,6 +232,11 @@ export class Grid {
 
   focus(): void {
     this.scroller.focus();
+  }
+
+  /** Whether a key went to the grid itself, rather than to an editor or a field. */
+  owns(target: EventTarget | null): boolean {
+    return target === this.scroller;
   }
 
   get maxTop(): number {
@@ -588,8 +595,13 @@ export class Grid {
     return Math.min(MAX_WIDTH, Math.max(atLeast, Math.ceil(widest) + 2 * PADDING));
   }
 
+  /** The area the data rows take, relative to the grid: editors stay inside it. */
+  get dataArea(): { x: number; y: number; width: number; height: number } {
+    return { x: this.gutter, y: HEADER_HEIGHT, width: this.width - this.gutter, height: this.height - HEADER_HEIGHT };
+  }
+
   /** The header's title of a column, or its letter as in Excel. */
-  private title(column: number): string {
+  title(column: number): string {
     const title = this.source?.header[column];
     if (title !== undefined) return title;
     let name = "";
@@ -775,6 +787,7 @@ export class Grid {
     g.stroke();
 
     this.stats.draw(performance.now() - started);
+    for (const listener of this.afterDraw) listener();
     this.onFrame?.(complete);
     return complete;
   }
