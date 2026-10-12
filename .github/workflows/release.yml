@@ -91,7 +91,7 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: build/desktop
         run: |
-          dpkg-deb --fsys-tarfile commaeditor_*_amd64.deb | tar -xO --wildcards './usr/share/applications/*.desktop' | tee deb.desktop
+          dpkg-deb --fsys-tarfile commaeditor_*_amd64.deb | tar -xO --wildcards '*usr/share/applications/*.desktop' | tee deb.desktop
           grep -q '^Exec=commaeditor %F$' deb.desktop
           grep -q '^MimeType=.*text/csv' deb.desktop
           chmod +x CommaEditor-*.AppImage
