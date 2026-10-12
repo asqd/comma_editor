@@ -25,8 +25,12 @@ const ROW_HEIGHT = 24;
 const HEADER_HEIGHT = 28;
 const PADDING = 8;
 const MIN_WIDTH = 56;
-/** Room beside a column's title for its sort mark. */
+/** Room beside a column's title for its sort icon. */
 const MARK_ROOM = 18;
+/** The icons at the right of a column's title, as GridHeaderView draws them. */
+const ICON = 16;
+const SORT_ICON_INSET = 5;
+const FILTER_ICON_GAP = 3;
 const MAX_WIDTH = 360;
 const DEFAULT_WIDTH = 120;
 /** Columns measured for their width; the rest keep the default. */
@@ -76,6 +80,8 @@ export class Grid {
   onActivate: ((cell: Cell) => void) | null = null;
   /** A click on a column's title, with Shift or not. */
   onHeader: ((column: number, shift: boolean) => void) | null = null;
+  /** A click on the filter icon of a column's title. */
+  onFilterIcon: ((column: number) => void) | null = null;
   /** Run after every frame, e.g. to keep an editor over its cell. */
   readonly afterDraw: (() => void)[] = [];
   /** Text typed into the grid, composed by an input method or not: it starts editing. */
@@ -122,6 +128,8 @@ export class Grid {
   /** Sorted columns: ascending or not, and their place among several keys. */
   private sorted = new Map<number, { ascending: boolean; order: number }>();
   private filtered = new Set<number | null>();
+  /** The column whose title the pointer is over: its icons show. */
+  private hovered: number | null = null;
   /** A drag selecting cells or rows, and where the pointer last was. */
   private drag: { rows: boolean; x: number; y: number; frame: number } | null = null;
 
@@ -172,6 +180,12 @@ export class Grid {
     this.scroller.addEventListener("pointerup", (event) => this.pointerUp(event));
     this.scroller.addEventListener("dblclick", (event) => this.doubleClick(event));
     this.scroller.addEventListener("contextmenu", (event) => this.contextMenu(event));
+    this.scroller.addEventListener("pointerleave", () => {
+      if (this.hovered !== null) {
+        this.hovered = null;
+        this.invalidate();
+      }
+    });
     new ResizeObserver(() => this.resize()).observe(this.scroller);
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
       this.colors = this.readColors();
@@ -527,7 +541,12 @@ export class Grid {
     this.focus();
     const columns = this.widths.length;
     if (hit.area === "header") {
-      this.onHeader?.(hit.column, event.shiftKey);
+      const bounds = this.scroller.getBoundingClientRect();
+      const x = event.clientX - bounds.left;
+      const icon = this.filterIconX(hit.column);
+      // The icon's area reaches a little past it, as in the macOS app.
+      if (this.showsFilterIcon(hit.column) && x >= icon - 3 && x <= icon + ICON + 3) this.onFilterIcon?.(hit.column);
+      else this.onHeader?.(hit.column, event.shiftKey);
       return;
     }
     if (hit.area === "gutter") {
@@ -543,7 +562,15 @@ export class Grid {
   }
 
   private pointerMove(event: PointerEvent): void {
-    if (!this.drag) return;
+    if (!this.drag) {
+      const hit = this.hit(event.clientX, event.clientY);
+      const hovered = hit.area === "header" ? hit.column : null;
+      if (hovered !== this.hovered) {
+        this.hovered = hovered;
+        this.invalidate();
+      }
+      return;
+    }
     this.drag.x = event.clientX;
     this.drag.y = event.clientY;
     this.extendDrag();
@@ -688,6 +715,20 @@ export class Grid {
     return Math.min(MAX_WIDTH, Math.max(atLeast, Math.ceil(widest) + 2 * PADDING));
   }
 
+  private isFiltered(column: number): boolean {
+    return this.filtered.has(column);
+  }
+
+  private showsFilterIcon(column: number): boolean {
+    return this.hovered === column || this.isFiltered(column);
+  }
+
+  /** The left of a column's filter icon, relative to the grid. */
+  private filterIconX(column: number): number {
+    const right = this.gutter + this.edges[column + 1] - this.left;
+    return right - SORT_ICON_INSET - ICON - FILTER_ICON_GAP - ICON;
+  }
+
   /** The area the data rows take, relative to the grid: editors stay inside it. */
   get dataArea(): { x: number; y: number; width: number; height: number } {
     return { x: this.gutter, y: HEADER_HEIGHT, width: this.width - this.gutter, height: this.height - HEADER_HEIGHT };
@@ -720,6 +761,58 @@ export class Grid {
       cursor: color("--accent"),
       selectedHeader: color("--grid-selected-header"),
     };
+  }
+
+  /** chevron.up or chevron.down when sorted, arrow.up.arrow.down when only hovered. */
+  private drawSortIcon(x: number, sort: { ascending: boolean } | undefined, color: string): void {
+    const g = this.context;
+    const middle = HEADER_HEIGHT / 2;
+    g.save();
+    g.strokeStyle = color;
+    g.lineWidth = 1.6;
+    g.lineCap = "round";
+    g.lineJoin = "round";
+    g.beginPath();
+    if (sort) {
+      const direction = sort.ascending ? -1 : 1;
+      g.moveTo(x + 4, middle - direction * 2.5);
+      g.lineTo(x + 8, middle + direction * 2.5);
+      g.lineTo(x + 12, middle - direction * 2.5);
+    } else {
+      g.lineWidth = 1.2;
+      g.moveTo(x + 5.5, middle + 4.5);
+      g.lineTo(x + 5.5, middle - 4.5);
+      g.moveTo(x + 3.5, middle - 2.5);
+      g.lineTo(x + 5.5, middle - 4.5);
+      g.lineTo(x + 7.5, middle - 2.5);
+      g.moveTo(x + 10.5, middle - 4.5);
+      g.lineTo(x + 10.5, middle + 4.5);
+      g.moveTo(x + 8.5, middle + 2.5);
+      g.lineTo(x + 10.5, middle + 4.5);
+      g.lineTo(x + 12.5, middle + 2.5);
+    }
+    g.stroke();
+    g.restore();
+  }
+
+  /** line.3.horizontal.decrease.circle. */
+  private drawFilterIcon(x: number, color: string): void {
+    const g = this.context;
+    const middle = HEADER_HEIGHT / 2;
+    g.save();
+    g.strokeStyle = color;
+    g.lineWidth = 1.2;
+    g.lineCap = "round";
+    g.beginPath();
+    g.arc(x + 8, middle, 6.5, 0, Math.PI * 2);
+    g.moveTo(x + 4.8, middle - 2.2);
+    g.lineTo(x + 11.2, middle - 2.2);
+    g.moveTo(x + 5.9, middle);
+    g.lineTo(x + 10.1, middle);
+    g.moveTo(x + 7, middle + 2.2);
+    g.lineTo(x + 9, middle + 2.2);
+    g.stroke();
+    g.restore();
   }
 
   private draw(): boolean {
@@ -848,6 +941,14 @@ export class Grid {
       g.fillStyle = colors.selectedHeader;
       if (right > x) g.fillRect(x, 0, right - x, HEADER_HEIGHT);
     }
+    // The column of the first sort key stands out, as NSTableView's highlighted column.
+    const highlighted = [...this.sorted].find(([, key]) => key.order === 0)?.[0];
+    if (highlighted !== undefined && highlighted < this.widths.length) {
+      const x = Math.max(gutter, columnX(highlighted));
+      const right = columnX(highlighted) + this.widths[highlighted];
+      g.fillStyle = colors.selectedHeader;
+      if (right > x) g.fillRect(x, 0, right - x, HEADER_HEIGHT);
+    }
     g.font = HEADER_FONT;
     g.fillStyle = colors.headerText;
     g.textAlign = "left";
@@ -855,23 +956,21 @@ export class Grid {
     for (let column = firstColumn; column <= lastColumn && this.widths.length > 0; column += 1) {
       const x = columnX(column);
       if (x + this.widths[column] < gutter) continue;
-      // A sorted column shows its direction at the right, and its place among several keys.
+      // Icons at the right: sort when sorted or hovered, filter when filtered or hovered.
       const sort = this.sorted.get(column);
-      const mark = sort ? `${sort.ascending ? "▲" : "▼"}${this.sorted.size > 1 ? sort.order + 1 : ""}` : "";
-      const markWidth = mark ? g.measureText(mark).width + PADDING : 0;
+      const showsSort = !!sort || this.hovered === column;
+      const showsFilter = this.showsFilterIcon(column);
+      const right = x + this.widths[column];
+      const iconsWidth = showsFilter ? SORT_ICON_INSET + 2 * ICON + FILTER_ICON_GAP : showsSort ? SORT_ICON_INSET + ICON : 0;
       g.save();
       g.beginPath();
-      g.rect(Math.max(x, gutter), 0, this.widths[column] - PADDING / 2 - markWidth, HEADER_HEIGHT);
+      g.rect(Math.max(x, gutter), 0, Math.max(0, this.widths[column] - PADDING / 2 - iconsWidth), HEADER_HEIGHT);
       g.clip();
-      g.fillStyle = this.filtered.has(column) || this.filtered.has(null) ? colors.cursor : colors.headerText;
+      g.fillStyle = colors.headerText;
       g.fillText(this.title(column), x + PADDING, HEADER_HEIGHT / 2);
       g.restore();
-      if (mark) {
-        g.fillStyle = colors.cursor;
-        g.textAlign = "right";
-        g.fillText(mark, x + this.widths[column] - PADDING, HEADER_HEIGHT / 2);
-        g.textAlign = "left";
-      }
+      if (showsSort) this.drawSortIcon(right - SORT_ICON_INSET - ICON, sort, sort ? colors.cursor : colors.muted);
+      if (showsFilter) this.drawFilterIcon(this.filterIconX(column), this.isFiltered(column) ? colors.cursor : colors.muted);
     }
     g.fillStyle = colors.header;
     g.fillRect(0, 0, gutter, HEADER_HEIGHT);

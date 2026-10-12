@@ -816,6 +816,13 @@
     filterBar?.addRule(rule);
   }
 
+  /** Opens the filter bar with a condition for the column whose filter icon was clicked. */
+  async function filterColumn(column: number) {
+    filtering = true;
+    await tick();
+    await filterBar?.beginRule(column);
+  }
+
   async function reorderRows() {
     if (changeable()) await keepingRow(() => doc.run("apply_sort"));
   }
@@ -1435,6 +1442,7 @@
     grid.onPaste = (text) => void paste(text);
     grid.onMenu = openMenu;
     grid.onHeader = headerClick;
+    grid.onFilterIcon = (column) => void filterColumn(column);
     grid.onSelect = (selected) => {
       selection = selected;
       void measure(selected);

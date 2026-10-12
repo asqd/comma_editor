@@ -1,7 +1,7 @@
 <!-- Filter conditions, all of which a row meets to show, as FilterBarView in the macOS app.
      Typing applies after a pause, choices at once; removing the last condition empties it. -->
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import type { FilterOp, FilterRule } from "./lib/api";
   import { L } from "./lib/i18n";
 
@@ -71,6 +71,24 @@
     now();
   }
 
+  let bar: HTMLElement;
+
+  /**
+   * A condition for a column, from its title's filter icon (FilterBarView.beginRule): the
+   * first empty condition takes the column, or a new one; its value gets the focus.
+   */
+  export async function beginRule(column: number) {
+    let index = conditions.findIndex((condition) => condition.value === "" && !valueless(condition.op));
+    if (index < 0) {
+      conditions.push({ ...blank(), column });
+      index = conditions.length - 1;
+    } else {
+      conditions[index].column = column;
+    }
+    await tick();
+    bar.querySelectorAll<HTMLInputElement>("input")[index]?.focus();
+  }
+
   /** Adds a condition from a cell's menu, replacing an empty one. */
   export function addRule(rule: FilterRule) {
     const empty = conditions.findIndex((condition) => condition.value === "" && !valueless(condition.op));
@@ -80,7 +98,7 @@
   }
 </script>
 
-<div class="bar">
+<div class="bar" bind:this={bar}>
   {#each conditions as condition, index (index)}
     <div class="row">
       <select bind:value={condition.column} onchange={now} aria-label={L("Column")}>
