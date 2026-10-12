@@ -422,7 +422,11 @@ impl Document {
             SheetStructure::ColumnsFixed => self.is_sheet(),
             _ => self.sheet_rows_fixed(),
         };
-        if fixed { Err(Error::SheetStructure(change)) } else { Ok(()) }
+        match &self.sheet {
+            Some(sheet) if fixed && sheet.pivot_table => Err(Error::SheetStructure(SheetStructure::PivotTable)),
+            _ if fixed => Err(Error::SheetStructure(change)),
+            _ => Ok(()),
+        }
     }
 
     /// Columns of a row whose cells hold a formula.
