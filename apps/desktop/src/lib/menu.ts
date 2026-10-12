@@ -12,7 +12,7 @@ export type Entry =
   | "-"
   | { title: string; entries: Entry[] }
   | { native: "Cut" | "Copy" | "Paste" | "Minimize" | "Maximize" | "Fullscreen" | "Hide" | "HideOthers" | "ShowAll" | "Services"; text?: string }
-  | { about: string; version: string; text: string };
+  | { about: string; version: string; text: string; website: string; websiteLabel: string; comments: string };
 
 function accelerator(shortcut: Shortcut): string {
   const keys: Record<string, string> = { ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" };
@@ -72,7 +72,10 @@ export class NativeMenu {
     if (entry === "-") return PredefinedMenuItem.new({ item: "Separator" });
     if (typeof entry === "object" && "native" in entry) return PredefinedMenuItem.new({ item: entry.native, text: entry.text });
     if (typeof entry === "object" && "about" in entry) {
-      return PredefinedMenuItem.new({ item: { About: { name: entry.about, version: entry.version } }, text: entry.text });
+      // macOS shows no website in its About window: the link goes into the credits there.
+      const { about: name, version, website, websiteLabel, comments } = entry;
+      const credits = `${websiteLabel}: ${website}`;
+      return PredefinedMenuItem.new({ item: { About: { name, version, website, websiteLabel, comments, credits } }, text: entry.text });
     }
     if (typeof entry === "object") return this.submenu(entry);
     const command = this.commands.get(entry);

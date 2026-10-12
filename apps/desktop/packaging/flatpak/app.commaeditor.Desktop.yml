@@ -1,0 +1,40 @@
+# CommaEditor as a Flatpak, made from the .deb of the same release: the Tauri app needs nothing
+# the GNOME runtime lacks (WebKitGTK 4.1, GTK 3). The release workflow builds it with the .deb it
+# has just built, put beside this file as commaeditor.deb. For Flathub the source becomes the
+# .deb's URL on the release page with its SHA-256 (see docs/RELEASE.md).
+app-id: app.commaeditor.Desktop
+runtime: org.gnome.Platform
+runtime-version: '47'
+sdk: org.gnome.Sdk
+command: commaeditor
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Files are opened by path from the file manager and the command line, and saved beside
+  # themselves; the file portal alone gives neither.
+  - --filesystem=home
+  - --filesystem=/media
+  - --filesystem=/run/media
+modules:
+  - name: commaeditor
+    buildsystem: simple
+    sources:
+      - type: file
+        path: commaeditor.deb
+      - type: file
+        path: ../linux/app.commaeditor.Desktop.metainfo.xml
+    build-commands:
+      - ar x commaeditor.deb
+      - tar -xf data.tar.*
+      - install -Dm755 usr/bin/commaeditor /app/bin/commaeditor
+      # The desktop file and the icons take the app's id, as Flatpak wants.
+      - install -Dm644 usr/share/applications/*.desktop /app/share/applications/app.commaeditor.Desktop.desktop
+      - desktop-file-edit --set-icon=app.commaeditor.Desktop --set-key=Exec --set-value='commaeditor %F' /app/share/applications/app.commaeditor.Desktop.desktop
+      - |
+        for icon in usr/share/icons/hicolor/*/apps/*.png; do
+          size=$(basename "$(dirname "$(dirname "$icon")")")
+          install -Dm644 "$icon" "/app/share/icons/hicolor/$size/apps/app.commaeditor.Desktop.png"
+        done
+      - install -Dm644 app.commaeditor.Desktop.metainfo.xml /app/share/metainfo/app.commaeditor.Desktop.metainfo.xml

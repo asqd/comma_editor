@@ -1,6 +1,6 @@
 APP := build/DerivedData/Build/Products/Debug/CommaEditor.app
 
-.PHONY: test core xcodeproj app run icon release desktop desktop-build clean
+.PHONY: test core xcodeproj app run icon release desktop desktop-build desktop-release version clean
 
 # Rust tests: parsing, detection, byte-exact round-trips, editing, undo.
 test:
@@ -33,10 +33,19 @@ release:
 desktop:
 	cd apps/desktop && { [ -d node_modules ] || npm ci; } && npx tauri dev
 
-# Release build of the desktop app, without installers yet:
+# Release build of the desktop app, without installers:
 # apps/desktop/src-tauri/target/release/commaeditor
 desktop-build:
 	cd apps/desktop && { [ -d node_modules ] || npm ci; } && npx tauri build --no-bundle
+
+# Installers of the desktop app for this system, with their SHA-256, in build/desktop:
+# a universal DMG on macOS, an NSIS installer on Windows, an AppImage and a .deb on Linux.
+desktop-release:
+	./scripts/desktop-release.sh
+
+# The version of every build; `make version VERSION=1.1.0` sets it.
+version:
+	./scripts/version.sh $(VERSION)
 
 clean:
 	cargo clean

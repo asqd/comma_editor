@@ -5,6 +5,9 @@ export const mac = navigator.userAgent.includes("Mac");
 /** The app's name: CommaEditor W on a Mac, to tell it from the native CommaEditor there. */
 export const appName = mac ? "CommaEditor W" : "CommaEditor";
 
+/** Where new versions are, for the About window: there is no automatic update. */
+export const downloadPage = "https://github.com/asqd/comma_editor/releases/latest";
+
 export interface Shortcut {
   /** `KeyboardEvent.key` for named keys (ArrowUp, Backspace), the letter for letters. */
   key: string;

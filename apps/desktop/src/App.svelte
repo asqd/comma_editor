@@ -38,7 +38,7 @@
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
   import { readClipboard, writeClipboard, writeClipboardHtml } from "./lib/clipboard";
-  import { appName, shortcutLabel } from "./lib/keys";
+  import { appName, downloadPage, shortcutLabel } from "./lib/keys";
   import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
   import Toolbar, { type ToolbarItem } from "./Toolbar.svelte";
   import { Commands, fieldFocused, labelOf, type Command } from "./lib/commands";
@@ -2213,10 +2213,18 @@
       "compare",
     ];
     if (!mac) file.push("-", "quit");
+    const about: Entry = {
+      about: appName,
+      version: __APP_VERSION__,
+      text: L("About %@", appName),
+      website: downloadPage,
+      websiteLabel: L("Download page"),
+      comments: L("An editor of CSV files and Excel workbooks that keeps files as they were"),
+    };
     const app = {
       title: appName,
       entries: [
-        { about: appName, version: __APP_VERSION__, text: L("About %@", appName) },
+        about,
         "-",
         { native: "Services", text: L("Services") },
         "-",
@@ -2332,6 +2340,9 @@
         title: L("Window"),
         entries: [{ native: "Minimize", text: L("Minimize") }, { native: "Maximize", text: L("Zoom") }, "-", { native: "Fullscreen", text: L("Enter Full Screen") }],
       });
+    } else {
+      // Windows and Linux have no menu of the app: About is under Help, as there.
+      menus.push({ title: L("Help"), entries: [about] });
     }
     return menus;
   }

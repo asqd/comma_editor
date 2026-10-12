@@ -25,6 +25,8 @@ const desktop: Record<string, string> = {
   "Nothing to fix": "Исправлять нечего",
   "Discard": "Удалить",
   "CSV and Excel": "CSV и Excel",
+  "Download page": "Страница загрузки",
+  "An editor of CSV files and Excel workbooks that keeps files as they were": "Редактор CSV и книг Excel, который не портит файлы",
   // What AppKit says for the macOS app.
   "Do you want to save the changes made to the document “%@”?": "Сохранить изменения в документе «%@»?",
   "Your changes will be lost if you don’t save them.": "Если не сохранить их, изменения будут потеряны.",

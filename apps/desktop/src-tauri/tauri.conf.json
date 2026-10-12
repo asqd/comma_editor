@@ -26,12 +26,107 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "CommaEditor",
+    "homepage": "https://github.com/asqd/comma_editor",
+    "category": "Productivity",
+    "shortDescription": "An editor of CSV files and Excel workbooks that keeps files as they were",
+    "longDescription": "CommaEditor opens CSV, TSV and Excel files of any size and saves them changed only where you changed them: quotes, encoding, line endings and the order of fields stay as they were. Sort, filter, clean up columns, repair broken rows, compare two files and edit Excel workbooks with their formulas.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "csv"
+        ],
+        "name": "CSV Document",
+        "description": "Comma-separated values",
+        "role": "Editor",
+        "rank": "Alternate",
+        "mimeType": "text/csv",
+        "contentTypes": [
+          "public.comma-separated-values-text"
+        ]
+      },
+      {
+        "ext": [
+          "tsv",
+          "tab"
+        ],
+        "name": "TSV Document",
+        "description": "Tab-separated values",
+        "role": "Editor",
+        "rank": "Alternate",
+        "mimeType": "text/tab-separated-values",
+        "contentTypes": [
+          "public.tab-separated-values-text",
+          "public.utf8-tab-separated-values-text"
+        ]
+      },
+      {
+        "ext": [
+          "xlsx"
+        ],
+        "name": "Excel Workbook",
+        "description": "Excel workbook",
+        "role": "Editor",
+        "rank": "Alternate",
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "contentTypes": [
+          "org.openxmlformats.spreadsheetml.sheet"
+        ]
+      },
+      {
+        "ext": [
+          "xlsm"
+        ],
+        "name": "Excel Macro-Enabled Workbook",
+        "description": "Excel workbook with macros",
+        "role": "Editor",
+        "rank": "Alternate",
+        "mimeType": "application/vnd.ms-excel.sheet.macroEnabled.12",
+        "contentTypes": [
+          "org.openxmlformats.spreadsheetml.sheet.macroenabled"
+        ]
+      },
+      {
+        "ext": [
+          "xls"
+        ],
+        "name": "Excel 97-2003 Workbook",
+        "description": "Excel 97-2003 workbook, opened for viewing",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "application/vnd.ms-excel",
+        "contentTypes": [
+          "com.microsoft.excel.xls"
+        ]
+      }
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "English",
+          "Russian"
+        ],
+        "displayLanguageSelector": false
+      }
+    },
+    "linux": {
+      "deb": {
+        "section": "editors"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }
