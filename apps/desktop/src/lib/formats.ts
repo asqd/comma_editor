@@ -1,7 +1,7 @@
 // Encodings and delimiters a file can be read with, named as the macOS app names them
 // (CSVDocument.encodingName and delimiterName).
 
-import type { TextEncoding } from "./api";
+import type { TextEncoding, ValueKind } from "./api";
 import { L } from "./i18n";
 
 export const encodings: TextEncoding[] = [
@@ -47,4 +47,16 @@ export function delimiterName(delimiter: string): string {
     "|": L("Vertical Bar ( | )"),
   };
   return names[delimiter] ?? delimiter;
+}
+
+/** What a column holds, as the profile names it (ColumnProfileView.kindName). */
+export function kindName(kind: ValueKind): string {
+  return {
+    empty: L("Empty column"),
+    integer: L("Whole numbers"),
+    decimal: L("Numbers"),
+    date: L("Dates"),
+    boolean: L("Yes or no"),
+    text: L("Text"),
+  }[kind];
 }

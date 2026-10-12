@@ -164,3 +164,24 @@ export interface FilePreview {
   columnCount: number;
   detectionConfident: boolean;
 }
+
+export type ValueKind = "empty" | "integer" | "decimal" | "date" | "boolean" | "text";
+
+export interface ColumnProfile {
+  kind: ValueKind;
+  total: number;
+  empty: number;
+  unique: number;
+  /** Values not of the column's kind. */
+  mismatched: number;
+  /** Values with spaces around them. */
+  padded: number;
+  min: string | null;
+  max: string | null;
+  mean: number | null;
+  median: number | null;
+  minLength: number;
+  maxLength: number;
+  topValues: { value: string; count: number }[];
+  histogram: number[];
+}

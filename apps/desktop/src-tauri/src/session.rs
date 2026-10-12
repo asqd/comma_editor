@@ -14,7 +14,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use comma_ffi::{
-    CellPosition, CellRange, CoreDocument, CoreError, EditJob, EditRequest, ExportFormat, FilePreview, LineEnding, RangeStats,
+    CellPosition, CellRange, ColumnProfile, CoreDocument, CoreError, EditJob, EditRequest, ExportFormat, FilePreview, Issue,
+    LineEnding, RangeStats, ValueKind,
     SaveFormat, SearchQuery, TextEncoding, ViewJob, ViewSpec,
 };
 use serde::de::DeserializeOwned;
@@ -339,6 +340,27 @@ struct ReplaceInCell {
 struct ReplaceAll {
     query: SearchQuery,
     replacement: String,
+}
+
+#[derive(Deserialize)]
+struct Column {
+    column: u64,
+}
+
+#[derive(Deserialize)]
+struct FindIssue {
+    column: u64,
+    issue: Issue,
+    kind: ValueKind,
+    after: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct IssueMarks {
+    start: u64,
+    count: u64,
+    column: u64,
+    kind: ValueKind,
 }
 
 #[derive(Deserialize)]
@@ -701,6 +723,37 @@ impl Sessions {
                 let ExportText { format, range, name } = args(args_)?;
                 let bytes = document.export(format, range, name, true)?;
                 reply(String::from_utf8_lossy(&bytes))
+            }
+            // The column profile.
+            "profile" => {
+                let Column { column } = args(args_)?;
+                let profile: ColumnProfile = document.profile_column(column)?;
+                reply(profile)
+            }
+            "find_issue" => {
+                // The next visible row after `after` whose value in the column is the issue.
+                let FindIssue { column, issue, kind, after } = args(args_)?;
+                reply(document.find_issue(column, issue, kind, after))
+            }
+            "issue_marks" => {
+                // For each of `count` visible rows from `start`: 1 when its value is not of the
+                // column's kind, 2 when spaces surround it, 0 when it is fine.
+                let IssueMarks { start, count, column, kind } = args(args_)?;
+                let marks: Vec<u8> = document
+                    .visible_rows(start, count)
+                    .iter()
+                    .map(|row| {
+                        let value = row.get(column as usize).map(String::as_str).unwrap_or("");
+                        if !comma_ffi::kind_fits(comma_ffi::classify_value(value.to_owned()), kind) {
+                            1
+                        } else if !value.is_empty() && value.trim() != value {
+                            2
+                        } else {
+                            0
+                        }
+                    })
+                    .collect();
+                reply(marks)
             }
             _ => Err(Failure::message(format!("unknown command {command}"))),
         }

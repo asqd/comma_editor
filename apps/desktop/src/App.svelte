@@ -5,7 +5,7 @@
   import { open, save as chooseSavePath } from "@tauri-apps/plugin-dialog";
   import { Grid, type TableSource } from "./grid/Grid";
   import { formatBench, runBench } from "./grid/bench";
-  import { call, CoreFailure, inTauri, type EditResult, type TextEncoding, type FilterRule, type RangeStats, type SaveFormat, type SortKey, type Status, type ViewSpec } from "./lib/api";
+  import { call, CoreFailure, inTauri, type ColumnProfile, type EditResult, type TextEncoding, type FilterRule, type RangeStats, type SaveFormat, type SortKey, type Status, type ViewSpec } from "./lib/api";
   import { Selection, type Cell } from "./grid/selection";
   import { CellEditor, type Move } from "./grid/editor";
   import CellSheet from "./CellSheet.svelte";
@@ -14,7 +14,8 @@
   import FindBar from "./FindBar.svelte";
   import FilterBar from "./FilterBar.svelte";
   import OpenOptions from "./OpenOptions.svelte";
-  import { delimiterName, delimiters, encodingName, encodings } from "./lib/formats";
+  import ProfilePanel from "./ProfilePanel.svelte";
+  import { delimiterName, delimiters, encodingName, encodings, kindName } from "./lib/formats";
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
@@ -46,6 +47,12 @@
     checkbox?: string;
     answer: (value: string, text: string, checked: boolean) => void;
   } | null>(null);
+  /** The panel at the right of the table, as in the macOS app. */
+  let panel = $state<"profile" | null>(null);
+  let profile = $state.raw<ColumnProfile | null>(null);
+  let profiling = $state(false);
+  let profiledColumn = $state<number | null>(null);
+  let profiledName = $state("");
   /** What the background change in progress does, for the status bar. */
   let editing = $state("");
   /** The format of a file being saved, asked before the file is chosen. */
@@ -80,6 +87,7 @@
     grid.setView(status.view);
     void showTitle(status);
     if (previous?.change !== status.change || previous?.dirty !== status.dirty) keepDraft();
+    if (previous?.change !== status.change || JSON.stringify(previous?.view) !== JSON.stringify(status.view)) refreshProfile();
   });
 
   /** Writes the draft a few seconds after the last change, or removes it once saved. */
@@ -816,6 +824,80 @@
     filterBar?.addRule(rule);
   }
 
+  // The column profile (GridViewController+Profile.swift).
+
+  let profileAsked = 0;
+  let profileTimer = 0;
+
+  /** Profiles the active column after a pause; the newest request wins. */
+  function refreshProfile() {
+    clearTimeout(profileTimer);
+    if (panel !== "profile") return;
+    profileTimer = window.setTimeout(async () => {
+      const column = grid?.selection?.cursor.column ?? 0;
+      if (!doc.status || doc.status.columns === 0) return;
+      const asked = ++profileAsked;
+      profiling = true;
+      try {
+        const result = await call<ColumnProfile>("profile", { column });
+        if (asked !== profileAsked || panel !== "profile") return;
+        profile = result;
+        profiledColumn = column;
+        profiledName = grid?.title(column) ?? "";
+        markIssues(column, result);
+      } catch {
+        if (asked === profileAsked) profile = null;
+      } finally {
+        if (asked === profileAsked) profiling = false;
+      }
+    }, 150);
+  }
+
+  /** Marks the profiled column's problem cells in the table while the profile shows. */
+  function markIssues(column: number, profile: ColumnProfile) {
+    grid?.setMarker({
+      column,
+      fetch: (start, count) => call<number[]>("issue_marks", { start, count, column, kind: profile.kind }),
+      describe: (mark) => (mark === 1 ? L("Not %@", kindName(profile.kind).toLowerCase()) : L("Spaces around the value")),
+    });
+  }
+
+  function toggleProfile() {
+    if (panel === "profile") {
+      panel = null;
+      profile = null;
+      profiledColumn = null;
+      grid?.setMarker(null);
+      grid?.focus();
+    } else {
+      panel = "profile";
+      refreshProfile();
+    }
+  }
+
+  /** Selects the next cell after the active row with the problem. */
+  async function showIssue(issue: "mismatch" | "padding") {
+    if (profiledColumn === null || !profile) return;
+    const after = grid?.selection?.cursor.row ?? null;
+    const row = await call<number | null>("find_issue", { column: profiledColumn, issue, kind: profile.kind, after });
+    if (row !== null) grid?.select(Selection.at({ row, column: profiledColumn }));
+  }
+
+  function trimProfiled() {
+    const rows = doc.status?.rows ?? 0;
+    if (profiledColumn === null || rows === 0) return;
+    const range = { top: 0, left: profiledColumn, bottom: rows - 1, right: profiledColumn };
+    void change(L("Changing text…"), { transform: { range, transform: "trim" } });
+  }
+
+  async function filterValue(value: string) {
+    if (profiledColumn === null) return;
+    const rule: FilterRule = { column: profiledColumn, op: value === "" ? "isEmpty" : "equals", value, caseSensitive: true };
+    filtering = true;
+    await tick();
+    filterBar?.addRule(rule);
+  }
+
   /** Opens the filter bar with a condition for the column whose filter icon was clicked. */
   async function filterColumn(column: number) {
     filtering = true;
@@ -1168,6 +1250,14 @@
       { id: "fixGarbled", label: L("Fix Garbled Text"), enabled: () => idle(), run: () => void fixGarbled() },
       { id: "removeDuplicates", label: L("Remove Duplicate Rows…"), enabled: () => idle() && hasSelection(), run: () => void removeDuplicates() },
       {
+        id: "toggleProfile",
+        label: () => (panel === "profile" ? L("Hide Column Profile") : L("Show Column Profile")),
+        shortcut: { key: "p", command: true, alt: true },
+        inFields: true,
+        enabled: () => (doc.status?.columns ?? 0) > 0,
+        run: toggleProfile,
+      },
+      {
         id: "bench",
         label: "Scroll Bench",
         shortcut: { key: "b", command: true, shift: true, alt: true },
@@ -1279,6 +1369,7 @@
         "removeDuplicates",
       ] as Entry[],
     });
+    menus.push({ title: L("View"), entries: ["toggleProfile"] as Entry[] });
     if (mac) {
       menus.unshift(app);
       menus.push({
@@ -1305,6 +1396,7 @@
     void selection;
     void finding;
     void filtering;
+    void panel;
     void installed?.refresh();
   });
 
@@ -1340,6 +1432,7 @@
     void doc.status;
     void selection;
     void filtering;
+    void panel;
     const enabled = (id: string) => commands.get(id)?.enabled?.() ?? true;
     const view = doc.status?.view;
     return [
@@ -1404,6 +1497,15 @@
         enabled: doc.open,
         menu: () => menuOf(["exportExcel", "exportCopy", "-", "exportAs:json", "exportAs:markdown", "exportAs:html", "exportAs:sql", "exportAs:xlsx"]),
       },
+      {
+        id: "profile",
+        label: L("Profile"),
+        tooltip: tip("Column profile: type, statistics, problems (⌥⌘P)", "toggleProfile"),
+        icon: "profile",
+        enabled: (doc.status?.columns ?? 0) > 0,
+        active: panel === "profile",
+        run: toggleProfile,
+      },
     ];
   });
   const idleOrView = () => !!doc.status && doc.status.indexing === null && doc.status.job?.kind !== "edit";
@@ -1444,8 +1546,10 @@
     grid.onHeader = headerClick;
     grid.onFilterIcon = (column) => void filterColumn(column);
     grid.onSelect = (selected) => {
+      const column = selection?.cursor.column;
       selection = selected;
       void measure(selected);
+      if (selected && selected.cursor.column !== column) refreshProfile();
     };
     const parameters = new URLSearchParams(location.search);
     if (inTauri) {
@@ -1517,6 +1621,7 @@
       close={toggleFilter}
     />
   {/if}
+  <div class="body">
   <main class="table" bind:this={host}>
     {#if !doc.open}
       <div class="empty">
@@ -1528,6 +1633,17 @@
       </div>
     {/if}
   </main>
+  {#if panel === "profile"}
+    <ProfilePanel
+      name={profiledName}
+      {profile}
+      loading={profiling}
+      {showIssue}
+      trim={trimProfiled}
+      {filterValue}
+    />
+  {/if}
+  </div>
   <footer class="status">
     <span class="info">{doc.problem || status}</span>
     {#if busy}
@@ -1635,9 +1751,16 @@
     border-bottom: 1px solid var(--border);
   }
 
+  .body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
   .table {
     position: relative;
     flex: 1;
+    min-width: 0;
     min-height: 0;
     overflow: hidden;
     background: var(--grid-background);

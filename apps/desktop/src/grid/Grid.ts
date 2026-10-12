@@ -61,6 +61,17 @@ interface Colors {
   selection: string;
   cursor: string;
   selectedHeader: string;
+  issue: string;
+}
+
+/**
+ * Cells of one column marked as problems while the column profile is open: a mark per visible
+ * row, 0 for none, and what each mark means for the cell's tooltip.
+ */
+export interface Marker {
+  column: number;
+  fetch(start: number, count: number): Promise<number[]>;
+  describe(mark: number): string;
 }
 
 /** What is under a point of the grid. */
@@ -133,6 +144,9 @@ export class Grid {
   /** A drag selecting cells or rows, and where the pointer last was. */
   private drag: { rows: boolean; x: number; y: number; frame: number } | null = null;
 
+  private marker: Marker | null = null;
+  /** Marks of the marker's column, by block of rows. */
+  private readonly marks = new Map<number, number[]>();
   private readonly blocks = new Map<number, string[][]>();
   private readonly pending = new Set<number>();
   private queue: number[] = [];
@@ -214,9 +228,36 @@ export class Grid {
     this.focus();
   }
 
+  /** Marks problem cells of a column, or stops marking them. */
+  setMarker(marker: Marker | null): void {
+    this.marker = marker;
+    this.marks.clear();
+    this.generation += 1;
+    for (const block of this.blocks.keys()) this.fetchMarks(block, this.generation);
+    this.invalidate();
+  }
+
+  private fetchMarks(block: number, generation: number): void {
+    const marker = this.marker;
+    if (!marker) return;
+    marker
+      .fetch(block * BLOCK, BLOCK)
+      .then((marks) => {
+        if (generation !== this.generation || marker !== this.marker) return;
+        this.marks.set(block, marks);
+        this.invalidate();
+      })
+      .catch(() => {});
+  }
+
+  private mark(row: number): number {
+    return this.marks.get(Math.floor(row / BLOCK))?.[row % BLOCK] ?? 0;
+  }
+
   /** The rows changed: an edit, undo, sort or filter. Keeps the place and the column widths. */
   reload(): void {
     this.generation += 1;
+    this.marks.clear();
     this.blocks.clear();
     this.pending.clear();
     this.queue = [];
@@ -564,6 +605,9 @@ export class Grid {
   private pointerMove(event: PointerEvent): void {
     if (!this.drag) {
       const hit = this.hit(event.clientX, event.clientY);
+      const mark = hit.area === "cell" && this.marker && hit.column === this.marker.column ? this.mark(hit.row) : 0;
+      const tip = mark ? this.marker!.describe(mark) : "";
+      if (this.scroller.title !== tip) this.scroller.title = tip;
       const hovered = hit.area === "header" ? hit.column : null;
       if (hovered !== this.hovered) {
         this.hovered = hovered;
@@ -675,6 +719,7 @@ export class Grid {
           if (generation !== this.generation) return;
           this.stats.fetch(performance.now() - started);
           this.blocks.set(block, rows);
+          this.fetchMarks(block, generation);
           if (block === 0 && !this.measured) this.measure(rows);
           this.evict(block);
           this.invalidate();
@@ -693,7 +738,10 @@ export class Grid {
   private evict(near: number): void {
     if (this.blocks.size <= MAX_BLOCKS) return;
     const far = [...this.blocks.keys()].sort((a, b) => Math.abs(b - near) - Math.abs(a - near));
-    for (const block of far.slice(0, this.blocks.size - MAX_BLOCKS)) this.blocks.delete(block);
+    for (const block of far.slice(0, this.blocks.size - MAX_BLOCKS)) {
+      this.blocks.delete(block);
+      this.marks.delete(block);
+    }
   }
 
   /** Fits the columns to their titles and the first rows, once per table. */
@@ -760,6 +808,7 @@ export class Grid {
       selection: color("--grid-selection"),
       cursor: color("--accent"),
       selectedHeader: color("--grid-selected-header"),
+      issue: color("--grid-issue"),
     };
   }
 
@@ -858,6 +907,15 @@ export class Grid {
         for (let column = firstColumn; column <= lastColumn && this.widths.length > 0; column += 1) {
           g.fillRect(columnX(column) + PADDING, y + 8, Math.min(this.widths[column] - 2 * PADDING, 48), ROW_HEIGHT - 16);
         }
+      }
+    }
+
+    // Problem cells of the profiled column.
+    const marked = this.marker?.column;
+    if (marked !== undefined && marked < this.widths.length) {
+      g.fillStyle = colors.issue;
+      for (let i = 0; i < count; i += 1) {
+        if (this.mark(first + i)) g.fillRect(columnX(marked), shift + i * ROW_HEIGHT, this.widths[marked], ROW_HEIGHT);
       }
     }
 

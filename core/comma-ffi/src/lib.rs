@@ -595,7 +595,7 @@ impl From<core::CellRange> for CellRange {
     }
 }
 
-#[derive(uniffi::Enum)]
+#[derive(uniffi::Enum, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum ValueKind {
     Empty,
@@ -632,7 +632,7 @@ impl From<ValueKind> for core::ValueKind {
     }
 }
 
-#[derive(uniffi::Enum)]
+#[derive(uniffi::Enum, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize), serde(rename_all = "camelCase", rename_all_fields = "camelCase"))]
 pub enum Issue {
     Mismatch,
