@@ -2,8 +2,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-/** The file named on the command line, and whether `--bench` asks to time it and quit. */
-export function launch(): Promise<{ path: string | null; bench: boolean }> {
+/**
+ * The files named on the command line or handed over before the first window was ready, and
+ * whether `--bench` asks to time the first and quit.
+ */
+export function launch(): Promise<{ paths: string[]; bench: boolean }> {
   return invoke("launch");
 }
 

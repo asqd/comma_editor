@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { open, save as chooseSavePath } from "@tauri-apps/plugin-dialog";
   import { Grid, type TableSource } from "./grid/Grid";
   import { formatBench, runBench } from "./grid/bench";
@@ -16,12 +17,16 @@
   import { describe } from "./lib/errors";
   import { L, count, locale } from "./lib/i18n";
   import { readClipboard, writeClipboard } from "./lib/clipboard";
-  import { shortcutLabel, type Shortcut } from "./lib/keys";
+  import { shortcutLabel } from "./lib/keys";
   import ContextMenu, { type MenuItem } from "./ContextMenu.svelte";
+  import { Commands, fieldFocused, type Command } from "./lib/commands";
+  import { NativeMenu, type Entry } from "./lib/menu";
+  import { addRecent, clearRecent, recentFiles } from "./lib/recent";
+  import { focusWindowFor, newWindow, quit } from "./lib/windows";
   import type { CellRange } from "./lib/api";
 
   const mac = navigator.userAgent.includes("Mac");
-  const openShortcut = mac ? "⌘O" : "Ctrl+O";
+  const openShortcut = shortcutLabel({ key: "o", command: true });
 
   let host: HTMLElement;
   let grid: Grid | null = null;
@@ -151,6 +156,8 @@
     try {
       await doc.run("open", { path });
       openSeconds = (performance.now() - started) / 1000;
+      addRecent(path);
+      void installMenu();
       return true;
     } catch (error) {
       failure = describe(error);
@@ -169,7 +176,31 @@
           ],
         })
       : await askText(L("Open…"), doc.status?.path ?? "", L("Open"));
-    if (path) await show(path);
+    if (path) await openPaths([path]);
+  }
+
+  /**
+   * Opens files: one shown in another window brings it forward, the first goes into this window
+   * while it has no document, the others into windows of their own.
+   */
+  async function openPaths(paths: string[]) {
+    for (const path of paths) {
+      if (await focusWindowFor(path).catch(() => false)) continue;
+      if (!doc.open && !opening) {
+        opening = true;
+        await show(path);
+        opening = false;
+      } else {
+        newWindow(path);
+      }
+    }
+  }
+  let opening = false;
+
+  /** A new document: in this window while it has none, in a new one otherwise. */
+  async function newDocument() {
+    if (doc.open) newWindow(null);
+    else await doc.attempt(() => doc.run("new"));
   }
 
   async function bench(): Promise<string> {
@@ -252,6 +283,8 @@
     if (!path) return false;
     try {
       await doc.run("save_as", { path, format });
+      addRecent(path);
+      void installMenu();
       return true;
     } catch (error) {
       await report(error);
@@ -508,7 +541,6 @@
     if (changeable()) await keepingRow(() => doc.run("apply_sort"));
   }
 
-  const keys = (shortcut: Shortcut) => shortcutLabel(shortcut);
 
   /** The menus of a cell and of a column's title (GridViewController+View.swift). */
   function openMenu(target: { area: "cell"; cell: Cell } | { area: "header"; column: number }, x: number, y: number) {
@@ -532,9 +564,9 @@
           null,
           { label: L("Rename Column…"), disabled: busy || !status.hasHeader, run: () => void renameColumn(column) },
           null,
-          { label: L("Insert Column Left"), shortcut: keys({ key: "ArrowLeft", command: true, alt: true }), disabled: busy, run: () => void insertColumn(false) },
-          { label: L("Insert Column Right"), shortcut: keys({ key: "ArrowRight", command: true, alt: true }), disabled: busy, run: () => void insertColumn(true) },
-          { label: L("Delete Column"), shortcut: keys({ key: "Backspace", command: true, alt: true }), disabled: busy || status.columns < 2, run: () => void deleteColumn() },
+          { label: L("Insert Column Left"), shortcut: shortcutOf("insertColumnLeft"), disabled: busy, run: () => void insertColumn(false) },
+          { label: L("Insert Column Right"), shortcut: shortcutOf("insertColumnRight"), disabled: busy, run: () => void insertColumn(true) },
+          { label: L("Delete Column"), shortcut: shortcutOf("deleteColumn"), disabled: busy || status.columns < 2, run: () => void deleteColumn() },
           null,
           { label: L("First Row Is Header"), checked: status.hasHeader, disabled: busy, run: () => void toggleHeader() },
         ],
@@ -553,88 +585,351 @@
         { label: short === "" ? L("Hide Empty") : L("Hide “%@”", short), run: () => void filterBy(cell, false) },
         null,
         { label: L("Edit Cell"), disabled: busy, run: () => void edit(cell) },
-        { label: L("Edit Cell in Window…"), shortcut: keys({ key: "e", command: true, alt: true }), disabled: busy, run: () => void edit(cell, undefined, true) },
+        { label: L("Edit Cell in Window…"), shortcut: shortcutOf("editInWindow"), disabled: busy, run: () => void edit(cell, undefined, true) },
         null,
-        { label: L("Cut"), shortcut: keys({ key: "x", command: true }), disabled: busy, run: () => void copy(true) },
-        { label: L("Copy"), shortcut: keys({ key: "c", command: true }), run: () => void copy(false) },
-        { label: L("Paste"), shortcut: keys({ key: "v", command: true }), disabled: busy, run: () => void readClipboard().then(paste) },
-        { label: L("Fill Down"), shortcut: keys({ key: "d", command: true }), disabled: busy, run: () => void fillDown() },
+        { label: L("Cut"), shortcut: shortcutLabel({ key: "x", command: true }), disabled: busy, run: () => void copy(true) },
+        { label: L("Copy"), shortcut: shortcutLabel({ key: "c", command: true }), run: () => void copy(false) },
+        { label: L("Paste"), shortcut: shortcutLabel({ key: "v", command: true }), disabled: busy, run: () => void readClipboard().then(paste) },
+        { label: L("Fill Down"), shortcut: shortcutOf("fillDown"), disabled: busy, run: () => void fillDown() },
         null,
-        { label: L("Insert Row Above"), shortcut: keys({ key: "ArrowUp", command: true, alt: true }), disabled: busy || view, run: () => void insertRow(false) },
-        { label: L("Insert Row Below"), shortcut: keys({ key: "ArrowDown", command: true, alt: true }), disabled: busy || view, run: () => void insertRow(true) },
-        { label: L("Delete Rows"), shortcut: keys({ key: "Backspace", command: true }), disabled: busy, run: () => void deleteRows() },
+        { label: L("Insert Row Above"), shortcut: shortcutOf("insertRowAbove"), disabled: busy || view, run: () => void insertRow(false) },
+        { label: L("Insert Row Below"), shortcut: shortcutOf("insertRowBelow"), disabled: busy || view, run: () => void insertRow(true) },
+        { label: L("Delete Rows"), shortcut: shortcutOf("deleteRows"), disabled: busy, run: () => void deleteRows() },
       ],
     };
   }
 
-  /** Keys that reach the grid itself and are not moves of the cursor. */
-  function gridKey(event: KeyboardEvent): boolean {
-    const command = mac ? event.metaKey : event.ctrlKey;
-    const cursor = grid?.selection?.cursor;
-    const key = event.key;
-    if (command && !event.altKey && key.toLowerCase() === "z") {
-      void undo(event.shiftKey);
-    } else if (!mac && event.ctrlKey && !event.shiftKey && !event.altKey && key.toLowerCase() === "y") {
-      void undo(true);
-    } else if (command && event.altKey && event.code === "KeyE") {
-      if (cursor) void edit(cursor, undefined, true);
-    } else if (command && event.altKey && (key === "ArrowUp" || key === "ArrowDown")) {
-      void insertRow(key === "ArrowDown");
-    } else if (command && event.altKey && (key === "ArrowLeft" || key === "ArrowRight")) {
-      void insertColumn(key === "ArrowRight");
-    } else if (command && event.altKey && key === "Backspace") {
-      void deleteColumn();
-    } else if (command && !event.altKey && !event.shiftKey && key === "Backspace") {
-      void deleteRows();
-    } else if (command && !event.altKey && !event.shiftKey && event.code === "KeyD") {
-      void fillDown();
-    } else if (!cursor) {
-      return false;
-    } else if (key === "Enter" && !command && !event.altKey && !event.shiftKey) {
-      void edit(cursor);
-    } else if ((key === "Delete" || key === "Backspace") && !command && !event.altKey) {
-      void clear();
-    } else {
-      return false;
+  const idle = () => !!doc.status && doc.status.indexing === null && !doc.status.job;
+  const hasSelection = () => !!grid?.selection;
+  /** The text field with the focus, for commands that act on its text there. */
+  const field = () => (fieldFocused() ? (document.activeElement as HTMLInputElement | HTMLTextAreaElement) : null);
+
+  function openFind(replacing: boolean) {
+    if (!doc.open) return;
+    if (finding && finding.replacing === replacing) findBar?.focus();
+    else finding = { replacing, selection: grid?.selection?.range ?? null };
+  }
+
+  /** Every command of the menus and the keyboard (MainMenu.swift). */
+  function commandList(): Command[] {
+    const status = () => doc.status;
+    const list: Command[] = [
+      { id: "new", label: L("New"), shortcut: { key: "n", command: true }, inFields: true, run: () => void newDocument() },
+      { id: "open", label: L("Open…"), shortcut: { key: "o", command: true }, inFields: true, run: () => void choose() },
+      { id: "clearRecent", label: L("Clear Menu"), enabled: () => recentFiles().length > 0, run: () => (clearRecent(), void installMenu()) },
+      {
+        id: "close",
+        label: L("Close"),
+        shortcut: { key: "w", command: true },
+        inFields: true,
+        enabled: () => inTauri,
+        run: () => void getCurrentWindow().close(),
+      },
+      { id: "save", label: L("Save…"), shortcut: { key: "s", command: true }, inFields: true, enabled: () => doc.open, run: () => void save() },
+      {
+        id: "saveAs",
+        label: L("Save As…"),
+        shortcut: { key: "s", command: true, shift: true },
+        inFields: true,
+        enabled: () => doc.open,
+        run: () => void saveAs(),
+      },
+      {
+        id: "quit",
+        label: L("Quit %@", "CommaEditor"),
+        shortcut: { key: "q", command: true },
+        inFields: true,
+        enabled: () => inTauri,
+        run: () => void quit(),
+      },
+      {
+        id: "undo",
+        label: L("Undo"),
+        shortcut: { key: "z", command: true },
+        inFields: true,
+        enabled: () => !!field() || (idle() && !!status()?.canUndo),
+        run: () => (field() ? document.execCommand("undo") : void undo(false)),
+      },
+      {
+        id: "redo",
+        label: L("Redo"),
+        shortcut: { key: "z", command: true, shift: true },
+        inFields: true,
+        enabled: () => !!field() || (idle() && !!status()?.canRedo),
+        run: () => (field() ? document.execCommand("redo") : void undo(true)),
+      },
+      { id: "clear", label: L("Delete"), enabled: () => idle() && hasSelection(), run: () => void clear() },
+      {
+        id: "selectAll",
+        label: L("Select All"),
+        shortcut: { key: "a", command: true },
+        inFields: true,
+        enabled: () => !!field() || doc.open,
+        run: () => {
+          const text = field();
+          if (text) text.select();
+          else if (grid && doc.status && doc.status.rows > 0)
+            grid.select(new Selection({ row: doc.status.rows - 1, column: doc.status.columns - 1 }, { row: 0, column: 0 }), false);
+        },
+      },
+      { id: "find", label: L("Find…"), shortcut: { key: "f", command: true }, inFields: true, enabled: () => doc.open, run: () => openFind(finding?.replacing ?? false) },
+      {
+        id: "findReplace",
+        label: L("Find and Replace…"),
+        shortcut: { key: "f", command: true, alt: true },
+        inFields: true,
+        enabled: () => doc.open,
+        run: () => openFind(true),
+      },
+      {
+        id: "findNext",
+        label: L("Find Next"),
+        shortcut: { key: "g", command: true },
+        inFields: true,
+        enabled: () => !!finding,
+        run: () => void findBar?.next(true),
+      },
+      {
+        id: "findPrevious",
+        label: L("Find Previous"),
+        shortcut: { key: "g", command: true, shift: true },
+        inFields: true,
+        enabled: () => !!finding,
+        run: () => void findBar?.next(false),
+      },
+      { id: "editCell", label: L("Edit Cell"), enabled: () => idle() && hasSelection(), run: () => void edit(grid!.selection!.cursor) },
+      {
+        id: "editInWindow",
+        label: L("Edit Cell in Window…"),
+        shortcut: { key: "e", command: true, alt: true },
+        enabled: () => idle() && hasSelection(),
+        run: () => void edit(grid!.selection!.cursor, undefined, true),
+      },
+      { id: "fillDown", label: L("Fill Down"), shortcut: { key: "d", command: true }, enabled: () => idle() && hasSelection(), run: () => void fillDown() },
+      {
+        id: "insertRowAbove",
+        label: L("Insert Row Above"),
+        shortcut: { key: "ArrowUp", command: true, alt: true },
+        enabled: () => idle() && !sortedOrFiltered(),
+        run: () => void insertRow(false),
+      },
+      {
+        id: "insertRowBelow",
+        label: L("Insert Row Below"),
+        shortcut: { key: "ArrowDown", command: true, alt: true },
+        enabled: () => idle() && !sortedOrFiltered(),
+        run: () => void insertRow(true),
+      },
+      {
+        id: "deleteRows",
+        label: L("Delete Rows"),
+        shortcut: { key: "Backspace", command: true },
+        enabled: () => idle() && hasSelection(),
+        run: () => void deleteRows(),
+      },
+      {
+        id: "insertColumnLeft",
+        label: L("Insert Column Left"),
+        shortcut: { key: "ArrowLeft", command: true, alt: true },
+        enabled: idle,
+        run: () => void insertColumn(false),
+      },
+      {
+        id: "insertColumnRight",
+        label: L("Insert Column Right"),
+        shortcut: { key: "ArrowRight", command: true, alt: true },
+        enabled: idle,
+        run: () => void insertColumn(true),
+      },
+      {
+        id: "deleteColumn",
+        label: L("Delete Column"),
+        shortcut: { key: "Backspace", command: true, alt: true },
+        enabled: () => idle() && hasSelection() && (status()?.columns ?? 0) > 1,
+        run: () => void deleteColumn(),
+      },
+      {
+        id: "renameColumn",
+        label: L("Rename Column…"),
+        enabled: () => idle() && hasSelection() && !!status()?.hasHeader,
+        run: () => void renameColumn(grid!.selection!.cursor.column),
+      },
+      {
+        id: "sortAscending",
+        label: L("Sort Ascending"),
+        enabled: hasSelection,
+        run: () => sortBy([{ column: grid!.selection!.cursor.column, ascending: true }]),
+      },
+      {
+        id: "sortDescending",
+        label: L("Sort Descending"),
+        enabled: hasSelection,
+        run: () => sortBy([{ column: grid!.selection!.cursor.column, ascending: false }]),
+      },
+      { id: "clearSort", label: L("Clear Sort"), enabled: () => (status()?.view.sort.length ?? 0) > 0, run: () => sortBy([]) },
+      {
+        id: "reorderRows",
+        label: L("Reorder Rows in File"),
+        enabled: () => idle() && (status()?.view.sort.length ?? 0) > 0 && (status()?.view.filters.length ?? 0) === 0,
+        run: () => void reorderRows(),
+      },
+      {
+        id: "toggleFilter",
+        label: () => (filtering ? L("Hide Filter") : L("Show Filter")),
+        shortcut: { key: "l", command: true, shift: true },
+        inFields: true,
+        enabled: () => doc.open,
+        run: toggleFilter,
+      },
+      {
+        id: "clearFilter",
+        label: L("Clear Filter"),
+        enabled: () => (status()?.view.filters.length ?? 0) > 0,
+        run: () => {
+          filtering = false;
+          setFilters([]);
+        },
+      },
+      {
+        id: "toggleHeader",
+        label: L("First Row Is Header"),
+        checked: () => !!status()?.hasHeader,
+        enabled: idle,
+        run: () => void toggleHeader(),
+      },
+      {
+        id: "bench",
+        label: "Scroll Bench",
+        shortcut: { key: "b", command: true, shift: true, alt: true },
+        enabled: () => doc.open,
+        run: () => void bench().then((text) => (benchText = text)),
+      },
+    ];
+    // Windows and Linux redo with Ctrl-Y too.
+    if (!mac) list.push({ ...list.find((command) => command.id === "redo")!, id: "redoY", shortcut: { key: "y", command: true } });
+    for (const [index, path] of recentFiles().entries()) {
+      list.push({ id: `recent:${index}`, label: `${name(path)} — ${path.slice(0, -name(path).length - 1)}`, run: () => void openPaths([path]) });
     }
+    return list;
+  }
+
+  let commands = new Commands(commandList());
+
+  /** The menu bar as MainMenu.swift lays it out, for the commands this app has so far. */
+  function menuEntries(): { title: string; entries: Entry[] }[] {
+    const recent: Entry[] = recentFiles().map((_, index) => `recent:${index}`);
+    const file: Entry[] = ["new", "open", { title: L("Open Recent"), entries: [...recent, ...(recent.length ? ["-"] : []), "clearRecent"] }, "-", "close", "save", "saveAs"];
+    if (!mac) file.push("-", "quit");
+    const app = {
+      title: "CommaEditor",
+      entries: [
+        { about: "CommaEditor Desktop", version: __APP_VERSION__, text: L("About %@", "CommaEditor") },
+        "-",
+        { native: "Services", text: L("Services") },
+        "-",
+        { native: "Hide", text: L("Hide %@", "CommaEditor") },
+        { native: "HideOthers", text: L("Hide Others") },
+        { native: "ShowAll", text: L("Show All") },
+        "-",
+        "quit",
+      ] as Entry[],
+    };
+    const menus = [
+      { title: L("File"), entries: file },
+      {
+        title: L("Edit"),
+        entries: [
+          "undo",
+          "redo",
+          "-",
+          { native: "Cut", text: L("Cut") },
+          { native: "Copy", text: L("Copy") },
+          { native: "Paste", text: L("Paste") },
+          "clear",
+          "selectAll",
+          "-",
+          { title: L("Find"), entries: ["find", "findReplace", "findNext", "findPrevious"] },
+        ] as Entry[],
+      },
+      {
+        title: L("Table"),
+        entries: [
+          "editCell",
+          "editInWindow",
+          "fillDown",
+          "-",
+          "insertRowAbove",
+          "insertRowBelow",
+          "deleteRows",
+          "-",
+          "insertColumnLeft",
+          "insertColumnRight",
+          "deleteColumn",
+          "renameColumn",
+          "-",
+          "sortAscending",
+          "sortDescending",
+          "clearSort",
+          "reorderRows",
+          "-",
+          "toggleFilter",
+          "clearFilter",
+          "toggleHeader",
+        ] as Entry[],
+      },
+    ];
+    if (mac) {
+      menus.unshift(app);
+      menus.push({
+        title: L("Window"),
+        entries: [{ native: "Minimize", text: L("Minimize") }, { native: "Maximize", text: L("Zoom") }, "-", { native: "Fullscreen", text: L("Enter Full Screen") }],
+      });
+    }
+    return menus;
+  }
+
+  /** Builds the menu bar again, as when the recent files change. */
+  async function installMenu() {
+    commands = new Commands(commandList());
+    if (!inTauri) return;
+    const menu = new NativeMenu(commands);
+    await menu.install(menuEntries());
+    installed = menu;
+  }
+  let installed: NativeMenu | null = null;
+
+  // The menu follows the document: what can be done and what is checked.
+  $effect(() => {
+    void doc.status;
+    void selection;
+    void finding;
+    void filtering;
+    void installed?.refresh();
+  });
+
+  const shortcutOf = (id: string) => {
+    const shortcut = commands.get(id)?.shortcut;
+    return shortcut ? shortcutLabel(shortcut) : undefined;
+  };
+
+  /** Keys that reach the grid itself and are neither moves of the cursor nor commands. */
+  function gridKey(event: KeyboardEvent): boolean {
+    const cursor = grid?.selection?.cursor;
+    const plain = !event.metaKey && !event.ctrlKey && !event.altKey;
+    if (!cursor || !plain) return false;
+    if (event.key === "Enter" && !event.shiftKey) void edit(cursor);
+    else if (event.key === "Delete" || event.key === "Backspace") void clear();
+    else return false;
     return true;
   }
 
   function keydown(event: KeyboardEvent) {
-    if (grid?.owns(event.target) && !event.isComposing && gridKey(event)) {
+    if (event.isComposing) return;
+    if (grid?.owns(event.target) && gridKey(event)) {
       event.preventDefault();
       return;
     }
-    const command = mac ? event.metaKey : event.ctrlKey;
-    if (command && event.code === "KeyF" && !event.shiftKey && doc.open) {
-      event.preventDefault();
-      const replacing = event.altKey || (finding?.replacing ?? false);
-      if (finding && finding.replacing === replacing) findBar?.focus();
-      else finding = { replacing, selection: grid?.selection?.range ?? null };
-      return;
-    }
-    if (command && event.shiftKey && !event.altKey && event.code === "KeyL" && doc.open) {
-      event.preventDefault();
-      toggleFilter();
-      return;
-    }
-    if (command && !event.altKey && event.code === "KeyG" && finding) {
-      event.preventDefault();
-      void findBar?.next(!event.shiftKey);
-      return;
-    }
-    if (command && !event.altKey && event.code === "KeyS" && doc.open) {
-      event.preventDefault();
-      void (event.shiftKey ? saveAs() : save());
-      return;
-    }
-    if (command && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "o") {
-      event.preventDefault();
-      void choose();
-    } else if (command && event.shiftKey && event.altKey && event.code === "KeyB") {
-      event.preventDefault();
-      void bench().then((text) => (benchText = text));
-    }
+    commands.key(event);
   }
 
   onMount(() => {
@@ -654,26 +949,36 @@
       selection = selected;
       void measure(selected);
     };
+    const parameters = new URLSearchParams(location.search);
     if (inTauri) {
-      void getCurrentWindow().onCloseRequested(async (event) => {
+      const window = getCurrentWindow();
+      void window.onCloseRequested(async (event) => {
         event.preventDefault();
-        if (await confirmClose()) await getCurrentWindow().destroy();
+        if (await confirmClose()) await window.destroy();
+      });
+      void installMenu();
+      // macOS has one menu bar: the window in front gives it its commands.
+      void window.onFocusChanged(({ payload: focused }) => {
+        if (focused) void installMenu();
+      });
+      void window.listen<string[]>("open-files", (event) => void openPaths(event.payload));
+      void getCurrentWebview().onDragDropEvent((event) => {
+        if (event.payload.type === "drop") void openPaths(event.payload.paths);
       });
     } else {
       addEventListener("beforeunload", (event) => {
         if (doc.status?.dirty) event.preventDefault();
       });
     }
-    if (inTauri) {
-      void import("./lib/bench-launch").then(({ launch }) =>
-        launch().then(({ path, bench }) => {
-          if (bench) void (path ? benchAndQuit(path) : import("./lib/bench-launch").then((m) => m.benchDone(false, "--bench: no file")));
-          else if (path) void show(path);
+    if (parameters.has("open")) void show(parameters.get("open")!);
+    else if (parameters.has("new")) void newDocument();
+    else if (inTauri) {
+      void import("./lib/bench-launch").then(({ launch, benchDone }) =>
+        launch().then(({ paths, bench }) => {
+          if (bench) void (paths[0] ? benchAndQuit(paths[0]) : benchDone(false, "--bench: no file"));
+          else void openPaths(paths);
         }),
       );
-    } else {
-      const path = new URLSearchParams(location.search).get("open");
-      if (path) void show(path);
     }
   });
 </script>

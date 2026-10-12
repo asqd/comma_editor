@@ -49,6 +49,7 @@ make icon     # перерисовать иконку из design/make-icon.swif
 make desktop        # запустить с перезагрузкой при правках
 make desktop-build  # Release-сборка: apps/desktop/src-tauri/target/release/commaeditor
 commaeditor --bench table.csv   # замер прокрутки: открыть, прокрутить, вывести время, выйти
+COMMA_LOG=1 commaeditor a.csv   # команды окон в stderr; ошибки интерфейса пишутся туда всегда
 ```
 
 Интерфейс можно открыть и в браузере, с настоящим ядром: мост для разработки отдаёт команды

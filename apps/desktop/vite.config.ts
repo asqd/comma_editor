@@ -1,11 +1,15 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { readFileSync } from "node:fs";
+
+const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")) as { version: string };
 
 // Tauri loads the dev server from a fixed port (not the usual 1420, which other Tauri apps
 // take) and shows its own errors, so Vite keeps both. In a browser, /core goes to the
 // development bridge (`comma-bridge`, see src-tauri/src/bin/bridge.rs).
 export default defineConfig({
   plugins: [svelte()],
+  define: { __APP_VERSION__: JSON.stringify(version) },
   clearScreen: false,
   server: {
     port: 1430,

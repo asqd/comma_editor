@@ -251,6 +251,11 @@ struct Preview {
 }
 
 #[derive(Deserialize)]
+struct FilePath {
+    path: String,
+}
+
+#[derive(Deserialize)]
 struct Span {
     start: u64,
     count: u64,
@@ -369,6 +374,19 @@ impl Sessions {
         };
     }
 
+    /// The window showing the file at `path`, if one does.
+    pub fn window_for(&self, path: &str) -> Option<String> {
+        let same = |a: &str| match (std::fs::canonicalize(a), std::fs::canonicalize(path)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => a == path,
+        };
+        let windows = self.windows.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        windows
+            .iter()
+            .find(|(_, session)| session.state().path.as_deref().is_some_and(same))
+            .map(|(window, _)| window.clone())
+    }
+
     /// Forgets the document of a window that closed.
     pub fn close(&self, window: &str) {
         self.set(window, None);
@@ -395,6 +413,10 @@ impl Sessions {
             "close" => {
                 self.set(window, None);
                 return Ok(Value::Null);
+            }
+            "window_for_path" => {
+                let FilePath { path } = args(args_)?;
+                return reply(self.window_for(&path));
             }
             "preview" => {
                 let Preview { path, encoding, delimiter, rows } = args(args_)?;
