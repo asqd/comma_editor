@@ -67,10 +67,33 @@ pub(crate) enum Expr {
     Call(String, Vec<Expr>),
     /// An argument left out: `IF(A1,,2)`.
     Missing,
-    /// A defined name, which is not computed.
+    /// A defined name.
     Name(String),
+    /// A structured reference to an Excel table: `Sales[Amount]`, `[@Price]`.
+    Table(TableRef),
     /// An array constant `{1,2}`, which is not computed.
     Array,
+}
+
+/// What a structured reference points to in a table.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TableRef {
+    /// The table by name, lower case; `None` for the table the formula is in.
+    pub table: Option<String>,
+    /// The rows: the data unless a special item says otherwise.
+    pub rows: TableRows,
+    /// The first and last column by name, lower case; all columns when `None`.
+    pub columns: Option<(String, String)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TableRows {
+    Data,
+    All,
+    Headers,
+    Totals,
+    /// `#This Row` or `@`: the formula's own row.
+    ThisRow,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -89,6 +112,9 @@ enum Token {
     Separator,
     OpenBrace,
     CloseBrace,
+    /// A structured reference: the table name before the brackets, if any, and what is
+    /// inside them.
+    Structured(Option<String>, String),
 }
 
 fn syntax(kind: FormulaErrorKind, position: usize, detail: impl Into<String>) -> FormulaError {
@@ -215,7 +241,17 @@ fn tokenize(text: &str, separator: char, decimal: char) -> Result<Vec<(Token, us
                     word.push(next);
                     i += 1;
                 }
+                if chars.get(i) == Some(&'[') {
+                    let inner = bracketed(&chars, &mut i).ok_or_else(|| syntax(FormulaErrorKind::UnclosedText, start, "["))?;
+                    tokens.push((Token::Structured(Some(word), inner), start));
+                    continue;
+                }
                 tokens.push((Token::Word(word), start));
+                continue;
+            }
+            '[' => {
+                let inner = bracketed(&chars, &mut i).ok_or_else(|| syntax(FormulaErrorKind::UnclosedText, start, "["))?;
+                tokens.push((Token::Structured(None, inner), start));
                 continue;
             }
             _ => return Err(syntax(FormulaErrorKind::UnexpectedText, start, c.to_string())),
@@ -224,6 +260,115 @@ fn tokenize(text: &str, separator: char, decimal: char) -> Result<Vec<(Token, us
         i += 1;
     }
     Ok(tokens)
+}
+
+/// What is inside the brackets that start at `chars[*i]`, nested brackets and `'` escapes
+/// kept; `*i` ends after the closing bracket.
+fn bracketed(chars: &[char], i: &mut usize) -> Option<String> {
+    let mut depth = 0;
+    let mut inner = String::new();
+    while let Some(&c) = chars.get(*i) {
+        *i += 1;
+        match c {
+            '\'' => {
+                inner.push(c);
+                inner.push(*chars.get(*i)?);
+                *i += 1;
+                continue;
+            }
+            '[' => {
+                depth += 1;
+                if depth == 1 {
+                    continue;
+                }
+            }
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(inner);
+                }
+            }
+            _ => {}
+        }
+        inner.push(c);
+    }
+    None
+}
+
+/// The parts of a structured reference: `[#This Row],[Price]`, `@Price`, `@[Unit price]`,
+/// `[Price]:[Total]`, `Price`, `#All`.
+fn table_ref(table: Option<String>, inner: &str) -> Option<TableRef> {
+    let unescape = |text: &str| {
+        let mut out = String::new();
+        let mut chars = text.chars();
+        while let Some(c) = chars.next() {
+            if c == '\'' {
+                out.extend(chars.next());
+            } else {
+                out.push(c);
+            }
+        }
+        out.trim().to_lowercase()
+    };
+    // Items at the top level, split at commas outside brackets.
+    let mut items = Vec::new();
+    let (mut depth, mut current, mut escaped) = (0, String::new(), false);
+    for c in inner.chars() {
+        if escaped {
+            current.push(c);
+            escaped = false;
+            continue;
+        }
+        match c {
+            '\'' => {
+                escaped = true;
+                current.push(c);
+            }
+            '[' => {
+                depth += 1;
+                current.push(c);
+            }
+            ']' => {
+                depth -= 1;
+                current.push(c);
+            }
+            ',' | ';' if depth == 0 => items.push(std::mem::take(&mut current)),
+            _ => current.push(c),
+        }
+    }
+    items.push(current);
+    let mut rows = TableRows::Data;
+    let mut columns = None;
+    for item in items.iter().map(|item| item.trim()).filter(|item| !item.is_empty()) {
+        let item = item.strip_prefix('@').map_or_else(
+            || item.to_owned(),
+            |rest| {
+                rows = TableRows::ThisRow;
+                rest.to_owned()
+            },
+        );
+        if item.is_empty() {
+            continue;
+        }
+        let bare = |text: &str| text.trim().trim_start_matches('[').trim_end_matches(']').to_owned();
+        let name = bare(&item);
+        match name.to_lowercase().as_str() {
+            "#this row" => rows = TableRows::ThisRow,
+            "#all" => rows = TableRows::All,
+            "#data" => rows = TableRows::Data,
+            "#headers" => rows = TableRows::Headers,
+            "#totals" => rows = TableRows::Totals,
+            _ => {
+                // `[First]:[Last]`, or one column.
+                let (first, last) = match item.split_once("]:[") {
+                    Some((first, last)) => (bare(first), bare(last)),
+                    None => (name.clone(), name),
+                };
+                columns = Some((unescape(&first), unescape(&last)));
+            }
+        }
+    }
+    Some(TableRef { table: table.map(|table| table.to_lowercase()), rows, columns })
 }
 
 fn is_word_char(c: char) -> bool {
@@ -329,6 +474,9 @@ impl Parser {
                 }
                 self.next()?;
                 Ok(Expr::Array)
+            }
+            Token::Structured(table, inner) => {
+                table_ref(table, &inner).map(Expr::Table).ok_or_else(|| syntax(FormulaErrorKind::UnexpectedText, start, inner))
             }
             Token::Quoted(sheet) => {
                 if self.next()? != Token::Bang {
@@ -462,6 +610,7 @@ fn describe(token: &Token) -> String {
         Token::Separator => ",".to_owned(),
         Token::OpenBrace => "{".to_owned(),
         Token::CloseBrace => "}".to_owned(),
+        Token::Structured(table, inner) => format!("{}[{inner}]", table.as_deref().unwrap_or_default()),
     }
 }
 

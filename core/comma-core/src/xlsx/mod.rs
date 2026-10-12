@@ -131,6 +131,8 @@ pub struct Workbook {
     calc_chain: Option<String>,
     /// Defined names, whose formulas formulas may use by name.
     names: Vec<DefinedName>,
+    /// Excel tables of the sheets, read once when a formula needs them.
+    tables: std::sync::OnceLock<Vec<TableDef>>,
     /// The file asks to compute every formula when opened (`fullCalcOnLoad`): programs that
     /// write workbooks leave results out or write zeros, and Excel computes them on opening.
     computes_on_load: bool,
@@ -148,6 +150,24 @@ pub(crate) struct DefinedName {
     /// The sheet it belongs to, by index; `None` for the whole workbook.
     pub sheet: Option<usize>,
     pub formula: String,
+}
+
+/// An Excel table of a sheet, as structured references see it.
+#[derive(Clone, Debug)]
+pub(crate) struct TableDef {
+    pub sheet: usize,
+    /// Its name and its display name, which formulas use, lower case.
+    pub name: String,
+    pub display: String,
+    pub top: u32,
+    pub left: u32,
+    pub bottom: u32,
+    pub right: u32,
+    /// Rows of headers at the top and of totals at the bottom.
+    pub headers: u32,
+    pub totals: u32,
+    /// Its columns by name, lower case, left to right.
+    pub columns: Vec<String>,
 }
 
 enum Source {
@@ -179,6 +199,7 @@ impl Workbook {
                 workbook_part: String::new(),
                 calc_chain: None,
                 names: Vec::new(),
+                tables: std::sync::OnceLock::new(),
                 computes_on_load: false,
                 calc: Mutex::default(),
                 formulas_entered: Arc::default(),
@@ -303,6 +324,7 @@ impl Workbook {
             workbook_part,
             calc_chain,
             names,
+            tables: std::sync::OnceLock::new(),
             computes_on_load,
             calc: Mutex::default(),
             formulas_entered: Arc::default(),
@@ -413,6 +435,26 @@ impl Workbook {
         Ok(false)
     }
 
+    /// The Excel tables of the sheets.
+    pub(crate) fn tables(&self) -> &[TableDef] {
+        self.tables.get_or_init(|| self.read_tables().unwrap_or_default())
+    }
+
+    fn read_tables(&self) -> Result<Vec<TableDef>> {
+        let Source::Xlsx { package, .. } = &self.source else { return Ok(Vec::new()) };
+        let mut tables = Vec::new();
+        for (sheet, entry) in self.sheets.iter().enumerate() {
+            let Some(part) = entry.part.as_deref() else { continue };
+            for relationship in package.relationships(part)?.iter().filter(|relationship| relationship.kind == "table" && !relationship.external) {
+                let Some(text) = package.read_text(&relationship.target)? else { continue };
+                if let Some(table) = read_table(&text, sheet) {
+                    tables.push(table);
+                }
+            }
+        }
+        Ok(tables)
+    }
+
     /// Whether a sheet part holds a formula, found out once.
     fn part_has_formula(&self, part: &str) -> Result<bool> {
         let Source::Xlsx { package, .. } = &self.source else { return Ok(false) };
@@ -509,3 +551,40 @@ const _: () = {
     sendable::<Workbook>();
     sendable::<Arc<Workbook>>();
 };
+
+/// A table part: `<table name displayName ref headerRowCount totalsRowCount>` and its columns.
+fn read_table(text: &str, sheet: usize) -> Option<TableDef> {
+    let mut reader = xml::reader(text);
+    let mut table: Option<TableDef> = None;
+    loop {
+        match reader.read_event().ok()? {
+            Event::Start(element) | Event::Empty(element) => match element.local_name().as_ref() {
+                "table" => {
+                    let ((top, left), (bottom, right)) = refs::parse_range(&attribute(&element, "ref")?)?;
+                    let count = |name: &str, default: u32| attribute(&element, name).and_then(|value| value.parse().ok()).unwrap_or(default);
+                    table = Some(TableDef {
+                        sheet,
+                        name: attribute(&element, "name").unwrap_or_default().to_lowercase(),
+                        display: attribute(&element, "displayName").unwrap_or_default().to_lowercase(),
+                        top,
+                        left,
+                        bottom,
+                        right,
+                        headers: count("headerRowCount", 1),
+                        totals: count("totalsRowCount", 0),
+                        columns: Vec::new(),
+                    });
+                }
+                "tableColumn" => {
+                    if let Some(table) = table.as_mut() {
+                        table.columns.push(attribute(&element, "name").unwrap_or_default().to_lowercase());
+                    }
+                }
+                _ => {}
+            },
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    table
+}

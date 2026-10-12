@@ -51,6 +51,10 @@ pub(crate) trait Cells {
     fn name(&self, _name: &str, _sheet: usize) -> Option<std::sync::Arc<Expr>> {
         None
     }
+    /// The cells a structured reference points to from a cell: their sheet and area.
+    fn table(&self, _sheet: usize, _row: u32, _column: u32, _reference: &super::parse::TableRef) -> Option<(usize, Area)> {
+        None
+    }
 }
 
 /// An argument as a function gets it: a value, or cells it may go through.
@@ -164,7 +168,7 @@ impl<C: Cells> Evaluator<'_, C> {
     /// combine ranges cell by cell, a single row or column stretching over the other side.
     fn grid_of(&mut self, expr: &Expr) -> Outcome<Vec<Vec<Value>>> {
         Ok(match expr {
-            Expr::Reference(_) | Expr::Name(_) => self.grid(expr)?,
+            Expr::Reference(_) | Expr::Name(_) | Expr::Table(_) => self.grid(expr)?,
             Expr::Unary(op, operand) => {
                 let op = *op;
                 map_grid(self.grid_of(operand)?, |value| match to_number(&value) {
@@ -228,6 +232,11 @@ impl<C: Cells> Evaluator<'_, C> {
                     None => Arg::Value(error(REF)),
                 },
             },
+            // A structured reference gives the cells of the table it points to.
+            Expr::Table(reference) => {
+                let (sheet, area) = self.cells.table(self.sheet, self.row, self.column, reference).ok_or(Unsupported)?;
+                Arg::Range(sheet, area)
+            }
             // A defined name gives what its formula gives: cells, a range, a value.
             Expr::Name(name) => {
                 let defined = self.cells.name(name, self.sheet).filter(|_| self.names < 8).ok_or(Unsupported)?;
@@ -253,7 +262,7 @@ impl<C: Cells> Evaluator<'_, C> {
             Expr::Bool(truth) => Value::Bool(*truth),
             Expr::Error(code) => Value::Error(code.clone()),
             Expr::Missing => Value::Empty,
-            Expr::Name(_) => return self.scalar(expr),
+            Expr::Name(_) | Expr::Table(_) => return self.scalar(expr),
             Expr::Array => return Err(Unsupported),
             Expr::Reference(_) => return self.scalar(expr),
             Expr::Unary(op, operand) => {

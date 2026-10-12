@@ -16,10 +16,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use self::eval::{Cells, Evaluator, Unsupported, Value};
-use self::parse::{Area, BinaryOp, Expr, UnaryOp};
+use self::parse::{Area, BinaryOp, Expr, TableRef, TableRows, UnaryOp};
 use super::numfmt::{DisplayLocale, NumberFormat};
 use super::sheet::{RawCell, RawSheet, RawValue};
-use super::{Source, Workbook};
+use super::{Source, TableDef, Workbook};
 use crate::document::{Computed, Document, Field, FormulaField, FormulaResult};
 use crate::error::Result;
 use crate::formula::FormulaError;
@@ -95,6 +95,7 @@ impl Workbook {
         // Every formula of the sheets, read once per text.
         let names: Vec<String> = self.sheets.iter().map(|sheet| sheet.name.to_lowercase()).collect();
         let defined = self.defined_names();
+        let tables = self.tables();
         let mut parsed: HashMap<String, Option<Arc<Expr>>> = HashMap::new();
         let mut formulas = Vec::new();
         for (index, document) in sheets.iter() {
@@ -102,7 +103,8 @@ impl Workbook {
                 let expr = parsed.entry(cell.formula.clone()).or_insert_with(|| parse::parse(&cell.formula).ok().map(Arc::new)).clone();
                 let mut reads = Vec::new();
                 if let Some(expr) = &expr {
-                    references(expr, *index, &names, &defined, 0, &mut reads);
+                    let place = Place { sheet: *index, row: row as u32, column: column as u32 };
+                    references(expr, place, &names, &defined, tables, 0, &mut reads);
                 }
                 let range = cell.array.as_deref().and_then(super::refs::parse_range);
                 // An array formula filling several cells keeps its results: the other cells hold
@@ -506,6 +508,10 @@ impl Cells for Model<'_> {
     fn name(&self, name: &str, sheet: usize) -> Option<Arc<Expr>> {
         defined_name(self.names, name, sheet).cloned()
     }
+
+    fn table(&self, sheet: usize, row: u32, column: u32, reference: &TableRef) -> Option<(usize, Area)> {
+        table_cells(self.workbook.tables(), Place { sheet, row, column }, reference)
+    }
 }
 
 fn raw_value(cell: Option<&RawCell>, raw: &RawSheet) -> Value {
@@ -572,8 +578,48 @@ impl Workbook {
     }
 }
 
-fn references(expr: &Expr, sheet: usize, names: &[String], defined: &Names, depth: u8, out: &mut Vec<(usize, Area)>) {
-    let recurse = |expr: &Expr, out: &mut Vec<(usize, Area)>| references(expr, sheet, names, defined, depth, out);
+/// Where a formula is.
+#[derive(Clone, Copy)]
+struct Place {
+    sheet: usize,
+    row: u32,
+    column: u32,
+}
+
+/// The cells a structured reference points to, for a formula at `place`: the table by name,
+/// or the one the formula is in, and its rows and columns as the reference says.
+fn table_cells(tables: &[TableDef], place: Place, reference: &TableRef) -> Option<(usize, Area)> {
+    let table = match &reference.table {
+        Some(name) => tables.iter().find(|table| table.display == *name || table.name == *name)?,
+        None => tables.iter().find(|table| {
+            table.sheet == place.sheet
+                && (table.top..=table.bottom).contains(&place.row)
+                && (table.left..=table.right).contains(&place.column)
+        })?,
+    };
+    let data = (table.top + table.headers, table.bottom.saturating_sub(table.totals));
+    let (top, bottom) = match reference.rows {
+        TableRows::Data => data,
+        TableRows::All => (table.top, table.bottom),
+        TableRows::Headers if table.headers > 0 => (table.top, table.top + table.headers - 1),
+        TableRows::Totals if table.totals > 0 => (table.bottom + 1 - table.totals, table.bottom),
+        TableRows::ThisRow if table.sheet == place.sheet && (data.0..=data.1).contains(&place.row) => (place.row, place.row),
+        _ => return None,
+    };
+    let (left, right) = match &reference.columns {
+        Some((first, last)) => {
+            let index = |name: &String| table.columns.iter().position(|column| column == name).map(|index| table.left + index as u32);
+            let (first, last) = (index(first)?, index(last)?);
+            (first.min(last), first.max(last))
+        }
+        None => (table.left, table.right),
+    };
+    (top <= bottom).then_some((table.sheet, Area { top, left, bottom, right }))
+}
+
+fn references(expr: &Expr, place: Place, names: &[String], defined: &Names, tables: &[TableDef], depth: u8, out: &mut Vec<(usize, Area)>) {
+    let sheet = place.sheet;
+    let recurse = |expr: &Expr, out: &mut Vec<(usize, Area)>| references(expr, place, names, defined, tables, depth, out);
     match expr {
         Expr::Reference(reference) => {
             let target = match &reference.sheet {
@@ -597,9 +643,10 @@ fn references(expr: &Expr, sheet: usize, names: &[String], defined: &Names, dept
         // A name reads what its formula reads.
         Expr::Name(name) if depth < NAME_DEPTH => {
             if let Some(expr) = defined_name(defined, name, sheet) {
-                references(expr, sheet, names, defined, depth + 1, out);
+                references(expr, place, names, defined, tables, depth + 1, out);
             }
         }
+        Expr::Table(reference) => out.extend(table_cells(tables, place, reference)),
         _ => {}
     }
 }

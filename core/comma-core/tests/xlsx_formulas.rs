@@ -365,3 +365,40 @@ fn defined_names_are_computed() {
     assert_eq!(data.cell(0, 2).unwrap(), "90");
     assert_eq!(data.cell(2, 2).unwrap(), "108");
 }
+
+#[test]
+fn structured_references_to_tables_are_computed() {
+    use rust_xlsxwriter::{Table, TableColumn};
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("Sales").unwrap();
+    for (row, (item, price, quantity)) in [("Tea", 10.0, 2.0), ("Coffee", 20.0, 1.0), ("Sugar", 5.0, 4.0)].iter().enumerate() {
+        let row = row as u32 + 1;
+        sheet.write_string(row, 0, *item).unwrap();
+        sheet.write_number(row, 1, *price).unwrap();
+        sheet.write_number(row, 2, *quantity).unwrap();
+    }
+    let columns = vec![
+        TableColumn::new().set_header("Item"),
+        TableColumn::new().set_header("Price"),
+        TableColumn::new().set_header("Unit count"),
+        TableColumn::new().set_header("Total").set_formula("[@Price]*[@[Unit count]]"),
+    ];
+    sheet.add_table(0, 0, 3, 3, &Table::new().set_name("Orders").set_columns(&columns)).unwrap();
+    sheet.write_formula(5, 0, "=SUM(Orders[Total])").unwrap();
+    sheet.write_formula(6, 0, "=COUNTA(Orders[[#Headers],[Item]:[Total]])").unwrap();
+    sheet.write_formula(7, 0, "=Orders[[#This Row],[Price]]").unwrap();
+    let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
+    let mut document = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    let report = workbook.recalculate(&mut [(0, &mut document)], NOW).unwrap();
+    assert_eq!((1..4).map(|row| document.cell(row, 3).unwrap()).collect::<Vec<_>>(), ["20", "20", "20"]);
+    assert_eq!(document.cell(5, 0).unwrap(), "60");
+    assert_eq!(document.cell(6, 0).unwrap(), "4");
+    // A row outside the table has no "this row": left to Excel.
+    assert_eq!(report.not_computed, 1);
+    // Editing a price computes its row's total and the sum.
+    document.set_cell(1, 1, "15").unwrap();
+    workbook.recalculate(&mut [(0, &mut document)], NOW).unwrap();
+    assert_eq!(document.cell(1, 3).unwrap(), "30");
+    assert_eq!(document.cell(5, 0).unwrap(), "70");
+}
