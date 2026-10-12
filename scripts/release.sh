@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds a universal (Apple Silicon + Intel) release of CommaEditor and packs it into a DMG.
 #
-#   scripts/release.sh                      local build, ad-hoc signed: for testing only
+#   scripts/release.sh                      ad-hoc signed: for direct download without an Apple
+#                                           Developer account; macOS asks once before opening it
 #   DEVELOPMENT_TEAM=ABCDE12345 \
 #   NOTARY_PROFILE=commaeditor \
 #   scripts/release.sh                      Developer ID signed, notarized and stapled
@@ -32,7 +33,7 @@ if [[ -n "$TEAM" ]]; then
         "OTHER_CODE_SIGN_FLAGS=--timestamp"
     )
 else
-    echo "note: DEVELOPMENT_TEAM is not set, so the build is ad-hoc signed and will not open on other Macs"
+    echo "note: DEVELOPMENT_TEAM is not set, so the build is ad-hoc signed: on other Macs it opens once allowed in System Settings"
 fi
 
 xcodebuild -project "$PROJECT" -scheme CommaEditor -configuration Release \
@@ -86,4 +87,5 @@ if [[ -n "$TEAM" ]]; then
         echo "note: NOTARY_PROFILE is not set, so the DMG is signed but not notarized"
     fi
 fi
+shasum -a 256 "$DMG" | tee "$DMG.sha256"
 echo "== done: $DMG"

@@ -95,8 +95,8 @@ enum MainMenu {
 
     private static func makeEditMenu() -> NSMenu {
         menu([
-            item(L("Undo"), Selector(("undo:")), "z"),
-            item(L("Redo"), Selector(("redo:")), "Z"),
+            item(L("Undo"), #selector(UndoActions.undo(_:)), "z"),
+            item(L("Redo"), #selector(UndoActions.redo(_:)), "Z"),
             .separator(),
             item(L("Cut"), #selector(NSText.cut(_:)), "x"),
             item(L("Copy"), #selector(NSText.copy(_:)), "c"),
@@ -326,4 +326,10 @@ final class RecentDocumentsMenu: NSObject, NSMenuDelegate {
             }
         }
     }
+}
+
+/// `undo:` and `redo:`, which windows and documents answer along the responder chain.
+@objc private protocol UndoActions {
+    func undo(_ sender: Any?)
+    func redo(_ sender: Any?)
 }
