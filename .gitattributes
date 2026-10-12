@@ -1,0 +1,12 @@
+# Sample and test tables are checked byte for byte: Git must leave their line endings and
+# encodings alone, also on Windows with core.autocrlf.
+*.csv -text
+*.tsv -text
+*.txt -text
+*.xls binary
+*.xlsx binary
+samples/** -text
+core/comma-core/tests/fixtures/** -text
+
+# Shell scripts run with bash, also from Git Bash and WSL.
+*.sh text eol=lf
