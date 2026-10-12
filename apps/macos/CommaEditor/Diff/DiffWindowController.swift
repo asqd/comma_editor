@@ -109,8 +109,11 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate {
         openButton.target = self
         openButton.action = #selector(openAsTable(_:))
         openButton.bezelStyle = .push
+        let keyLabel = NSTextField(labelWithString: L("Match rows by:"))
+        keyPopup.setAccessibilityTitleUIElement(keyLabel)
+        sheetPopup.setAccessibilityTitleUIElement(sheetLabel)
         let options = NSStackView(views: [
-            sheetLabel, sheetPopup, NSTextField(labelWithString: L("Match rows by:")), keyPopup, caseCheck, trimCheck,
+            sheetLabel, sheetPopup, keyLabel, keyPopup, caseCheck, trimCheck,
             NSView(), openButton,
         ])
         options.spacing = 10

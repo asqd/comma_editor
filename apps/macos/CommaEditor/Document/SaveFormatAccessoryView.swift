@@ -76,10 +76,15 @@ final class SaveFormatAccessoryView: NSView {
             field.alignment = .right
             return field
         }
+        let labels = [label(L("Encoding:")), label(L("Delimiter:")), label(L("Line Endings:"))]
+        // VoiceOver reads each list with the label beside it.
+        for (field, popUp) in zip(labels, [encodingPopUp, delimiterPopUp, lineEndingPopUp]) {
+            popUp.setAccessibilityTitleUIElement(field)
+        }
         let grid = NSGridView(views: [
-            [label(L("Encoding:")), encodingPopUp],
-            [label(L("Delimiter:")), delimiterPopUp],
-            [label(L("Line Endings:")), lineEndingPopUp],
+            [labels[0], encodingPopUp],
+            [labels[1], delimiterPopUp],
+            [labels[2], lineEndingPopUp],
             [NSGridCell.emptyContentView, excel],
         ])
         grid.rowSpacing = 8

@@ -188,6 +188,9 @@ private final class FilterRowView: NSStackView, NSTextFieldDelegate {
         orientation = .horizontal
         spacing = 6
         alignment = .centerY
+        columnPopUp.setAccessibilityLabel(L("Column"))
+        opPopUp.setAccessibilityLabel(L("Condition"))
+        valueField.setAccessibilityLabel(L("Value"))
 
         for popUp in [columnPopUp, opPopUp] {
             popUp.target = self

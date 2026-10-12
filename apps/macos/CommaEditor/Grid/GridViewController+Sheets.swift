@@ -23,6 +23,7 @@ extension GridViewController {
         let separator = NSBox()
         separator.boxType = .separator
         sheetMode.controlSize = .small
+        sheetMode.setAccessibilityLabel(L("Sheet view"))
         sheetMode.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         sheetMode.setToolTip(L("As Excel shows the sheet: columns lettered A, B, C"), forSegment: 0)
         sheetMode.setToolTip(L("As a CSV file: the first row names the columns"), forSegment: 1)

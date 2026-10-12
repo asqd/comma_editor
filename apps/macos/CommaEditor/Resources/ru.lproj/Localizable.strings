@@ -612,3 +612,6 @@
 "Next record" = "Следующая запись";
 "Range" = "Интервал";
 "Distribution from %@ to %@" = "Распределение от %1$@ до %2$@";
+"Condition" = "Условие";
+"Search in" = "Где искать";
+"Sheet view" = "Вид листа";

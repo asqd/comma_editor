@@ -71,6 +71,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate {
         super.init(frame: frame)
 
         searchField.placeholderString = L("Find")
+        columnPopUp.setAccessibilityLabel(L("Search in"))
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
         // The clear button sends the action without a text change notification.
