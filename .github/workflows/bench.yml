@@ -1,8 +1,10 @@
 name: Bench
 
-# Times the core on each system with `comma bench`. Run by hand: runners are shared and
-# noisy, so compare systems within one run rather than runs with each other.
+# Times the core on each system with `comma bench`: by hand, and when the bench itself changes.
+# Runners are shared and noisy, so compare systems within one run rather than runs with each other.
 on:
+  push:
+    paths: [.github/workflows/bench.yml, core/comma-cli/src/bench.rs]
   workflow_dispatch:
     inputs:
       rows:
@@ -30,7 +32,7 @@ jobs:
       - name: Bench
         shell: bash
         env:
-          ROWS: ${{ inputs.rows }}
+          ROWS: ${{ inputs.rows || '1000000 12000000' }}
         run: |
           # ROWS is split into sizes on purpose.
           # shellcheck disable=SC2086
