@@ -17,6 +17,7 @@ core/
 apps/
   macos/                 приложение для macOS (XcodeGen: project.yml)
   macos/QuickLook/       расширение Quick Look: превью таблицей в Finder
+  desktop/               приложение для Windows, Linux и macOS на Tauri 2 (в работе, docs/PORTING.md)
 scripts/build-core.sh    сборка статической библиотеки и биндингов для Xcode
 scripts/release.sh       Release-сборка, DMG, подпись и нотаризация
 design/                  иконка: скрипт отрисовки и мастер 1024 × 1024
@@ -41,6 +42,18 @@ make icon     # перерисовать иконку из design/make-icon.swif
 После `make xcodeproj` проект можно открыть в Xcode: `apps/macos/CommaEditor.xcodeproj`.
 При каждой сборке Xcode сам пересобирает ядро.
 
+Приложение на Tauri (`apps/desktop`) собирается на Windows, Linux и macOS. Нужны Rust, Node 22
+(`apps/desktop/.nvmrc`) и, на Linux, WebKitGTK 4.1 (`libwebkit2gtk-4.1-dev`):
+
+```bash
+make desktop        # запустить с перезагрузкой при правках
+make desktop-build  # Release-сборка: apps/desktop/src-tauri/target/release/commaeditor
+commaeditor --bench table.csv   # замер прокрутки: открыть, прокрутить, вывести время, выйти
+```
+
+Сетку без приложения можно открыть в браузере: `npm run dev` в `apps/desktop`, затем
+http://localhost:1430 — строки придумываются на лету (`?rows=` задаёт их число).
+
 Утилита командной строки:
 
 ```bash
@@ -48,6 +61,7 @@ cargo run -p comma-cli -- info samples/*.csv
 cargo run -p comma-cli -- check samples/*.csv
 cargo run -p comma-cli -- info book.xlsx   # листы книги Excel: размер, формулы, время чтения
 cargo run --release -p comma-cli -- bench  # первый экран, чтение, сортировка и фильтр на 1, 12 и 60 млн строк
+cargo run --release -p comma-cli -- generate 60m big.csv  # таблица для проверки больших файлов
 ```
 
 ## Как устроено сохранение без лишнего диффа
