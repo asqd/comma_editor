@@ -629,3 +629,5 @@
 "Same row" = "Совпадает";
 "Column name" = "Имя колонки";
 "Formula" = "Формула";
+"Encoding" = "Кодировка";
+"Delimiter" = "Разделитель";

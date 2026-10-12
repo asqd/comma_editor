@@ -64,6 +64,7 @@ struct OpenOptionsView: View {
                     }
                 }
                 .labelsHidden()
+                .accessibilityLabel(L("Encoding"))
                 .fixedSize()
                 }
                 GridRow {
@@ -77,6 +78,7 @@ struct OpenOptionsView: View {
                     }
                 }
                 .labelsHidden()
+                .accessibilityLabel(L("Delimiter"))
                 .fixedSize()
                 }
             }
