@@ -168,6 +168,10 @@ pub(crate) struct TableDef {
     pub totals: u32,
     /// Its columns by name, lower case, left to right.
     pub columns: Vec<String>,
+    /// The formula each column fills its rows with, if it is a calculated column.
+    pub formulas: Vec<Option<String>>,
+    /// The part of the package that holds it.
+    pub part: String,
 }
 
 enum Source {
@@ -447,7 +451,8 @@ impl Workbook {
             let Some(part) = entry.part.as_deref() else { continue };
             for relationship in package.relationships(part)?.iter().filter(|relationship| relationship.kind == "table" && !relationship.external) {
                 let Some(text) = package.read_text(&relationship.target)? else { continue };
-                if let Some(table) = read_table(&text, sheet) {
+                if let Some(mut table) = read_table(&text, sheet) {
+                    table.part = relationship.target.clone();
                     tables.push(table);
                 }
             }
@@ -573,11 +578,27 @@ fn read_table(text: &str, sheet: usize) -> Option<TableDef> {
                         headers: count("headerRowCount", 1),
                         totals: count("totalsRowCount", 0),
                         columns: Vec::new(),
+                        formulas: Vec::new(),
+                        part: String::new(),
                     });
                 }
                 "tableColumn" => {
                     if let Some(table) = table.as_mut() {
                         table.columns.push(attribute(&element, "name").unwrap_or_default().to_lowercase());
+                        table.formulas.push(None);
+                    }
+                }
+                "calculatedColumnFormula" => {
+                    let mut formula = String::new();
+                    loop {
+                        match reader.read_event().ok()? {
+                            Event::End(end) if end.local_name().as_ref() == "calculatedColumnFormula" => break,
+                            Event::Eof => break,
+                            event => xml::push_text(&mut formula, &event),
+                        }
+                    }
+                    if let Some(slot) = table.as_mut().and_then(|table| table.formulas.last_mut()) {
+                        *slot = Some(formula);
                     }
                 }
                 _ => {}

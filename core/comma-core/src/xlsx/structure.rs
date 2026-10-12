@@ -55,6 +55,9 @@ impl Workbook {
         if count == 0 || at > length || (!insert && at + count > length) || (insert && length + count > limit as usize) {
             return Ok(Vec::new());
         }
+        // Tables of the sheet: rows inserted among their data rows fill their calculated
+        // columns; what would break a table is refused.
+        let template = self.table_rows(&*sheets[position].1, index, axis, at, count, insert)?;
         let (at32, count32) = (at as u32, count as u32);
         let shift = move |first: u32, last: u32| Remap::shift(first, last, at32, count32, insert);
         let same = |first: u32, last: u32| Some((first, last));
@@ -67,7 +70,7 @@ impl Workbook {
         for (sheet, document) in sheets.iter_mut() {
             let own = self.sheets.get(*sheet).map(|entry| entry.name.to_lowercase()).unwrap_or_default();
             if *sheet == index {
-                restructure_sheet(document, &own, &remap, axis, at, count, insert);
+                restructure_sheet(document, &own, &remap, axis, at, count, insert, template.as_deref());
                 changed.push(*sheet);
             } else if remap_formulas(document, &own, &remap) {
                 changed.push(*sheet);
@@ -96,7 +99,8 @@ impl Workbook {
             return Ok(Vec::new());
         };
         let document = &sheets[position].1;
-        if document.sheet_structure_locked() {
+        // Rows moved in or out of an Excel table would break it.
+        if document.sheet_structure_locked() || self.tables().iter().any(|table| table.sheet == index) {
             return Err(Error::SheetStructure(SheetStructure::RowsFixed));
         }
         let mut rows = rows.to_vec();
@@ -193,7 +197,7 @@ impl Workbook {
     /// Refused when a merged area lies among the rows that move, as Excel refuses it. One
     /// undoable step; `false` when nothing moved.
     pub fn sort_rows(&self, document: &mut Document, index: usize) -> Result<bool> {
-        if document.sheet_structure_locked() {
+        if document.sheet_structure_locked() || self.tables().iter().any(|table| table.sheet == index) {
             return Err(Error::SheetStructure(SheetStructure::RowsFixed));
         }
         let Some(order) = document.sorted_order() else { return Ok(false) };
@@ -297,9 +301,70 @@ fn remap_formulas(document: &mut Document, own: &str, remap: &Remap) -> bool {
     true
 }
 
+impl Workbook {
+    /// Checks a change of rows or columns against the Excel tables of sheet `index`, where
+    /// they are now: a column inserted or deleted inside a table, or rows deleted from its
+    /// headers or totals or all its data, are refused. Rows inserted among a table's data rows
+    /// get its calculated columns: the fields they start with.
+    fn table_rows(&self, document: &Document, index: usize, axis: Axis, at: usize, count: usize, insert: bool) -> Result<Option<Vec<Field>>> {
+        let (rows, columns) = (super::save::AxisMap::rows(document), super::save::AxisMap::columns(document));
+        let mut template: Option<Vec<Field>> = None;
+        for table in self.tables().iter().filter(|table| table.sheet == index) {
+            let (Some((top, bottom)), Some((left, right))) = (rows.range(table.top, table.bottom), columns.range(table.left, table.right)) else {
+                continue;
+            };
+            let (top, bottom, left, right) = (top as usize, bottom as usize, left as usize, right as usize);
+            let (first_data, last_data) = (top + table.headers as usize, bottom.saturating_sub(table.totals as usize));
+            let last = at + count - 1;
+            match axis {
+                Axis::Columns if insert && at > left && at <= right => return Err(Error::SheetStructure(SheetStructure::ColumnsFixed)),
+                Axis::Columns if !insert && at <= right && last >= left => return Err(Error::SheetStructure(SheetStructure::ColumnsFixed)),
+                Axis::Rows if !insert => {
+                    let headers = table.headers > 0 && at < first_data && last >= top;
+                    let totals = table.totals > 0 && at <= bottom && last > last_data;
+                    let all_data = at <= first_data && last >= last_data;
+                    if (headers || totals || all_data) && at <= bottom && last >= top {
+                        return Err(Error::SheetStructure(SheetStructure::RowsFixed));
+                    }
+                }
+                Axis::Rows if insert && at >= first_data && at <= last_data + 1 && (table.totals > 0 || at <= last_data) => {
+                    let fields = template.get_or_insert_with(Vec::new);
+                    for (offset, formula) in table.formulas.iter().enumerate() {
+                        let Some(formula) = formula else { continue };
+                        let column = left + offset;
+                        if fields.len() <= column {
+                            fields.resize(column + 1, Field::Text(String::new()));
+                        }
+                        fields[column] = Field::Formula(Box::new(FormulaField {
+                            formula: formula.clone(),
+                            value: String::new(),
+                            array: None,
+                            computed: crate::document::Computed::Unknown,
+                            from_file: false,
+                            date_format: None,
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(template)
+    }
+}
+
 /// Inserts or deletes rows or columns of the sheet that changed, with references in its own
-/// formulas moved, as one undoable step.
-fn restructure_sheet(document: &mut Document, own: &str, remap: &Remap, axis: Axis, at: usize, count: usize, insert: bool) {
+/// formulas moved, as one undoable step. Rows inserted start with `template`, if given.
+#[allow(clippy::too_many_arguments)]
+fn restructure_sheet(
+    document: &mut Document,
+    own: &str,
+    remap: &Remap,
+    axis: Axis,
+    at: usize,
+    count: usize,
+    insert: bool,
+    template: Option<&[Field]>,
+) {
     let mut formulas_moved = false;
     let mut records: Vec<Record> = document
         .records
@@ -325,7 +390,13 @@ fn restructure_sheet(document: &mut Document, own: &str, remap: &Remap, axis: Ax
         Axis::Rows => {
             if insert {
                 let width = columns.max(1);
-                let new = (0..count).map(|_| Record::modified(vec![Field::Text(String::new()); width], crate::parser::Terminator::Lf));
+                let new = (0..count).map(|_| {
+                    let mut fields = vec![Field::Text(String::new()); width];
+                    for (column, field) in template.unwrap_or_default().iter().enumerate().take(width) {
+                        fields[column] = field.clone();
+                    }
+                    Record::modified(fields, crate::parser::Terminator::Lf)
+                });
                 records.splice(at..at, new);
             } else {
                 records.drain(at..at + count);

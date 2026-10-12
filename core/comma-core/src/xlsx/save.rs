@@ -192,6 +192,22 @@ impl Workbook {
             workbook = remap_defined_names(&workbook, &changes);
         }
         replaced.insert(workbook_part.to_lowercase(), compute_on_load(&workbook).into_bytes());
+        // Excel tables cover the rows and columns they covered, wherever those went.
+        for &(index, document) in sheets {
+            let (rows_map, columns_map) = (AxisMap::rows(document), AxisMap::columns(document));
+            if rows_map.is_identity() && columns_map.is_identity() {
+                continue;
+            }
+            let own = self.sheets.get(index).map(|sheet| sheet.name.to_lowercase()).unwrap_or_default();
+            let rows = |first: u32, last: u32| rows_map.range(first, last);
+            let columns = |first: u32, last: u32| columns_map.range(first, last);
+            let remap = Remap { sheet: &own, rows: &rows, columns: &columns };
+            for table in self.tables().iter().filter(|table| table.sheet == index) {
+                if let Some(text) = package.read_text(&table.part)? {
+                    replaced.insert(table.part.to_lowercase(), remap_table(&text, &own, &remap).into_bytes());
+                }
+            }
+        }
         // Styles added for dates entered by formula into cells of the General format.
         let date_styles = date_styles.into_inner();
         if !date_styles.added.is_empty() {
@@ -455,7 +471,7 @@ pub(crate) struct AxisMap {
 }
 
 impl AxisMap {
-    fn rows(document: &Document) -> Self {
+    pub(crate) fn rows(document: &Document) -> Self {
         let read = document.sheet.as_ref().map_or(0, |sheet| sheet.rows);
         Self::new((0..document.row_count()).map(|row| document.row_origin(row)), read)
     }
@@ -467,7 +483,7 @@ impl AxisMap {
         Self::new(document.records.iter().map(|record| record.source()), read)
     }
 
-    fn columns(document: &Document) -> Self {
+    pub(crate) fn columns(document: &Document) -> Self {
         let read = document.column_origins.len();
         Self::new((0..read.max(document.column_count())).map(|column| document.column_origin(column)), read)
     }
@@ -490,7 +506,7 @@ impl AxisMap {
         Self { new_of_old, tail: inserted - deleted }
     }
 
-    fn is_identity(&self) -> bool {
+    pub(crate) fn is_identity(&self) -> bool {
         self.tail == 0 && self.new_of_old.iter().enumerate().all(|(old, new)| *new == Some(old as u32))
     }
 
@@ -503,7 +519,7 @@ impl AxisMap {
     }
 
     /// Where a range went: from its first row left to its last; `None` if none is left.
-    fn range(&self, first: u32, last: u32) -> Option<(u32, u32)> {
+    pub(crate) fn range(&self, first: u32, last: u32) -> Option<(u32, u32)> {
         let read = self.new_of_old.len() as u32;
         let mut top = None;
         let mut index = first;
@@ -638,6 +654,21 @@ fn remap_parts(xml: &str, own: &str, remap: &Remap, links: &Remap) -> String {
     }
     out.push_str(&xml[at..]);
     drop_empty_containers(out)
+}
+
+/// A table part with its range, filter and sort over the cells they covered.
+fn remap_table(xml: &str, own: &str, remap: &Remap) -> String {
+    let mut xml = remap_parts(xml, own, remap, remap);
+    if let Some(start) = find_element(&xml, "table")
+        && let Some(length) = xml[start..].find('>')
+    {
+        let tag = &xml[start..start + length + 1];
+        if let Some(range) = attribute_value(tag, "ref") {
+            let moved = set_attribute(tag, "ref", Some(&remap_formula(&range, own, remap)));
+            xml.replace_range(start..start + length + 1, &moved);
+        }
+    }
+    xml
 }
 
 /// Lists left without items, which the schema does not allow, go; the others count what is

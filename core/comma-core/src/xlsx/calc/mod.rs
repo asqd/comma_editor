@@ -95,7 +95,8 @@ impl Workbook {
         // Every formula of the sheets, read once per text.
         let names: Vec<String> = self.sheets.iter().map(|sheet| sheet.name.to_lowercase()).collect();
         let defined = self.defined_names();
-        let tables = self.tables();
+        let tables = self.current_tables(sheets);
+        let tables = tables.as_slice();
         let mut parsed: HashMap<String, Option<Arc<Expr>>> = HashMap::new();
         let mut formulas = Vec::new();
         for (index, document) in sheets.iter() {
@@ -161,6 +162,7 @@ impl Workbook {
         let mut model = Model {
             workbook: self,
             names: &defined,
+            tables,
             documents,
             raw: &mut state.raw,
             formats: &formats,
@@ -370,6 +372,7 @@ impl FileValues {
 struct Model<'a> {
     workbook: &'a Workbook,
     names: &'a Names,
+    tables: &'a [TableDef],
     documents: HashMap<usize, &'a Document>,
     raw: &'a mut HashMap<usize, Arc<RawSheet>>,
     formats: &'a [Arc<NumberFormat>],
@@ -560,7 +563,7 @@ impl Cells for Model<'_> {
     }
 
     fn table(&self, sheet: usize, row: u32, column: u32, reference: &TableRef) -> Option<(usize, Area)> {
-        table_cells(self.workbook.tables(), Place { sheet, row, column }, reference)
+        table_cells(self.tables, Place { sheet, row, column }, reference)
     }
 }
 
@@ -618,6 +621,23 @@ fn defined_name<'a>(names: &'a Names, name: &str, sheet: usize) -> Option<&'a Ar
 const NAME_DEPTH: u8 = 8;
 
 impl Workbook {
+    /// The Excel tables where they are now: rows and columns of the sheets given may have
+    /// been inserted, deleted or moved since the file was read.
+    fn current_tables(&self, sheets: &[(usize, &mut Document)]) -> Vec<TableDef> {
+        self.tables()
+            .iter()
+            .filter_map(|table| {
+                let Some((_, document)) = sheets.iter().find(|(index, _)| *index == table.sheet) else {
+                    return Some(table.clone());
+                };
+                let (rows, columns) = (super::save::AxisMap::rows(document), super::save::AxisMap::columns(document));
+                let (top, bottom) = rows.range(table.top, table.bottom)?;
+                let (left, right) = columns.range(table.left, table.right)?;
+                Some(TableDef { top, bottom, left, right, ..table.clone() })
+            })
+            .collect()
+    }
+
     /// The defined names whose formulas read, parsed.
     fn defined_names(&self) -> Names {
         self.names

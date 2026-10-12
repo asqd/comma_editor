@@ -4,7 +4,7 @@ use std::io::{Cursor, Read, Write};
 
 use comma_core::{Axis, DisplayLocale, Document, Error, SheetStructure, Workbook};
 use rust_xlsxwriter::{
-    ConditionalFormatFormula, DataValidation, DataValidationRule, Format, Formula, Table,
+    ConditionalFormatFormula, DataValidation, DataValidationRule, Format, Formula,
 };
 
 const NOW: f64 = 45_658.5;
@@ -150,14 +150,15 @@ fn undoing_brings_formulas_back() {
 }
 
 #[test]
-fn tables_keep_rows_in_place() {
+fn drawings_keep_rows_in_place() {
     let mut workbook = rust_xlsxwriter::Workbook::new();
     let sheet = workbook.add_worksheet();
     for row in 0..4u32 {
         sheet.write_number(row, 0, f64::from(row)).unwrap();
-        sheet.write_number(row, 1, f64::from(row)).unwrap();
     }
-    sheet.add_table(0, 0, 3, 1, &Table::new()).unwrap();
+    let mut chart = rust_xlsxwriter::Chart::new(rust_xlsxwriter::ChartType::Column);
+    chart.add_series().set_values("Sheet1!$A$1:$A$4");
+    sheet.insert_chart(5, 2, &chart).unwrap();
     let workbook = Workbook::from_bytes(workbook.save_to_buffer().unwrap()).unwrap();
     let mut document = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
     assert!(document.sheet_structure_locked());
@@ -307,4 +308,63 @@ fn sorted_rows_take_their_links_along() {
     let id_of = |url: &str| rels.split("<Relationship ").find(|item| item.contains(url)).and_then(|item| item.split("Id=\"").nth(1)).map(|rest| rest[..rest.find('"').unwrap()].to_owned()).unwrap();
     assert!(xml.contains(&format!(r#"<hyperlink ref="B2" r:id="{}""#, id_of("example.com/a"))), "{xml}");
     assert!(xml.contains(&format!(r#"<hyperlink ref="B4" r:id="{}""#, id_of("example.com/c"))), "{xml}");
+}
+
+fn table_book() -> Vec<u8> {
+    use rust_xlsxwriter::{Table, TableColumn};
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sheet = workbook.add_worksheet();
+    sheet.set_name("Sales").unwrap();
+    for (row, (item, price, quantity)) in [("Tea", 10.0, 2.0), ("Coffee", 20.0, 1.0), ("Sugar", 5.0, 4.0)].iter().enumerate() {
+        let row = row as u32 + 1;
+        sheet.write_string(row, 0, *item).unwrap();
+        sheet.write_number(row, 1, *price).unwrap();
+        sheet.write_number(row, 2, *quantity).unwrap();
+    }
+    let columns = vec![
+        TableColumn::new().set_header("Item"),
+        TableColumn::new().set_header("Price"),
+        TableColumn::new().set_header("Qty"),
+        TableColumn::new().set_header("Total").set_formula("[@Price]*[@Qty]"),
+    ];
+    sheet.add_table(0, 0, 3, 3, &Table::new().set_name("Orders").set_columns(&columns)).unwrap();
+    sheet.write_formula(5, 0, "=SUM(Orders[Total])").unwrap();
+    workbook.save_to_buffer().unwrap()
+}
+
+#[test]
+fn rows_inserted_into_a_table_extend_it_and_fill_its_formulas() {
+    let workbook = Workbook::from_bytes(table_book()).unwrap();
+    let mut sales = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    assert!(!sales.sheet_structure_locked());
+    // A row between Coffee and Sugar, inside the table.
+    workbook.insert(&mut [(0, &mut sales)], 0, Axis::Rows, 3, 1).unwrap();
+    assert_eq!(sales.formula(3, 3).as_deref(), Some("[[#This Row],Price]*[[#This Row],Qty]"));
+    sales.set_cell(3, 0, "Milk").unwrap();
+    sales.set_cell(3, 1, "4").unwrap();
+    sales.set_cell(3, 2, "5").unwrap();
+    workbook.recalculate(&mut [(0, &mut sales)], 45658.0).unwrap();
+    assert_eq!(sales.cell(3, 3).unwrap(), "20");
+    // The sum reads the whole table, the new row too: 20 + 20 + 20 + 20.
+    assert_eq!(sales.cell(6, 0).unwrap(), "80");
+    let saved = workbook.to_bytes(&[(0, &sales)]).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(saved.clone())).unwrap();
+    let mut table = String::new();
+    archive.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut table).unwrap();
+    assert!(table.contains(r#"ref="A1:D5""#), "{table}");
+    let reopened = Workbook::from_bytes(saved).unwrap();
+    let mut again = reopened.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    reopened.recalculate(&mut [(0, &mut again)], 45658.0).unwrap();
+    assert_eq!(again.cell(3, 0).unwrap(), "Milk");
+    assert_eq!(again.cell(6, 0).unwrap(), "80");
+    // A column inside the table, and the header row, stay.
+    assert!(matches!(workbook.insert(&mut [(0, &mut sales)], 0, Axis::Columns, 2, 1), Err(Error::SheetStructure(SheetStructure::ColumnsFixed))));
+    assert!(matches!(workbook.delete(&mut [(0, &mut sales)], 0, Axis::Rows, 0, 1), Err(Error::SheetStructure(SheetStructure::RowsFixed))));
+    // Deleting a data row shrinks it.
+    workbook.delete(&mut [(0, &mut sales)], 0, Axis::Rows, 1, 1).unwrap();
+    let saved = workbook.to_bytes(&[(0, &sales)]).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(saved)).unwrap();
+    let mut table = String::new();
+    archive.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut table).unwrap();
+    assert!(table.contains(r#"ref="A1:D4""#), "{table}");
 }

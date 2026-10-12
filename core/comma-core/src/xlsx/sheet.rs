@@ -248,7 +248,9 @@ impl Reading {
             "v" if !empty => return Next::Value,
             "is" if !empty => return Next::InlineString,
             "conditionalFormatting" | "dataValidation" | "hyperlink" | "autoFilter" => self.refers_to_rows = true,
-            "tablePart" | "drawing" | "legacyDrawing" => {
+            // Tables follow rows and columns when saved; drawings and comments do not yet.
+            "tablePart" => self.refers_to_rows = true,
+            "drawing" | "legacyDrawing" => {
                 self.refers_to_rows = true;
                 self.locked = true;
             }
