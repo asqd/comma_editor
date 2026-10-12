@@ -15,6 +15,8 @@
   --grid-header: #f2f2f5;
   --grid-header-text: #3a3a3c;
   --grid-placeholder: #e9e9ee;
+  --grid-selection: rgb(10 102 216 / 0.16);
+  --grid-selected-header: rgb(10 102 216 / 0.14);
   font: 13px system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif;
 }
 
@@ -35,6 +37,8 @@
     --grid-header: #2a2a2c;
     --grid-header-text: #d8d8dc;
     --grid-placeholder: #333336;
+    --grid-selection: rgb(76 155 255 / 0.22);
+    --grid-selected-header: rgb(76 155 255 / 0.2);
   }
 }
 

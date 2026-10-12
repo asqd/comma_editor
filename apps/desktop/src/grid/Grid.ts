@@ -6,6 +6,7 @@
 // lives here, in pixels of the table, and the scroller's range is that position scaled down:
 // wheel and keys move the table by their own pixels, the scrollbar thumb by its share.
 
+import { Selection, type Cell } from "./selection";
 import { Stats } from "./stats";
 
 /** The rows of a table, as the core shows them with the current sort and filters. */
@@ -36,6 +37,10 @@ const MAX_IN_FLIGHT = 3;
 const MAX_SCROLL_RANGE = 4_000_000;
 const FONT = '13px system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif';
 const HEADER_FONT = `600 ${FONT}`;
+/** Pixels from an edge where dragging a selection scrolls, and the most it scrolls a frame. */
+const AUTOSCROLL_EDGE = 24;
+const AUTOSCROLL_STEP = 40;
+const mac = navigator.userAgent.includes("Mac");
 
 interface Colors {
   background: string;
@@ -46,12 +51,28 @@ interface Colors {
   header: string;
   headerText: string;
   placeholder: string;
+  selection: string;
+  cursor: string;
+  selectedHeader: string;
 }
+
+/** What is under a point of the grid. */
+type Hit =
+  | { area: "cell"; row: number; column: number }
+  | { area: "header"; column: number }
+  | { area: "gutter"; row: number }
+  | { area: "corner" | "none" };
 
 export class Grid {
   readonly stats = new Stats();
   /** Called after each frame with whether every row in view had its data. */
   onFrame: ((complete: boolean) => void) | null = null;
+  /** The selection changed. */
+  onSelect: ((selection: Selection | null) => void) | null = null;
+  /** A double click on a cell: edit it. */
+  onActivate: ((cell: Cell) => void) | null = null;
+  /** A click on a column's title, with Shift or not. */
+  onHeader: ((column: number, shift: boolean) => void) | null = null;
 
   private readonly scroller: HTMLDivElement;
   private readonly spacer: HTMLDivElement;
@@ -78,6 +99,10 @@ export class Grid {
   private edges: number[] = [0];
   private measured = false;
 
+  private selected: Selection | null = null;
+  /** A drag selecting cells or rows, and where the pointer last was. */
+  private drag: { rows: boolean; x: number; y: number; frame: number } | null = null;
+
   private readonly blocks = new Map<number, string[][]>();
   private readonly pending = new Set<number>();
   private queue: number[] = [];
@@ -103,6 +128,10 @@ export class Grid {
     this.scroller.addEventListener("scroll", () => this.scrolled());
     this.scroller.addEventListener("wheel", (event) => this.wheel(event), { passive: false });
     this.scroller.addEventListener("keydown", (event) => this.key(event));
+    this.scroller.addEventListener("pointerdown", (event) => this.pointerDown(event));
+    this.scroller.addEventListener("pointermove", (event) => this.pointerMove(event));
+    this.scroller.addEventListener("pointerup", (event) => this.pointerUp(event));
+    this.scroller.addEventListener("dblclick", (event) => this.doubleClick(event));
     new ResizeObserver(() => this.resize()).observe(this.scroller);
     matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
       this.colors = this.readColors();
@@ -122,6 +151,7 @@ export class Grid {
     this.top = 0;
     this.left = 0;
     this.measured = false;
+    this.selected = null;
     this.widths = Array.from({ length: source?.columns ?? 0 }, (_, column) =>
       column < MEASURED_COLUMNS ? this.fit(MIN_WIDTH, HEADER_FONT, [this.title(column)]) : DEFAULT_WIDTH,
     );
@@ -147,7 +177,59 @@ export class Grid {
     // The last block may have been cut short by the end of what was indexed then.
     for (const [index, rows] of this.blocks) if (rows.length < BLOCK) this.blocks.delete(index);
     this.layout();
+    const clamped = this.selected?.clamped(this.source?.rows ?? 0, columns) ?? null;
+    if (!(clamped?.equals(this.selected) ?? this.selected === null)) this.select(clamped, false);
     this.invalidate();
+  }
+
+  get selection(): Selection | null {
+    return this.selected;
+  }
+
+  /** Selects cells, and with `reveal` scrolls the cursor into view. */
+  select(selection: Selection | null, reveal = true): void {
+    const rows = this.source?.rows ?? 0;
+    const clamped = selection?.clamped(rows, this.widths.length) ?? null;
+    const changed = !(clamped?.equals(this.selected) ?? this.selected === null);
+    this.selected = clamped;
+    if (clamped && reveal) this.reveal(clamped.cursor);
+    this.invalidate();
+    if (changed) this.onSelect?.(clamped);
+  }
+
+  /** Scrolls so that the cell is in view. */
+  reveal(cell: Cell): void {
+    const viewHeight = this.height - HEADER_HEIGHT;
+    let top = this.top;
+    const y = cell.row * ROW_HEIGHT;
+    if (y < top) top = y;
+    else if (y + ROW_HEIGHT > top + viewHeight) top = y + ROW_HEIGHT - viewHeight;
+    let left = this.left;
+    const x = this.edges[cell.column] ?? 0;
+    const right = this.edges[cell.column + 1] ?? x;
+    const viewWidth = this.width - this.gutter;
+    if (x < left) left = x;
+    else if (right > left + viewWidth) left = Math.min(x, right - viewWidth);
+    if (top !== this.top || left !== this.left) this.scrollTo(top, left);
+  }
+
+  /** Where the cell is on screen, relative to the grid, for an editor over it. */
+  cellRect(cell: Cell): { x: number; y: number; width: number; height: number } {
+    return {
+      x: this.gutter + this.edges[cell.column] - this.left,
+      y: HEADER_HEIGHT + cell.row * ROW_HEIGHT - this.top,
+      width: this.widths[cell.column] ?? DEFAULT_WIDTH,
+      height: ROW_HEIGHT,
+    };
+  }
+
+  /** The value of a cell, if its rows are loaded. */
+  value(cell: Cell): string | undefined {
+    return this.row(cell.row)?.[cell.column];
+  }
+
+  focus(): void {
+    this.scroller.focus();
   }
 
   get maxTop(): number {
@@ -258,23 +340,174 @@ export class Grid {
     this.scrollTo(this.top + dy, this.left + dx);
   }
 
+  /** Rows a page moves: those in view, less one. */
+  private get pageRows(): number {
+    return Math.max(1, Math.floor((this.height - HEADER_HEIGHT) / ROW_HEIGHT) - 1);
+  }
+
+  /** Moves the cursor as the macOS app does (GridViewController.keyDown); other keys go on. */
   private key(event: KeyboardEvent): void {
-    const page = this.height - HEADER_HEIGHT - ROW_HEIGHT;
-    const command = event.ctrlKey || event.metaKey;
-    const moves: Record<string, () => [number, number]> = {
-      ArrowDown: () => [command ? this.maxTop : this.top + ROW_HEIGHT, this.left],
-      ArrowUp: () => [command ? 0 : this.top - ROW_HEIGHT, this.left],
-      ArrowRight: () => [this.top, this.left + 40],
-      ArrowLeft: () => [this.top, this.left - 40],
-      PageDown: () => [this.top + page, this.left],
-      PageUp: () => [this.top - page, this.left],
-      Home: () => (command ? [0, this.left] : [this.top, 0]),
-      End: () => (command ? [this.maxTop, this.left] : [this.top, this.maxLeft]),
-    };
-    const move = moves[event.key];
-    if (!move) return;
+    // Cmd on a Mac, Ctrl elsewhere, jumps to the edge.
+    const jump = mac ? event.metaKey : event.ctrlKey;
+    const other = mac ? event.ctrlKey : event.metaKey;
+    if (other || event.altKey) return;
+    const rows = this.source?.rows ?? 0;
+    const columns = this.widths.length;
+    if (jump && !event.shiftKey && event.key.toLowerCase() === "a") {
+      event.preventDefault();
+      if (rows > 0 && columns > 0) this.select(new Selection({ row: rows - 1, column: columns - 1 }, { row: 0, column: 0 }), false);
+      return;
+    }
+    if (event.key === "Escape" && this.selected && !this.selected.single) {
+      event.preventDefault();
+      this.select(Selection.at(this.selected.cursor), false);
+      return;
+    }
+    if (rows === 0 || columns === 0) return;
+    const at = this.selected?.cursor ?? { row: 0, column: 0 };
+    const lastRow = rows - 1;
+    const lastColumn = columns - 1;
+    let to: Cell | null = null;
+    let extend = event.shiftKey;
+    switch (event.key) {
+      case "ArrowDown":
+        to = { row: jump ? lastRow : at.row + 1, column: at.column };
+        break;
+      case "ArrowUp":
+        to = { row: jump ? 0 : at.row - 1, column: at.column };
+        break;
+      case "ArrowRight":
+        to = { row: at.row, column: jump ? lastColumn : at.column + 1 };
+        break;
+      case "ArrowLeft":
+        to = { row: at.row, column: jump ? 0 : at.column - 1 };
+        break;
+      case "PageDown":
+        to = { row: at.row + this.pageRows, column: at.column };
+        break;
+      case "PageUp":
+        to = { row: at.row - this.pageRows, column: at.column };
+        break;
+      case "Home":
+        to = { row: 0, column: at.column };
+        break;
+      case "End":
+        to = { row: lastRow, column: at.column };
+        break;
+      case "Tab":
+        to = { row: at.row, column: at.column + (event.shiftKey ? -1 : 1) };
+        extend = false;
+        break;
+      default:
+        return;
+    }
     event.preventDefault();
-    this.scrollTo(...move());
+    const cell = { row: Math.max(0, Math.min(lastRow, to.row)), column: Math.max(0, Math.min(lastColumn, to.column)) };
+    this.select(this.selected ? this.selected.moved(cell, extend) : Selection.at(cell));
+  }
+
+  // The pointer
+
+  private hit(clientX: number, clientY: number, clamp = false): Hit {
+    const bounds = this.scroller.getBoundingClientRect();
+    let x = clientX - bounds.left;
+    let y = clientY - bounds.top;
+    if (clamp) {
+      x = Math.max(this.gutter, Math.min(this.width - 1, x));
+      y = Math.max(HEADER_HEIGHT, Math.min(this.height - 1, y));
+    }
+    if (x < 0 || y < 0 || x >= this.width || y >= this.height) return { area: "none" };
+    const rows = this.source?.rows ?? 0;
+    const row = Math.min(rows - 1, Math.floor((y - HEADER_HEIGHT + this.top) / ROW_HEIGHT));
+    const column = this.columnAt(x - this.gutter + this.left);
+    if (y < HEADER_HEIGHT) return x < this.gutter ? { area: "corner" } : column === null ? { area: "none" } : { area: "header", column };
+    if (row < 0) return { area: "none" };
+    if (x < this.gutter) return { area: "gutter", row };
+    return column === null ? { area: "none" } : { area: "cell", row, column };
+  }
+
+  /** The column at `x` pixels from the left of the first column, or `null` past the last. */
+  private columnAt(x: number): number | null {
+    let low = 0;
+    let high = this.widths.length - 1;
+    if (high < 0 || x < 0 || x >= this.edges[high + 1]) return null;
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if (this.edges[middle] <= x) low = middle;
+      else high = middle - 1;
+    }
+    return low;
+  }
+
+  private pointerDown(event: PointerEvent): void {
+    if (event.button !== 0) return;
+    const hit = this.hit(event.clientX, event.clientY);
+    if (hit.area === "none" || hit.area === "corner") return;
+    event.preventDefault();
+    this.scroller.focus();
+    const columns = this.widths.length;
+    if (hit.area === "header") {
+      this.onHeader?.(hit.column, event.shiftKey);
+      return;
+    }
+    if (hit.area === "gutter") {
+      // A row: from its last column to its first, so the cursor is at its start.
+      const anchor = event.shiftKey && this.selected ? { row: this.selected.anchor.row, column: columns - 1 } : { row: hit.row, column: columns - 1 };
+      this.select(new Selection(anchor, { row: hit.row, column: 0 }), false);
+    } else if (hit.area === "cell") {
+      const cell = { row: hit.row, column: hit.column };
+      this.select(event.shiftKey && this.selected ? this.selected.moved(cell, true) : Selection.at(cell), false);
+    }
+    this.scroller.setPointerCapture(event.pointerId);
+    this.drag = { rows: hit.area === "gutter", x: event.clientX, y: event.clientY, frame: 0 };
+  }
+
+  private pointerMove(event: PointerEvent): void {
+    if (!this.drag) return;
+    this.drag.x = event.clientX;
+    this.drag.y = event.clientY;
+    this.extendDrag();
+    if (!this.drag.frame) this.drag.frame = requestAnimationFrame(() => this.autoscroll());
+  }
+
+  private pointerUp(event: PointerEvent): void {
+    if (!this.drag) return;
+    cancelAnimationFrame(this.drag.frame);
+    this.drag = null;
+    if (this.scroller.hasPointerCapture(event.pointerId)) this.scroller.releasePointerCapture(event.pointerId);
+  }
+
+  /** Extends the selection to the cell under the pointer while dragging. */
+  private extendDrag(): void {
+    if (!this.drag || !this.selected) return;
+    const hit = this.hit(this.drag.x, this.drag.y, true);
+    if (hit.area !== "cell") return;
+    const cell = this.drag.rows ? { row: hit.row, column: 0 } : { row: hit.row, column: hit.column };
+    const selection = this.selected.moved(cell, true);
+    if (!selection.equals(this.selected)) this.select(selection, false);
+  }
+
+  /** Scrolls while the pointer drags past an edge. */
+  private autoscroll(): void {
+    if (!this.drag) return;
+    this.drag.frame = 0;
+    const bounds = this.scroller.getBoundingClientRect();
+    const speed = (overshoot: number) => Math.sign(overshoot) * Math.min(AUTOSCROLL_STEP, Math.abs(overshoot));
+    const below = this.drag.y - (bounds.top + this.height - AUTOSCROLL_EDGE);
+    const above = bounds.top + HEADER_HEIGHT + AUTOSCROLL_EDGE - this.drag.y;
+    const right = this.drag.x - (bounds.left + this.width - AUTOSCROLL_EDGE);
+    const left = bounds.left + this.gutter + AUTOSCROLL_EDGE - this.drag.x;
+    const dy = below > 0 ? speed(below) : above > 0 ? -speed(above) : 0;
+    const dx = this.drag.rows ? 0 : right > 0 ? speed(right) : left > 0 ? -speed(left) : 0;
+    if (dx === 0 && dy === 0) return;
+    this.scrollTo(this.top + dy, this.left + dx);
+    this.extendDrag();
+    this.drag.frame = requestAnimationFrame(() => this.autoscroll());
+  }
+
+  private doubleClick(event: MouseEvent): void {
+    const hit = this.hit(event.clientX, event.clientY);
+    if (hit.area === "cell") this.onActivate?.({ row: hit.row, column: hit.column });
   }
 
   // Rows
@@ -378,6 +611,9 @@ export class Grid {
       header: color("--grid-header"),
       headerText: color("--grid-header-text"),
       placeholder: color("--grid-placeholder"),
+      selection: color("--grid-selection"),
+      cursor: color("--accent"),
+      selectedHeader: color("--grid-selected-header"),
     };
   }
 
@@ -427,6 +663,17 @@ export class Grid {
       }
     }
 
+    // The selection, under the text.
+    const selection = this.selected?.range;
+    if (selection && selection.bottom >= first && selection.top < first + count) {
+      const x = columnX(selection.left);
+      const right = columnX(selection.right) + this.widths[selection.right];
+      const y = shift + (selection.top - first) * ROW_HEIGHT;
+      const bottom = shift + (selection.bottom - first + 1) * ROW_HEIGHT;
+      g.fillStyle = colors.selection;
+      g.fillRect(x, y, right - x, bottom - y);
+    }
+
     g.font = FONT;
     g.textBaseline = "middle";
     g.fillStyle = colors.text;
@@ -458,11 +705,24 @@ export class Grid {
       g.lineTo(x, height);
     }
     g.stroke();
+    // The active cell.
+    const cursor = this.selected?.cursor;
+    if (cursor && cursor.row >= first && cursor.row < first + count) {
+      g.strokeStyle = colors.cursor;
+      g.lineWidth = 2;
+      g.strokeRect(columnX(cursor.column) + 1, shift + (cursor.row - first) * ROW_HEIGHT + 1, this.widths[cursor.column] - 2, ROW_HEIGHT - 2);
+    }
     g.restore();
 
     // Row numbers.
     g.fillStyle = colors.header;
     g.fillRect(0, HEADER_HEIGHT, gutter, viewHeight);
+    if (selection && selection.bottom >= first && selection.top < first + count) {
+      const y = Math.max(HEADER_HEIGHT, shift + (selection.top - first) * ROW_HEIGHT);
+      const bottom = Math.min(height, shift + (selection.bottom - first + 1) * ROW_HEIGHT);
+      g.fillStyle = colors.selectedHeader;
+      g.fillRect(0, y, gutter, bottom - y);
+    }
     g.save();
     g.beginPath();
     g.rect(0, HEADER_HEIGHT, gutter, viewHeight);
@@ -477,6 +737,12 @@ export class Grid {
     // Column titles.
     g.fillStyle = colors.header;
     g.fillRect(0, 0, width, HEADER_HEIGHT);
+    if (selection) {
+      const x = Math.max(gutter, columnX(selection.left));
+      const right = columnX(selection.right) + this.widths[selection.right];
+      g.fillStyle = colors.selectedHeader;
+      if (right > x) g.fillRect(x, 0, right - x, HEADER_HEIGHT);
+    }
     g.font = HEADER_FONT;
     g.fillStyle = colors.headerText;
     g.textAlign = "left";

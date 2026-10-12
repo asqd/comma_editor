@@ -4,10 +4,11 @@
   import { open } from "@tauri-apps/plugin-dialog";
   import { Grid, type TableSource } from "./grid/Grid";
   import { formatBench, runBench } from "./grid/bench";
-  import { call, inTauri, type Status } from "./lib/api";
+  import { call, inTauri, type RangeStats, type Status } from "./lib/api";
+  import type { Selection } from "./grid/selection";
   import { Document } from "./lib/document.svelte";
   import { describe } from "./lib/errors";
-  import { L, count } from "./lib/i18n";
+  import { L, count, locale } from "./lib/i18n";
 
   const mac = navigator.userAgent.includes("Mac");
   const openShortcut = mac ? "⌘O" : "Ctrl+O";
@@ -44,6 +45,22 @@
   let openSeconds = 0;
   let firstScreen: number | null = null;
   let benchText = $state("");
+  let selection = $state.raw<Selection | null>(null);
+  let stats = $state.raw<RangeStats | null>(null);
+  let statsFor = 0;
+
+  /** Counts, sums and averages the selected cells, as the macOS app does up to 2 million. */
+  async function measure(selected: Selection | null) {
+    const asked = ++statsFor;
+    stats = null;
+    if (!selected || selected.single || selected.rowCount * selected.columnCount > 2_000_000) return;
+    try {
+      const result = await call<RangeStats>("range_stats", { range: selected.range });
+      if (asked === statsFor) stats = result;
+    } catch {
+      // The status bar simply goes without the sum.
+    }
+  }
 
   const name = (path: string | null) => (path ? (path.split(/[\\/]/).pop() ?? path) : L("Untitled"));
 
@@ -57,6 +74,14 @@
     const status = doc.status;
     if (!status) return "";
     const parts: string[] = [];
+    if (selection && !selection.single) {
+      parts.push(L("Selected: %@ × %@", count(selection.rowCount), count(selection.columnCount)));
+      if (stats && stats.numbers > 0) {
+        const number = new Intl.NumberFormat(locale, { maximumFractionDigits: 6 });
+        parts.push(L("Sum: %@", number.format(stats.sum)));
+        parts.push(L("Average: %@", number.format(stats.sum / stats.numbers)));
+      }
+    }
     if (status.view.filters.length > 0) parts.push(L("Showing %@ of %@", count(status.rows), count(status.dataRows)));
     else parts.push(L("Rows: %@", count(status.rows)));
     parts.push(L("Columns: %@", count(status.columns)));
@@ -157,6 +182,10 @@
 
   onMount(() => {
     grid = new Grid(host);
+    grid.onSelect = (selected) => {
+      selection = selected;
+      void measure(selected);
+    };
     if (inTauri) {
       void import("./lib/bench-launch").then(({ launch }) =>
         launch().then(({ path, bench }) => {
