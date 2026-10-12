@@ -47,7 +47,7 @@ impl Default for Dialect {
     }
 }
 
-const CANDIDATES: [u8; 4] = [b',', b';', b'\t', b'|'];
+const CANDIDATES: [u8; 4] = *b",;\t|";
 const SAMPLE_BYTES: usize = 256 * 1024;
 const SAMPLE_RECORDS: usize = 1000;
 

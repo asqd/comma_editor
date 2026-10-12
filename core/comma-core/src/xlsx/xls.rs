@@ -196,7 +196,7 @@ impl XlsBook {
                 }
                 MULRK => {
                     let (Some(row), Some(first)) = (u16_at(data, 0), u16_at(data, 2)) else { continue };
-                    for (index, entry) in data.get(4..data.len().saturating_sub(2)).unwrap_or_default().chunks_exact(6).enumerate() {
+                    for (index, entry) in data.get(4..data.len().saturating_sub(2)).unwrap_or_default().as_chunks::<6>().0.iter().enumerate() {
                         styles.insert((u32::from(row), u32::from(first) + index as u32), u16::from_le_bytes([entry[0], entry[1]]));
                     }
                 }
@@ -220,7 +220,7 @@ impl XlsBook {
                     layout.frozen_rows = u16_at(data, 2).unwrap_or(0) as usize;
                 }
                 MERGEDCELLS => {
-                    for range in data.get(2..).unwrap_or_default().chunks_exact(8) {
+                    for range in data.get(2..).unwrap_or_default().as_chunks::<8>().0 {
                         let at = |index: usize| usize::from(u16::from_le_bytes([range[index], range[index + 1]]));
                         layout.merged.push(SheetRange { top: at(0), bottom: at(2), left: at(4), right: at(6) });
                     }
@@ -279,7 +279,7 @@ fn unicode_string(data: &[u8], wide_length: bool) -> Option<String> {
     if flags & 1 == 0 {
         Some(chars.get(..length)?.iter().map(|&byte| char::from(byte)).collect())
     } else {
-        let units: Vec<u16> = chars.get(..length * 2)?.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+        let units: Vec<u16> = chars.get(..length * 2)?.as_chunks::<2>().0.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
         Some(String::from_utf16_lossy(&units))
     }
 }
