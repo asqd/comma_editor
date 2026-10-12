@@ -455,8 +455,7 @@ fn rows_inserted_into_a_table_extend_it_and_fill_its_formulas() {
     reopened.recalculate(&mut [(0, &mut again)], 45658.0).unwrap();
     assert_eq!(again.cell(3, 0).unwrap(), "Milk");
     assert_eq!(again.cell(6, 0).unwrap(), "80");
-    // A column inside the table, and the header row, stay.
-    assert!(matches!(workbook.insert(&mut [(0, &mut sales)], 0, Axis::Columns, 2, 1), Err(Error::SheetStructure(SheetStructure::TableColumns))));
+    // The header row stays.
     assert!(matches!(workbook.delete(&mut [(0, &mut sales)], 0, Axis::Rows, 0, 1), Err(Error::SheetStructure(SheetStructure::TableEdges))));
     // Rows move among the table's data, not out of it, and its headers stay.
     assert!(matches!(workbook.move_rows(&mut [(0, &mut sales)], 0, &[1], 6), Err(Error::SheetStructure(SheetStructure::TableRowsMoved))));
@@ -507,4 +506,39 @@ fn rows_of_a_table_sort_among_themselves() {
     reopened.recalculate(&mut [(0, &mut again)], 45658.0).unwrap();
     // Coffee 20 × 1 on the first data row.
     assert_eq!((again.cell(1, 0).unwrap(), again.cell(1, 3).unwrap()), ("Coffee".to_owned(), "20".to_owned()));
+}
+
+#[test]
+fn columns_inserted_into_a_table_join_it() {
+    let workbook = Workbook::from_bytes(table_book()).unwrap();
+    let mut sales = workbook.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    // A column between Price and Qty: a column of the table, named as Excel names one.
+    workbook.insert(&mut [(0, &mut sales)], 0, Axis::Columns, 2, 1).unwrap();
+    assert_eq!(sales.cell(0, 2).unwrap(), "Column1");
+    sales.set_cell(1, 2, "x").unwrap();
+    workbook.recalculate(&mut [(0, &mut sales)], 45658.0).unwrap();
+    // The total still reads its row's price and quantity, a column further right.
+    assert_eq!(sales.cell(1, 4).unwrap(), "20");
+    let saved = workbook.to_bytes(&[(0, &sales)]).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(saved.clone())).unwrap();
+    let mut table = String::new();
+    archive.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut table).unwrap();
+    assert!(table.contains(r#"ref="A1:E4""#), "{table}");
+    assert!(table.contains(r#"<tableColumns count="5">"#) && table.contains(r#"name="Column1"/>"#), "{table}");
+    let names: Vec<&str> = table.match_indices("name=\"").map(|(at, _)| table[at + 6..].split('"').next().unwrap()).collect();
+    assert_eq!(names[..6], ["Orders", "Item", "Price", "Column1", "Qty", "Total"]);
+    let reopened = Workbook::from_bytes(saved).unwrap();
+    let mut again = reopened.read_sheet(0, &DisplayLocale::default()).unwrap().document;
+    reopened.recalculate(&mut [(0, &mut again)], 45658.0).unwrap();
+    assert_eq!((again.cell(1, 2).unwrap(), again.cell(5, 0).unwrap()), ("x".to_owned(), "60".to_owned()));
+    // The new column goes again; Price, which Total reads, and the whole table stay.
+    workbook.delete(&mut [(0, &mut sales)], 0, Axis::Columns, 2, 1).unwrap();
+    assert_eq!(sales.cell(0, 2).unwrap(), "Qty");
+    assert!(matches!(workbook.delete(&mut [(0, &mut sales)], 0, Axis::Columns, 1, 1), Err(Error::SheetStructure(SheetStructure::TableColumnInUse))));
+    assert!(matches!(workbook.delete(&mut [(0, &mut sales)], 0, Axis::Columns, 0, 4), Err(Error::SheetStructure(SheetStructure::TableColumns))));
+    let saved = workbook.to_bytes(&[(0, &sales)]).unwrap();
+    let mut archive = zip::ZipArchive::new(Cursor::new(saved)).unwrap();
+    let mut table = String::new();
+    archive.by_name("xl/tables/table1.xml").unwrap().read_to_string(&mut table).unwrap();
+    assert!(table.contains(r#"ref="A1:D4""#) && table.contains(r#"<tableColumns count="4">"#), "{table}");
 }

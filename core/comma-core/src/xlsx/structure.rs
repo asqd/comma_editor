@@ -55,8 +55,8 @@ impl Workbook {
             return Ok(Vec::new());
         }
         // Tables of the sheet: rows inserted among their data rows fill their calculated
-        // columns; what would break a table is refused.
-        let template = self.table_rows(&*sheets[position].1, index, axis, at, count, insert)?;
+        // columns, columns inserted into them get names; what would break a table is refused.
+        let change = self.table_change(sheets, position, index, axis, at, count, insert)?;
         let (at32, count32) = (at as u32, count as u32);
         let shift = move |first: u32, last: u32| Remap::shift(first, last, at32, count32, insert);
         let same = |first: u32, last: u32| Some((first, last));
@@ -69,7 +69,7 @@ impl Workbook {
         for (sheet, document) in sheets.iter_mut() {
             let own = self.sheets.get(*sheet).map(|entry| entry.name.to_lowercase()).unwrap_or_default();
             if *sheet == index {
-                restructure_sheet(document, &own, &remap, axis, at, count, insert, template.as_deref());
+                restructure_sheet(document, &own, &remap, axis, at, count, insert, &change);
                 changed.push(*sheet);
             } else if remap_formulas(document, &own, &remap) {
                 changed.push(*sheet);
@@ -306,17 +306,15 @@ impl Workbook {
     /// its table, or outside every table, and a row moving among a table's data must have no
     /// cells beside the table, which Excel would leave where they are.
     fn check_table_rows(&self, document: &Document, index: usize, order: &[usize]) -> Result<()> {
-        let (rows, columns) = (super::save::AxisMap::rows(document), super::save::AxisMap::columns(document));
         // Each table's rows, data rows and columns where they are now.
         let tables: Vec<(usize, usize, usize, usize, usize, usize)> = self
             .tables()
             .iter()
             .filter(|table| table.sheet == index)
-            .filter_map(|table| {
-                let (top, bottom) = rows.range(table.top, table.bottom)?;
-                let (left, right) = columns.range(table.left, table.right)?;
-                let (top, bottom) = (top as usize, bottom as usize);
-                Some((top, bottom, top + table.headers as usize, bottom.saturating_sub(table.totals as usize), left as usize, right as usize))
+            .filter_map(|table| table.current(document))
+            .map(|table| {
+                let (top, bottom) = (table.top as usize, table.bottom as usize);
+                (top, bottom, top + table.headers as usize, bottom.saturating_sub(table.totals as usize), table.left as usize, table.right as usize)
             })
             .collect();
         if tables.is_empty() {
@@ -346,19 +344,55 @@ impl Workbook {
         Ok(())
     }
 
-    fn table_rows(&self, document: &Document, index: usize, axis: Axis, at: usize, count: usize, insert: bool) -> Result<Option<Vec<Field>>> {
-        let (rows, columns) = (super::save::AxisMap::rows(document), super::save::AxisMap::columns(document));
-        let mut template: Option<Vec<Field>> = None;
-        for table in self.tables().iter().filter(|table| table.sheet == index) {
-            let (Some((top, bottom)), Some((left, right))) = (rows.range(table.top, table.bottom), columns.range(table.left, table.right)) else {
-                continue;
-            };
-            let (top, bottom, left, right) = (top as usize, bottom as usize, left as usize, right as usize);
+    #[allow(clippy::too_many_arguments)]
+    fn table_change(
+        &self,
+        sheets: &[(usize, &mut Document)],
+        position: usize,
+        index: usize,
+        axis: Axis,
+        at: usize,
+        count: usize,
+        insert: bool,
+    ) -> Result<TableChange> {
+        let document = &*sheets[position].1;
+        let mut change = TableChange::default();
+        let last = at + count - 1;
+        for table in self.tables().iter().filter(|table| table.sheet == index).filter_map(|table| table.current(document)) {
+            let (top, bottom, left, right) = (table.top as usize, table.bottom as usize, table.left as usize, table.right as usize);
             let (first_data, last_data) = (top + table.headers as usize, bottom.saturating_sub(table.totals as usize));
-            let last = at + count - 1;
             match axis {
-                Axis::Columns if insert && at > left && at <= right => return Err(Error::SheetStructure(SheetStructure::TableColumns)),
-                Axis::Columns if !insert && at <= right && last >= left => return Err(Error::SheetStructure(SheetStructure::TableColumns)),
+                // A column inserted into a table is a column of it, named as Excel names one.
+                Axis::Columns if insert && at > left && at <= right => {
+                    let word = column_word(document);
+                    let mut names: Vec<String> = table.columns.clone();
+                    for offset in 0..count {
+                        let name = (1..).map(|number| format!("{word}{number}")).find(|name| !names.contains(&name.to_lowercase())).unwrap_or_default();
+                        names.push(name.to_lowercase());
+                        if table.headers > 0 {
+                            change.headers.push((top, at + offset, name));
+                        }
+                    }
+                }
+                Axis::Columns if !insert && at <= right && last >= left => {
+                    if at <= left && last >= right {
+                        return Err(Error::SheetStructure(SheetStructure::TableColumns));
+                    }
+                    // Formulas naming a column deleted would read nothing Excel could tell.
+                    let deleted: Vec<&String> = (at.max(left)..=last.min(right)).filter_map(|column| table.columns.get(column - left)).collect();
+                    let names_one = |formula: &str| {
+                        let formula = formula.to_lowercase();
+                        deleted.iter().any(|name| formula.contains(&format!("[{name}]")) || formula.contains(&format!("@{name}")) || formula.contains(&format!(",{name}]")))
+                    };
+                    let kept_formulas = table.formulas.iter().enumerate().filter(|(offset, _)| !(at..=last).contains(&(left + offset))).filter_map(|(_, formula)| formula.as_deref());
+                    // Formulas in the columns deleted go with them.
+                    let in_cells = sheets.iter().any(|(sheet, document)| {
+                        document.formula_cells().any(|(_, column, cell)| !(*sheet == index && (at..=last).contains(&column)) && names_one(&cell.formula))
+                    });
+                    if in_cells || kept_formulas.into_iter().any(names_one) {
+                        return Err(Error::SheetStructure(SheetStructure::TableColumnInUse));
+                    }
+                }
                 Axis::Rows if !insert => {
                     let headers = table.headers > 0 && at < first_data && last >= top;
                     let totals = table.totals > 0 && at <= bottom && last > last_data;
@@ -368,7 +402,7 @@ impl Workbook {
                     }
                 }
                 Axis::Rows if insert && at >= first_data && at <= last_data + 1 && (table.totals > 0 || at <= last_data) => {
-                    let fields = template.get_or_insert_with(Vec::new);
+                    let fields = change.template.get_or_insert_with(Vec::new);
                     for (offset, formula) in table.formulas.iter().enumerate() {
                         let Some(formula) = formula else { continue };
                         let column = left + offset;
@@ -388,7 +422,23 @@ impl Workbook {
                 _ => {}
             }
         }
-        Ok(template)
+        Ok(change)
+    }
+}
+
+/// What tables of a sheet add to rows or columns inserted: the cells of a row inserted among
+/// their data, and the names of columns inserted into them, by row and column.
+#[derive(Default)]
+struct TableChange {
+    template: Option<Vec<Field>>,
+    headers: Vec<(usize, usize, String)>,
+}
+
+/// The word Excel names a new column of a table with, in the language the sheet shows.
+fn column_word(document: &Document) -> &'static str {
+    match document.sheet.as_ref() {
+        Some(sheet) if sheet.locale.true_text == "ИСТИНА" => "Столбец",
+        _ => "Column",
     }
 }
 
@@ -403,8 +453,9 @@ fn restructure_sheet(
     at: usize,
     count: usize,
     insert: bool,
-    template: Option<&[Field]>,
+    change: &TableChange,
 ) {
+    let template = change.template.as_deref();
     let mut formulas_moved = false;
     let mut records: Vec<Record> = document
         .records
@@ -457,6 +508,17 @@ fn restructure_sheet(
                 }
             }
             let after = if insert { columns + count } else { columns - count };
+            // Columns inserted into a table get their names in its header row.
+            for (row, column, name) in &change.headers {
+                if let Some(record) = records.get_mut(*row) {
+                    let mut fields = document.fields(record);
+                    if fields.len() <= *column {
+                        fields.resize(column + 1, Field::Text(String::new()));
+                    }
+                    fields[*column] = Field::Text(name.clone());
+                    *record = record.with_fields(fields);
+                }
+            }
             let length = document.records.len();
             let splice = Splice::apply(Arc::make_mut(&mut document.records), 0, length, records);
             document.commit_moving_columns(vec![splice], after.max(1), origins);

@@ -684,10 +684,7 @@ impl Workbook {
                 let Some((_, document)) = sheets.iter().find(|(index, _)| *index == table.sheet) else {
                     return Some(table.clone());
                 };
-                let (rows, columns) = (super::save::AxisMap::rows(document), super::save::AxisMap::columns(document));
-                let (top, bottom) = rows.range(table.top, table.bottom)?;
-                let (left, right) = columns.range(table.left, table.right)?;
-                Some(TableDef { top, bottom, left, right, ..table.clone() })
+                table.current(document)
             })
             .collect()
     }

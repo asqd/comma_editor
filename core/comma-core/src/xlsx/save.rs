@@ -228,7 +228,22 @@ impl Workbook {
             let remap = Remap { sheet: &own, rows: &rows, columns: &columns };
             for table in self.tables().iter().filter(|table| table.sheet == index) {
                 if let Some(text) = package.read_text(&table.part)? {
-                    replaced.insert(table.part.to_lowercase(), remap_table(&text, &own, &remap).into_bytes());
+                    let mut xml = remap_table(&text, &own, &remap);
+                    // Columns inserted into the table or deleted from it.
+                    if let Some(current) = table.current(document) {
+                        let columns: Vec<(Option<usize>, String)> = (current.left..=current.right)
+                            .map(|column| {
+                                let original = document
+                                    .column_origin(column as usize)
+                                    .filter(|&original| (table.left as usize..=table.right as usize).contains(&original))
+                                    .map(|original| original - table.left as usize);
+                                let header = if table.headers > 0 { document.cell(current.top as usize, column as usize).unwrap_or_default() } else { String::new() };
+                                (original, header)
+                            })
+                            .collect();
+                        xml = table_columns(&xml, &columns);
+                    }
+                    replaced.insert(table.part.to_lowercase(), xml.into_bytes());
                 }
             }
         }
@@ -740,6 +755,85 @@ fn remap_table(xml: &str, own: &str, remap: &Remap) -> String {
         }
     }
     xml
+}
+
+/// A table part with its columns as they stand: each the column of the file it was, by its
+/// place among the table's columns, or a new one named as its header.
+fn table_columns(xml: &str, columns: &[(Option<usize>, String)]) -> String {
+    if columns.iter().enumerate().all(|(place, (original, _))| *original == Some(place)) {
+        return xml.to_owned();
+    }
+    let Some(start) = find_element(xml, "tableColumns") else { return xml.to_owned() };
+    let Some(length) = xml[start..].find('>') else { return xml.to_owned() };
+    let tag_end = start + length + 1;
+    let name: String = xml[start + 1..].chars().take_while(|c| !c.is_whitespace() && *c != '>' && *c != '/').collect();
+    let prefix = name.rsplit_once(':').map(|(prefix, _)| format!("{prefix}:")).unwrap_or_default();
+    let closing = format!("</{prefix}tableColumns>");
+    let Some(offset) = xml[tag_end..].find(&closing) else { return xml.to_owned() };
+    let inner_end = tag_end + offset;
+    // The columns of the file, each element whole.
+    let mut elements = Vec::new();
+    let mut at = tag_end;
+    while let Some(found) = find_element(&xml[at..inner_end], "tableColumn") {
+        let element_start = at + found;
+        let Some(length) = xml[element_start..].find('>') else { break };
+        let element_tag_end = element_start + length + 1;
+        let element_end = if xml[element_start..element_tag_end].ends_with("/>") {
+            element_tag_end
+        } else {
+            let close = format!("</{prefix}tableColumn>");
+            match xml[element_tag_end..inner_end].find(&close) {
+                Some(offset) => element_tag_end + offset + close.len(),
+                None => break,
+            }
+        };
+        elements.push(&xml[element_start..element_end]);
+        at = element_end;
+    }
+    let mut next = elements
+        .iter()
+        .filter_map(|element| attribute_value(element, "id").and_then(|id| id.parse::<u32>().ok()))
+        .max()
+        .unwrap_or(0);
+    let escape = |text: &str| text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let mut out = String::new();
+    for (place, (original, header)) in columns.iter().enumerate() {
+        match original.and_then(|original| elements.get(original)) {
+            Some(element) => out.push_str(element),
+            None => {
+                next += 1;
+                let name = if header.is_empty() { format!("Column{}", place + 1) } else { header.clone() };
+                out.push_str(&format!("<{prefix}tableColumn id=\"{next}\" name=\"{}\"/>", escape(&name)));
+            }
+        }
+    }
+    let tag = set_attribute(&xml[start..tag_end], "count", Some(&columns.len().to_string()));
+    let xml = format!("{}{tag}{out}{}", &xml[..start], &xml[inner_end..]);
+    // Filters of the table name their columns by place: they go where the columns went.
+    let mut out = String::with_capacity(xml.len());
+    let mut at = 0;
+    while let Some(found) = find_element(&xml[at..], "filterColumn") {
+        let start = at + found;
+        let Some(length) = xml[start..].find('>') else { break };
+        let tag_end = start + length + 1;
+        let empty = xml[start..tag_end].ends_with("/>");
+        let end = if empty {
+            tag_end
+        } else {
+            let close = format!("</{prefix}filterColumn>");
+            xml[tag_end..].find(&close).map_or(tag_end, |offset| tag_end + offset + close.len())
+        };
+        out.push_str(&xml[at..start]);
+        let old = attribute_value(&xml[start..tag_end], "colId").and_then(|id| id.parse::<usize>().ok());
+        let place = old.and_then(|old| columns.iter().position(|(original, _)| *original == Some(old)));
+        if let Some(place) = place {
+            out.push_str(&set_attribute(&xml[start..tag_end], "colId", Some(&place.to_string())));
+            out.push_str(&xml[tag_end..end]);
+        }
+        at = end;
+    }
+    out.push_str(&xml[at..]);
+    out
 }
 
 /// Lists left without items, which the schema does not allow, go; the others count what is

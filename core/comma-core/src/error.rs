@@ -80,9 +80,12 @@ pub enum SheetStructure {
     /// The headers, the totals or all the data rows of an Excel table cannot be deleted.
     #[error("the headers, the totals or all the data rows of an Excel table cannot be deleted")]
     TableEdges,
-    /// Columns cannot be inserted or deleted inside an Excel table.
-    #[error("columns cannot be inserted or deleted inside an Excel table")]
+    /// Every column of an Excel table cannot be deleted: the table would go.
+    #[error("every column of an Excel table cannot be deleted")]
     TableColumns,
+    /// Formulas name a column of an Excel table to delete.
+    #[error("formulas name a column of an Excel table to delete")]
+    TableColumnInUse,
     /// The rows moved would split a merged area.
     #[error("the rows would split a merged area")]
     MergedArea,

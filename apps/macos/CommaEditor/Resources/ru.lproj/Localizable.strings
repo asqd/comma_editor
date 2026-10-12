@@ -590,8 +590,10 @@
 "These rows cannot be moved or sorted." = "Эти строки нельзя переместить или отсортировать.";
 "These rows of an Excel table cannot be deleted." = "Эти строки таблицы Excel нельзя удалить.";
 "The header row, the totals row and the last data row hold the table together. Other rows of it can be deleted." = "Строка заголовков, строка итогов и последняя строка данных держат таблицу. Остальные её строки удалять можно.";
-"Columns cannot be inserted or deleted inside an Excel table." = "Внутри таблицы Excel нельзя вставлять и удалять колонки.";
-"Columns left and right of the table can be inserted and deleted." = "Колонки слева и справа от таблицы вставлять и удалять можно.";
+"Every column of an Excel table cannot be deleted." = "Нельзя удалить все колонки таблицы Excel.";
+"A table keeps at least one column. To remove the table, delete it in Excel." = "В таблице остаётся хотя бы одна колонка. Чтобы убрать таблицу, удалите её в Excel.";
+"Formulas read this column of an Excel table." = "Эту колонку таблицы Excel читают формулы.";
+"Change the formulas that name it first, so that they do not lose what they read." = "Сначала измените формулы, которые её называют, чтобы они не потеряли то, что читают.";
 "Some of the rows are part of a merged area, which moves whole or not at all. Unmerge it in Excel, or move all its rows together." = "Часть строк входит в объединённые ячейки, а они перемещаются только целиком. Разъедините их в Excel или перемещайте все их строки вместе.";
 "Columns of a workbook cannot be inserted, deleted or moved yet." = "В книгах Excel пока нельзя вставлять, удалять и перемещать колонки, только добавлять в конец.";
 "Values in the columns can be changed. To change the columns, export the sheet as CSV." = "Значения в колонках менять можно. Чтобы изменить сами колонки, экспортируйте лист в CSV.";

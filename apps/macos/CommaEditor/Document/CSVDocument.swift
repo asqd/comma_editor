@@ -834,8 +834,11 @@ class CSVDocument: NSDocument {
                 userInfo[NSLocalizedDescriptionKey] = L("These rows of an Excel table cannot be deleted.")
                 userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("The header row, the totals row and the last data row hold the table together. Other rows of it can be deleted.")
             case .tableColumns:
-                userInfo[NSLocalizedDescriptionKey] = L("Columns cannot be inserted or deleted inside an Excel table.")
-                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Columns left and right of the table can be inserted and deleted.")
+                userInfo[NSLocalizedDescriptionKey] = L("Every column of an Excel table cannot be deleted.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("A table keeps at least one column. To remove the table, delete it in Excel.")
+            case .tableColumnInUse:
+                userInfo[NSLocalizedDescriptionKey] = L("Formulas read this column of an Excel table.")
+                userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Change the formulas that name it first, so that they do not lose what they read.")
             case .mergedArea:
                 userInfo[NSLocalizedDescriptionKey] = L("These rows cannot be moved or sorted.")
                 userInfo[NSLocalizedRecoverySuggestionErrorKey] = L("Some of the rows are part of a merged area, which moves whole or not at all. Unmerge it in Excel, or move all its rows together.")

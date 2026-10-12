@@ -148,6 +148,7 @@ pub enum SheetChange {
     TableRowsMoved,
     TableEdges,
     TableColumns,
+    TableColumnInUse,
     MergedArea,
 }
 
@@ -160,6 +161,7 @@ impl From<core::SheetStructure> for SheetChange {
             core::SheetStructure::TableRowsMoved => Self::TableRowsMoved,
             core::SheetStructure::TableEdges => Self::TableEdges,
             core::SheetStructure::TableColumns => Self::TableColumns,
+            core::SheetStructure::TableColumnInUse => Self::TableColumnInUse,
             core::SheetStructure::MergedArea => Self::MergedArea,
         }
     }

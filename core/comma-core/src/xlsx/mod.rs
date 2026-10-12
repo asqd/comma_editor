@@ -173,6 +173,38 @@ pub(crate) struct TableDef {
     pub part: String,
 }
 
+impl TableDef {
+    /// The table where it stands in `document`, rows and columns inserted or deleted: its
+    /// range, and its columns' names and formulas in the order they stand now. A column
+    /// inserted into it is named as its header cell.
+    pub(crate) fn current(&self, document: &Document) -> Option<TableDef> {
+        let (rows, columns) = (save::AxisMap::rows(document), save::AxisMap::columns(document));
+        let (top, bottom) = rows.range(self.top, self.bottom)?;
+        let (left, right) = columns.range(self.left, self.right)?;
+        let mut names = Vec::new();
+        let mut formulas = Vec::new();
+        for column in left..=right {
+            let original = document
+                .column_origin(column as usize)
+                .map(|original| original as u32)
+                .filter(|original| (self.left..=self.right).contains(original));
+            match original {
+                Some(original) => {
+                    let offset = (original - self.left) as usize;
+                    names.push(self.columns.get(offset).cloned().unwrap_or_default());
+                    formulas.push(self.formulas.get(offset).cloned().flatten());
+                }
+                None => {
+                    let header = if self.headers > 0 { document.cell(top as usize, column as usize).unwrap_or_default() } else { String::new() };
+                    names.push(header.to_lowercase());
+                    formulas.push(None);
+                }
+            }
+        }
+        Some(TableDef { top, bottom, left, right, columns: names, formulas, ..self.clone() })
+    }
+}
+
 enum Source {
     Xlsx { package: Package, strings: Vec<String>, styles: Styles },
     Xls(Box<xls::XlsBook>),
