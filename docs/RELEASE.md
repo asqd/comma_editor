@@ -18,7 +18,7 @@ scripts/version.sh 1.1.0    # поставить версию ядру, прил
 
 1. `scripts/version.sh X.Y.Z`, поднять `CURRENT_PROJECT_VERSION`, обновить раздел версии в README.
 2. Пройти ручную проверку: нативное приложение — ниже, Tauri-версия — в её разделе.
-3. Коммит, тег `vX.Y.Z`, `git push --tags`. Процесс **Release** в GitHub Actions соберёт
+3. Pull request в `master`, слияние после зелёного CI; тег `vX.Y.Z` на `master`, `git push --tags`. Процесс **Release** в GitHub Actions соберёт
    установщики Tauri-версии и положит их с суммами SHA-256 в черновик выпуска этого тега.
 4. `make release` на Mac и `gh release upload vX.Y.Z build/release/CommaEditor-X.Y.Z.dmg*`.
 5. В черновике: описание из README и суммы, затем «Publish release». Кнопки сайта ведут на
@@ -229,15 +229,15 @@ DEVELOPMENT_TEAM=ABCDE12345 NOTARY_PROFILE=commaeditor make release
 |---|---|---|
 | Windows 10 и 11, x64 | `CommaEditor-X.Y.Z-windows-x64-setup.exe` | NSIS, для текущего пользователя, без прав администратора; WebView2 скачивается, если его нет |
 | Windows 11 на ARM | `CommaEditor-X.Y.Z-windows-arm64-setup.exe` | то же, собирается на x64 |
-| Linux x86_64 | `CommaEditor-X.Y.Z-linux-x86_64.AppImage` | работает без установки |
-| Ubuntu 22.04+, Debian 12 | `commaeditor_X.Y.Z_amd64.deb` | зависимости — WebKitGTK 4.1 и GTK 3 |
+| Linux x86_64 и ARM64 | `CommaEditor-X.Y.Z-linux-x86_64.AppImage`, `…-linux-aarch64.AppImage` | работает без установки |
+| Ubuntu 22.04+, Debian 12 | `commaeditor_X.Y.Z_amd64.deb`, `commaeditor_X.Y.Z_arm64.deb` | зависимости — WebKitGTK 4.1 и GTK 3 |
 | Linux, Flatpak | `CommaEditor-X.Y.Z-linux-x86_64.flatpak` | из того же `.deb`, среда GNOME 47 с Flathub |
 | macOS 10.15+, universal | `CommaEditor-W-X.Y.Z-macos-universal.dmg` | подпись ad-hoc, как у нативного DMG |
 
 Рядом с каждым файлом — `.sha256`. Всё собирает процесс **Release**
 (`.github/workflows/release.yml`) по тегу `v*`; при изменении упаковки он собирает установщики
-на любой ветке, без выпуска, чтобы видеть, что они собираются. Под Linux на ARM готовых
-установщиков пока нет: бесплатные ARM-машины GitHub есть только у открытых репозиториев.
+на любой ветке, без выпуска, чтобы видеть, что они собираются. Linux на ARM собирается на
+ARM-машине GitHub (`ubuntu-22.04-arm`); Flatpak пока только для x86_64.
 
 ## Локальная сборка
 

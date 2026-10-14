@@ -46,5 +46,11 @@ if ! grep -q "<release version=\"$VERSION\"" "$METAINFO"; then
     rm -f "$METAINFO.bak"
 fi
 rm -f Cargo.toml.bak apps/desktop/src-tauri/Cargo.toml.bak apps/desktop/package.json.bak apps/desktop/package-lock.json.bak apps/macos/project.yml.bak
+# The lock files name the workspace's own crates with their versions; reading the metadata
+# updates those and nothing else.
+if command -v cargo >/dev/null; then
+    cargo metadata --format-version 1 > /dev/null
+    cargo metadata --manifest-path apps/desktop/src-tauri/Cargo.toml --format-version 1 > /dev/null
+fi
 echo "version $VERSION; raise CURRENT_PROJECT_VERSION in apps/macos/project.yml for the macOS app's build"
 "$0"

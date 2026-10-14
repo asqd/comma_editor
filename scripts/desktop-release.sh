@@ -5,7 +5,8 @@
 #
 #   scripts/desktop-release.sh          macOS: universal DMG of CommaEditor W
 #                                       Windows: NSIS installer for x64
-#                                       Linux: AppImage and .deb for x86_64
+#                                       Linux: AppImage and .deb for this machine's
+#                                       architecture, x86_64 or aarch64
 #   TARGET=aarch64-pc-windows-msvc scripts/desktop-release.sh
 #                                       the Windows installer for ARM64, built on x64
 set -euo pipefail
@@ -17,7 +18,7 @@ mkdir -p "$OUT"
 case "$(uname -s)" in
     Darwin) system=macos; target="${TARGET:-universal-apple-darwin}"; bundles=dmg ;;
     MINGW* | MSYS* | CYGWIN*) system=windows; target="${TARGET:-x86_64-pc-windows-msvc}"; bundles=nsis ;;
-    *) system=linux; target="${TARGET:-x86_64-unknown-linux-gnu}"; bundles=appimage,deb ;;
+    *) system=linux; target="${TARGET:-$(uname -m)-unknown-linux-gnu}"; bundles=appimage,deb ;;
 esac
 
 cd "$ROOT/apps/desktop"
@@ -41,8 +42,12 @@ case "$system" in
         built+=("$(copy "$BUNDLE"/nsis/*-setup.exe "CommaEditor-$VERSION-windows-$arch-setup.exe")")
         ;;
     linux)
-        built+=("$(copy "$BUNDLE"/appimage/*.AppImage "CommaEditor-$VERSION-linux-x86_64.AppImage")")
-        built+=("$(copy "$BUNDLE"/deb/*.deb "commaeditor_${VERSION}_amd64.deb")")
+        # AppImages name the architecture as the kernel does, packages as Debian does.
+        arch="${target%%-*}"
+        deb=amd64
+        [[ "$arch" == aarch64 ]] && deb=arm64
+        built+=("$(copy "$BUNDLE"/appimage/*.AppImage "CommaEditor-$VERSION-linux-$arch.AppImage")")
+        built+=("$(copy "$BUNDLE"/deb/*.deb "commaeditor_${VERSION}_$deb.deb")")
         ;;
 esac
 

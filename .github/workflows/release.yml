@@ -1,8 +1,8 @@
 name: Release
 
 # The installers of the desktop app on Tauri, for every system: a universal DMG of CommaEditor W
-# for macOS, NSIS installers for Windows x64 and ARM64, an AppImage, a .deb and a Flatpak for
-# Linux, each with its SHA-256. No signing certificates: see docs/RELEASE.md.
+# for macOS, NSIS installers for Windows x64 and ARM64, AppImages and .deb packages for Linux
+# x86_64 and ARM64 and a Flatpak for x86_64, each with its SHA-256. No signing certificates: see docs/RELEASE.md.
 #
 # A tag v<version> puts them on a draft release of that tag, beside the DMG of the macOS app;
 # the release is published by hand. A change to the packaging builds them all, to see that they
@@ -54,6 +54,10 @@ jobs:
             os: ubuntu-22.04
             rust: x86_64-unknown-linux-gnu
             target: x86_64-unknown-linux-gnu
+          - name: Linux ARM64
+            os: ubuntu-22.04-arm
+            rust: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -91,7 +95,7 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: build/desktop
         run: |
-          dpkg-deb --fsys-tarfile commaeditor_*_amd64.deb | tar -xO --wildcards '*usr/share/applications/*.desktop' | tee deb.desktop
+          dpkg-deb --fsys-tarfile commaeditor_*.deb | tar -xO --wildcards '*usr/share/applications/*.desktop' | tee deb.desktop
           grep -q '^Exec=commaeditor %F$' deb.desktop
           grep -q '^MimeType=.*text/csv' deb.desktop
           chmod +x CommaEditor-*.AppImage

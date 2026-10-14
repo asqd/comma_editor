@@ -209,8 +209,7 @@
 - [x] `docs/RELEASE.md`: порядок выпуска одним тегом, чек-лист ручной проверки Tauri-версии;
       на сайте — раздел для Windows и Linux и чем две версии для macOS отличаются.
 - [x] README и `Makefile`: `make desktop`, `make desktop-release`, `make version`.
-- [ ] Установщики для Linux на ARM: бесплатные ARM-машины GitHub есть только у открытых
-      репозиториев.
+- [x] Установщики для Linux на ARM (AppImage и `.deb`), с тех пор как репозиторий открыт.
 
 ## Чего в Tauri-версии не будет сразу
 
