@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- What software centres show of CommaEditor on Linux (AppStream). The .deb, the AppImage and
+     the Flatpak carry it; the version comes from the release. -->
+<component type="desktop-application">
+  <id>app.commaeditor.Desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <name>CommaEditor</name>
+  <summary>Edit CSV files and Excel workbooks without spoiling them</summary>
+  <summary xml:lang="ru">Редактор CSV и книг Excel, который не портит файлы</summary>
+  <description>
+    <p>
+      CommaEditor opens CSV, TSV and Excel files of any size and saves them changed only where
+      you changed them: quotes, encoding, line endings and the order of fields stay as they were.
+    </p>
+    <p xml:lang="ru">
+      CommaEditor открывает CSV, TSV и книги Excel любого размера и сохраняет их изменёнными
+      ровно там, где вы их изменили: кавычки, кодировка, переводы строк и порядок полей остаются
+      как были.
+    </p>
+    <ul>
+      <li>Sorting, filters, find and replace, also on files of millions of rows</li>
+      <li>Column profiles, file repair and garbled text fixed</li>
+      <li>Comparing two files, recipes that repeat a clean-up on the next file</li>
+      <li>Excel workbooks with their sheets, formulas and number formats</li>
+    </ul>
+    <ul xml:lang="ru">
+      <li>Сортировка, фильтры, поиск и замена, в том числе в файлах на миллионы строк</li>
+      <li>Профиль колонки, ремонт файла и исправление кракозябр</li>
+      <li>Сравнение двух файлов и рецепты, которые повторяют чистку на следующем файле</li>
+      <li>Книги Excel с листами, формулами и форматами чисел</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">app.commaeditor.Desktop.desktop</launchable>
+  <url type="homepage">https://github.com/asqd/comma_editor</url>
+  <url type="bugtracker">https://github.com/asqd/comma_editor/issues</url>
+  <developer id="app.commaeditor">
+    <name>CommaEditor</name>
+  </developer>
+  <categories>
+    <category>Office</category>
+    <category>Spreadsheet</category>
+  </categories>
+  <provides>
+    <binary>commaeditor</binary>
+    <mediatype>text/csv</mediatype>
+    <mediatype>text/tab-separated-values</mediatype>
+    <mediatype>application/vnd.openxmlformats-officedocument.spreadsheetml.sheet</mediatype>
+    <mediatype>application/vnd.ms-excel.sheet.macroEnabled.12</mediatype>
+    <mediatype>application/vnd.ms-excel</mediatype>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.1.0" date="2026-10-15"/>
+    <release version="1.0.0" date="2026-10-12"/>
+  </releases>
+</component>

@@ -1,0 +1,79 @@
+name: Scroll bench
+
+# Times scrolling in the desktop app on each system with `commaeditor --bench`: frames while
+# scrolling, and how fast rows appear after a jump. Runs by hand, and when the grid or the
+# app's commands change. Linux draws in Xvfb without a GPU, so its frames are a lower bound.
+on:
+  push:
+    paths:
+      - .github/workflows/scroll.yml
+      - apps/desktop/src/grid/**
+      - apps/desktop/src-tauri/src/**
+  workflow_dispatch:
+    inputs:
+      rows:
+        description: Rows of the generated table
+        default: 12m
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scroll:
+    name: Scroll (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - name: WebKitGTK and Xvfb
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev libssl-dev xvfb
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: apps/desktop/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+      - name: Table
+        shell: bash
+        env:
+          ROWS: ${{ inputs.rows || '12m' }}
+        run: cargo run -q --release -p comma-cli -- generate "$ROWS" "$RUNNER_TEMP/table.csv"
+      - name: App
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npx tauri build --no-bundle
+      - name: Scroll
+        shell: bash
+        working-directory: apps/desktop/src-tauri/target/release
+        env:
+          COMMA_BENCH_OUT: ${{ runner.temp }}/scroll.txt
+          # WebKitGTK cannot share GPU buffers in Xvfb.
+          WEBKIT_DISABLE_DMABUF_RENDERER: 1
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a -s "-screen 0 1920x1080x24" ./commaeditor --bench "$RUNNER_TEMP/table.csv"
+          else
+            ./commaeditor --bench "$RUNNER_TEMP/table.csv"
+          fi
+          {
+            echo "### ${{ matrix.os }}"
+            echo '```'
+            cat "$COMMA_BENCH_OUT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -306,6 +306,12 @@ kbd {
   font: 13px var(--mono); color: var(--indigo); background: var(--indigo-soft); border-radius: 4px;
 }
 .sub.after { margin: 0 0 12px; }
+.content h3 { font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin: 40px 0 16px; }
+.content h2 + .sub + h3 { margin-top: 8px; }
+.steps.plain { margin-bottom: 12px; }
+.steps.plain li { padding-left: 0; }
+.steps.plain li:last-child { padding-bottom: 0; }
+.steps.plain li::before { content: none; }
 
 /* Footer */
 

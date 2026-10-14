@@ -1,0 +1,130 @@
+:root {
+  color-scheme: light dark;
+  --background: #ffffff;
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --bar: #f5f5f7;
+  --border: #d2d2d7;
+  --accent: #0a66d8;
+  --error: #d70015;
+  --grid-background: #ffffff;
+  --grid-alternate: #f7f8fa;
+  --grid-text: #1d1d1f;
+  --grid-muted: #8a8a8e;
+  --grid-line: #e3e3e8;
+  --grid-header: #f2f2f5;
+  --grid-header-text: #3a3a3c;
+  --grid-placeholder: #e9e9ee;
+  --grid-selection: rgb(10 102 216 / 0.16);
+  --grid-issue: rgb(255 149 0 / 0.22);
+  --grid-quiet: #b0b0b5;
+  --grid-mark: #c96a00;
+  --grid-mark-background: rgb(255 149 0 / 0.15);
+  --grid-missing: rgb(60 60 67 / 0.12);
+  --grid-formula: rgb(52 199 89 / 0.8);
+  --grid-selected-header: rgb(10 102 216 / 0.14);
+  font: 13px system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #1e1e1e;
+    --text: #f2f2f2;
+    --muted: #a1a1a6;
+    --bar: #262628;
+    --border: #3a3a3c;
+    --accent: #4c9bff;
+    --error: #ff6961;
+    --grid-background: #1e1e1e;
+    --grid-alternate: #242426;
+    --grid-text: #ececec;
+    --grid-muted: #8d8d92;
+    --grid-line: #343437;
+    --grid-header: #2a2a2c;
+    --grid-header-text: #d8d8dc;
+    --grid-placeholder: #333336;
+    --grid-selection: rgb(76 155 255 / 0.22);
+    --grid-issue: rgb(255 159 10 / 0.25);
+    --grid-quiet: #6c6c70;
+    --grid-mark: #ff9f0a;
+    --grid-mark-background: rgb(255 159 10 / 0.15);
+    --grid-missing: rgb(235 235 245 / 0.12);
+    --grid-formula: rgb(48 209 88 / 0.8);
+    --grid-selected-header: rgb(76 155 255 / 0.2);
+  }
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--background);
+  color: var(--text);
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
+}
+
+.grid-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.grid-scroller {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  outline: none;
+}
+
+.grid-spacer {
+  pointer-events: none;
+}
+
+button {
+  font: inherit;
+  padding: 4px 12px;
+  color: var(--text);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+button:disabled {
+  color: var(--muted);
+}
+
+button.small {
+  padding: 1px 8px;
+}
+
+.cell-editor {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0 6px;
+  font: 13px system-ui, -apple-system, "Segoe UI", Ubuntu, Cantarell, sans-serif;
+  color: var(--grid-text);
+  background: var(--grid-background);
+  border: 2px solid var(--accent);
+  outline: none;
+}
+
+/* The grid's keys go to this field; it is there, at the active cell, but not seen. */
+.grid-keys {
+  position: absolute;
+  width: 2px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  caret-color: transparent;
+}

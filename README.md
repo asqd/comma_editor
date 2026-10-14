@@ -2,7 +2,8 @@
 
 Быстрый редактор CSV, который не портит файлы: после сохранения файл отличается от исходного
 только тем, что изменил пользователь. Ядро написано на Rust. Приложение для macOS — нативное,
-на Swift/AppKit; версии для Windows и Linux планируются на Tauri поверх того же ядра.
+на Swift/AppKit; для Windows, Linux и как вторая версия для macOS (CommaEditor W) — приложение
+на Tauri поверх того же ядра.
 
 ## Структура
 
@@ -17,8 +18,12 @@ core/
 apps/
   macos/                 приложение для macOS (XcodeGen: project.yml)
   macos/QuickLook/       расширение Quick Look: превью таблицей в Finder
+  desktop/               приложение для Windows, Linux и macOS на Tauri 2 (docs/PORTING.md)
+  desktop/packaging/     метаданные для Linux и манифест Flatpak
 scripts/build-core.sh    сборка статической библиотеки и биндингов для Xcode
 scripts/release.sh       Release-сборка, DMG, подпись и нотаризация
+scripts/desktop-release.sh  установщики Tauri-версии для текущей системы
+scripts/version.sh       общий номер версии всех сборок
 design/                  иконка: скрипт отрисовки и мастер 1024 × 1024
 docs/PLAN.md             план разработки
 docs/RELEASE.md          выпуск и чек-лист ручной проверки
@@ -33,13 +38,33 @@ samples/                 примеры файлов
 make test     # тесты ядра
 make run      # собрать ядро, сгенерировать Xcode-проект, собрать и запустить приложение
 make release  # универсальная Release-сборка и DMG (подпись и нотаризация — docs/RELEASE.md)
-make icon     # перерисовать иконку из design/make-icon.swift
+make icon     # перерисовать иконки из design/make-icon.swift (и с буквой W для Tauri-версии)
 ```
 
 Для универсальной сборки нужен ещё Rust-таргет для Intel: `rustup target add x86_64-apple-darwin`.
 
 После `make xcodeproj` проект можно открыть в Xcode: `apps/macos/CommaEditor.xcodeproj`.
 При каждой сборке Xcode сам пересобирает ядро.
+
+Приложение на Tauri (`apps/desktop`) собирается на Windows, Linux и macOS; на macOS оно
+называется «CommaEditor W», чтобы стоять рядом с нативным. Нужны Rust, Node 22
+(`apps/desktop/.nvmrc`) и, на Linux, WebKitGTK 4.1 (`libwebkit2gtk-4.1-dev`):
+
+```bash
+make desktop        # запустить с перезагрузкой при правках
+make desktop-build  # Release-сборка: apps/desktop/src-tauri/target/release/commaeditor
+make desktop-release  # установщики для этой системы в build/desktop: DMG, NSIS, AppImage и .deb
+commaeditor --bench table.csv   # замер прокрутки: открыть, прокрутить, вывести время, выйти
+COMMA_LOG=1 commaeditor a.csv   # команды окон в stderr; ошибки интерфейса пишутся туда всегда
+```
+
+Интерфейс можно открыть и в браузере, с настоящим ядром: мост для разработки отдаёт команды
+приложения по HTTP (только с этой машины и только через прокси Vite).
+
+```bash
+cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml --features bridge --bin comma-bridge
+cd apps/desktop && npm run dev   # затем http://localhost:1430/?open=/путь/к/файлу.csv&lang=ru
+```
 
 Утилита командной строки:
 
@@ -48,6 +73,7 @@ cargo run -p comma-cli -- info samples/*.csv
 cargo run -p comma-cli -- check samples/*.csv
 cargo run -p comma-cli -- info book.xlsx   # листы книги Excel: размер, формулы, время чтения
 cargo run --release -p comma-cli -- bench  # первый экран, чтение, сортировка и фильтр на 1, 12 и 60 млн строк
+cargo run --release -p comma-cli -- generate 60m big.csv  # таблица для проверки больших файлов
 ```
 
 ## Как устроено сохранение без лишнего диффа
@@ -628,6 +654,24 @@ KOI8-R, UTF-16) и разделитель определяются так же, 
   профиля, списки в окнах сохранения и сравнения, в панелях поиска и фильтра.
 - Сайт: скриншоты, раздел «Установка» для неподписанного приложения, страница
   конфиденциальности. Выпуск — DMG с подписью ad-hoc для прямого скачивания.
+
+## Версия 1.1: Windows, Linux и CommaEditor W
+
+CommaEditor появился на Windows и Linux. Это отдельное приложение на Tauri 2 с тем же ядром
+на Rust; на Mac оно ставится рядом с нативным под именем CommaEditor W, с буквой W на иконке.
+Версия всех сборок 1.1.0 (сборка 5 для macOS).
+
+- Всё, что умеет нативная версия, кроме превью в Finder, автосохранения с версиями и песочницы:
+  поиск и замена, сортировка и фильтры, данные и экспорт, профиль колонки, ремонт файла,
+  карточка записи, вид таблицы, вычисляемая колонка, сравнение файлов, рецепты и книги Excel
+  с формулами.
+- Таблица рисуется на canvas и прокручивается без рывков на 60 млн строк.
+- Сохранение явное; после сбоя несохранённые правки предлагается восстановить.
+- Рецепты на Mac общие у обеих версий.
+- Установщики: NSIS для Windows x64 и ARM64, AppImage и `.deb` для Linux x86_64 и ARM64,
+  Flatpak для x86_64, универсальный DMG для Mac. Подписей Microsoft и Apple нет, как их
+  открыть, написано на сайте и в `docs/RELEASE.md`.
+- Один номер версии у всех сборок: `scripts/version.sh`, CI проверяет, что он совпадает.
 
 ## Дальше
 

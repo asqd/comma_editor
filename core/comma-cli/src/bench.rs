@@ -64,6 +64,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `comma generate ROWS FILE` writes the table the bench times, to try a large file in the app.
+pub fn generate_file(args: &[String]) -> Result<(), String> {
+    let [rows, path] = args else { return Err("needs ROWS and FILE".into()) };
+    let rows = parse_rows(rows).ok_or(format!("not a number of rows: {rows}"))?;
+    generate(rows, Path::new(path)).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// `1m`, `500k`, `12000000` or `12_000_000`.
 fn parse_rows(text: &str) -> Option<usize> {
     let text = text.to_ascii_lowercase().replace('_', "");

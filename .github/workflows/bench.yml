@@ -1,0 +1,45 @@
+name: Bench
+
+# Times the core on each system with `comma bench`: by hand, and when the bench itself changes.
+# Runners are shared and noisy, so compare systems within one run rather than runs with each other.
+on:
+  push:
+    paths: [.github/workflows/bench.yml, core/comma-cli/src/bench.rs]
+  workflow_dispatch:
+    inputs:
+      rows:
+        description: Table sizes, rows
+        default: 1000000 12000000
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: Bench (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Bench
+        shell: bash
+        env:
+          ROWS: ${{ inputs.rows || '1000000 12000000' }}
+        run: |
+          # ROWS is split into sizes on purpose.
+          # shellcheck disable=SC2086
+          cargo run -q --release -p comma-cli -- bench $ROWS | tee bench.txt
+          {
+            echo "### ${{ matrix.os }}"
+            echo '```'
+            cat bench.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

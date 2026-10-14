@@ -1,6 +1,6 @@
 [package]
 name = "comma-ffi"
-description = "UniFFI bindings of comma-core for the native macOS app."
+description = "The API of comma-core for the apps: UniFFI bindings for macOS, serde for Tauri."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,12 @@ rust-version.workspace = true
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]
 
+[features]
+# Serialize and Deserialize for the records, enums and errors, for the Tauri app.
+serde = ["dep:serde"]
+
 [dependencies]
 comma-core.workspace = true
+serde = { workspace = true, optional = true }
 thiserror.workspace = true
 uniffi.workspace = true

@@ -1,10 +1,13 @@
-// Draws the CommaEditor app icon: a table on an indigo tile with a large comma.
-// Usage: swift design/make-icon.swift <output.png>   (1024 × 1024, macOS icon grid)
+// Draws the CommaEditor app icon: a table on an indigo tile with a large comma, and optionally
+// a letter on a badge in the upper right corner (W for CommaEditor W, the Tauri app on macOS).
+// Usage: swift design/make-icon.swift <output.png> [letter]   (1024 × 1024, macOS icon grid)
 import AppKit
 import CoreText
 
 let size: CGFloat = 1024
-let output = CommandLine.arguments.dropFirst().first ?? "icon_1024.png"
+let arguments = Array(CommandLine.arguments.dropFirst())
+let output = arguments.first ?? "icon_1024.png"
+let badge = arguments.count > 1 ? arguments[1] : nil
 
 func color(_ hex: UInt32, _ alpha: CGFloat = 1) -> CGColor {
     CGColor(
@@ -96,6 +99,36 @@ context.strokePath()
 context.addPath(comma)
 context.setFillColor(color(0xFFA31A))
 context.fillPath()
+
+// The badge: a white-rimmed circle over the tile's upper right corner with the letter on it.
+if let badge {
+    let circle = CGRect(x: 664, y: 664, width: 300, height: 300)
+    context.saveGState()
+    context.setShadow(offset: CGSize(width: 0, height: -8), blur: 20, color: color(0x101540, 0.45))
+    context.addEllipse(in: circle)
+    context.setFillColor(color(0xFFFFFF))
+    context.fillPath()
+    context.restoreGState()
+    let inner = circle.insetBy(dx: 18, dy: 18)
+    context.saveGState()
+    context.addEllipse(in: inner)
+    context.clip()
+    let fill = CGGradient(colorsSpace: space, colors: [color(0xFFB84D), color(0xF08A00)] as CFArray, locations: [0, 1])!
+    context.drawLinearGradient(fill, start: CGPoint(x: 0, y: inner.maxY), end: CGPoint(x: 0, y: inner.minY), options: [])
+    context.restoreGState()
+
+    let letterFont = NSFont.systemFont(ofSize: 200, weight: .black) as CTFont
+    var letters = Array(badge.utf16)
+    var glyphs = [CGGlyph](repeating: 0, count: letters.count)
+    CTFontGetGlyphsForCharacters(letterFont, &letters, &glyphs, letters.count)
+    var letterBounds = CGRect.zero
+    CTFontGetBoundingRectsForGlyphs(letterFont, .default, &glyphs, &letterBounds, 1)
+    let letterPath = CTFontCreatePathForGlyph(letterFont, glyphs[0], nil)!
+    var place = CGAffineTransform(translationX: circle.midX - letterBounds.midX, y: circle.midY - letterBounds.midY)
+    context.addPath(letterPath.copy(using: &place)!)
+    context.setFillColor(color(0xFFFFFF))
+    context.fillPath()
+}
 
 let image = context.makeImage()!
 let rep = NSBitmapImageRep(cgImage: image)

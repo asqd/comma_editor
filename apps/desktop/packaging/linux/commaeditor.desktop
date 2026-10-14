@@ -1,0 +1,12 @@
+# The launcher of the .deb and the AppImage: Exec takes the files opened with the app.
+[Desktop Entry]
+Type=Application
+Name={{name}}
+Comment=An editor of CSV files and Excel workbooks that keeps files as they were
+Comment[ru]=Редактор CSV и книг Excel, который не портит файлы
+Exec={{exec}} %F
+StartupWMClass={{exec}}
+Icon={{icon}}
+Terminal=false
+Categories=Office;Spreadsheet;
+MimeType=text/csv;text/tab-separated-values;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.ms-excel.sheet.macroEnabled.12;application/vnd.ms-excel;
