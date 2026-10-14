@@ -55,6 +55,13 @@ function parse(src) {
 const quote = (v) => (/[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v);
 const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
 const bytes = (s) => new TextEncoder().encode(s).length;
+// 1 байт, 2 байта, 5 байт.
+function byteWord(n) {
+  const d = n % 10, dd = n % 100;
+  if (d === 1 && dd !== 11) return "байт";
+  if (d >= 2 && d <= 4 && (dd < 12 || dd > 14)) return "байта";
+  return "байт";
+}
 
 const original = parse(SRC);
 let values = original.map((r) => r.fields.map((f) => f.value));
@@ -128,15 +135,16 @@ function renderRaw() {
   resetBtn.disabled = !edits;
 
   if (out === SRC) {
-    verdict.innerHTML = `<b>Файл совпадает с исходным байт в байт</b> — ${total} байт.`;
+    verdict.innerHTML = `<b>Файл совпадает с исходным байт в байт</b> (${total} ${byteWord(total)}).`;
   } else if (mode === "comma") {
     verdict.innerHTML =
-      `<b>Изменено полей: ${changedFields}.</b> Остальные ${total - newBytes} из ${total} байт ` +
-      `скопированы из исходного файла как есть.`;
+      `<b>Изменено полей: ${changedFields}.</b> Остальные ${total - newBytes} ${byteWord(total - newBytes)} из ${total} ` +
+      `взяты из исходного файла без изменений.`;
   } else {
     verdict.innerHTML =
-      `<b>Изменились строки: ${changedRecords}</b>, хотя правок ${edits ? "было " + changedFields : "не было"}. ` +
-      `Запись заново по правилам CSV убирает «лишние» кавычки, и в диффе появляется то, чего вы не трогали.`;
+      `<b>Изменились строки: ${changedRecords}</b>, ${edits ? "а правок было " + changedFields : "хотя вы ничего не правили"}. ` +
+      `Если записать файл заново по правилам CSV, пропадут необязательные кавычки, и в сравнении ` +
+      `появятся строки, которых вы не касались.`;
   }
 }
 
